@@ -1,0 +1,29 @@
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Rust / Cargo / Tauri
+/target/
+/src-tauri/target/
+/src-tauri/gen/
+**/*.rs.bk
+
+# Never commit Tauri Updater signing private keys or local secrets
+*.key
+.env
+.env.*
+!.env.example
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.suo
+*.user
+*.log

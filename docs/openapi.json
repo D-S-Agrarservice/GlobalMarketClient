@@ -1,0 +1,589 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FS25: Global Market",
+    "description": "The API for the Global Market Mod",
+    "version": "2.0.0"
+  },
+  "paths": {
+    "/api/v1/meta/status": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Handshake",
+        "description": "Server status, minimum EXE version, poll interval and the name of the selected market.",
+        "operationId": "status_api_v1_meta_status_get",
+        "parameters": [
+          {
+            "name": "x-market-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional private market token. Absent = official public market.",
+              "title": "X-Market-Token"
+            },
+            "description": "Optional private market token. Absent = official public market."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/market/state": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Get the market state",
+        "description": "All fill types of the market with stock, trend, Great Demand and status. Send the last ETag as `If-None-Match` to get `304 Not Modified` while nothing changed.",
+        "operationId": "get_state_api_v1_market_state_get",
+        "parameters": [
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          },
+          {
+            "name": "x-market-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional private market token. Absent = official public market.",
+              "title": "X-Market-Token"
+            },
+            "description": "Optional private market token. Absent = official public market."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not modified"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/market/whitelist": {
+      "post": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Register the map's fill types",
+        "description": "Reports the fill types of the loaded map. Unknown ones are created (BASEGAME = APPROVED, otherwise PENDING). Returns the market state.",
+        "operationId": "post_whitelist_api_v1_market_whitelist_post",
+        "parameters": [
+          {
+            "name": "x-market-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional private market token. Absent = official public market.",
+              "title": "X-Market-Token"
+            },
+            "description": "Optional private market token. Absent = official public market."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WhitelistRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/market/transactions": {
+      "post": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Book a transaction",
+        "description": "Books one BUY or SELL. Idempotent per `tx_id` + payload. Returns the updated market state.",
+        "operationId": "post_transaction_api_v1_market_transactions_post",
+        "parameters": [
+          {
+            "name": "x-market-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional private market token. Absent = official public market.",
+              "title": "X-Market-Token"
+            },
+            "description": "Optional private market token. Absent = official public market."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MarketState": {
+        "properties": {
+          "updated_at": {
+            "type": "integer",
+            "title": "Updated At",
+            "description": "Unix seconds of the last change"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StateItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "updated_at",
+          "items"
+        ],
+        "title": "MarketState"
+      },
+      "MetaStatus": {
+        "properties": {
+          "online": {
+            "type": "boolean",
+            "title": "Online"
+          },
+          "min_exe_version": {
+            "type": "string",
+            "title": "Min Exe Version"
+          },
+          "poll_interval_sec": {
+            "type": "integer",
+            "title": "Poll Interval Sec"
+          },
+          "market_name": {
+            "type": "string",
+            "title": "Market Name"
+          },
+          "api_version": {
+            "type": "string",
+            "title": "Api Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "online",
+          "min_exe_version",
+          "poll_interval_sec",
+          "market_name",
+          "api_version"
+        ],
+        "title": "MetaStatus"
+      },
+      "StateItem": {
+        "properties": {
+          "fill_type": {
+            "type": "string",
+            "title": "Fill Type"
+          },
+          "fill_level": {
+            "type": "integer",
+            "title": "Fill Level"
+          },
+          "trend": {
+            "type": "number",
+            "title": "Trend",
+            "description": "Price multiplier 0.70-1.30, without Great Demand bonus"
+          },
+          "great_demand": {
+            "type": "boolean",
+            "title": "Great Demand"
+          },
+          "great_demand_bonus": {
+            "type": "number",
+            "title": "Great Demand Bonus",
+            "description": "Added to trend by the mod while great_demand is true"
+          },
+          "great_demand_remaining": {
+            "type": "integer",
+            "title": "Great Demand Remaining"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fill_type",
+          "fill_level",
+          "trend",
+          "great_demand",
+          "great_demand_bonus",
+          "great_demand_remaining",
+          "status"
+        ],
+        "title": "StateItem"
+      },
+      "Status": {
+        "type": "string",
+        "enum": [
+          "APPROVED",
+          "PENDING",
+          "REJECTED"
+        ],
+        "title": "Status",
+        "description": "Moderation status of a fill type (interface spec §3.2)."
+      },
+      "TransactionRequest": {
+        "properties": {
+          "tx_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Tx Id",
+            "description": "Idempotency key, from the transaction file name",
+            "examples": [
+              "1729512015_1"
+            ]
+          },
+          "fill_type": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Fill Type",
+            "examples": [
+              "WHEAT"
+            ]
+          },
+          "amount": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Amount",
+            "description": "Liters",
+            "examples": [
+              50000
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/TransactionType"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tx_id",
+          "fill_type",
+          "amount",
+          "type"
+        ],
+        "title": "TransactionRequest"
+      },
+      "TransactionType": {
+        "type": "string",
+        "enum": [
+          "BUY",
+          "SELL"
+        ],
+        "title": "TransactionType"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WhitelistItem": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name",
+            "examples": [
+              "WHEAT"
+            ]
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "examples": [
+              "Weizen"
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "examples": [
+              "GRAINS"
+            ]
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type",
+            "examples": [
+              "BULK"
+            ]
+          },
+          "base_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Price",
+            "examples": [
+              0.333
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "examples": [
+              "BASEGAME"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "WhitelistItem"
+      },
+      "WhitelistRequest": {
+        "properties": {
+          "lang": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lang",
+            "examples": [
+              "de"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WhitelistItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "WhitelistRequest"
+      }
+    }
+  }
+}

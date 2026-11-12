@@ -1,0 +1,29 @@
+//! Backend service abstraction, local simulation mock, and FastAPI v2.0 HTTP client (`docs/openapi.json`).
+
+pub mod fastapi;
+pub mod mock;
+pub mod types;
+
+use crate::api::types::{
+    MarketStateResponse, ServerHandshake, TransactionRequest, WhitelistSyncRequest,
+};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ApiError {
+    #[error("Network error: {0}")]
+    Network(String),
+    #[error("Validation error: {0}")]
+    Validation(String),
+    #[error("Unauthorized (invalid X-Market-Token)")]
+    Unauthorized,
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+pub trait BackendService: Send + Sync {
+    fn check_status(&self) -> Result<ServerHandshake, ApiError>;
+    fn sync_whitelist(&self, req: WhitelistSyncRequest) -> Result<MarketStateResponse, ApiError>;
+    fn fetch_market_state(&self) -> Result<MarketStateResponse, ApiError>;
+    fn submit_transaction(&self, tx: TransactionRequest) -> Result<MarketStateResponse, ApiError>;
+}

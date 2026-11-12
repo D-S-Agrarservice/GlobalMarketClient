@@ -1,0 +1,226 @@
+//! System tray integration, localized context menu, window close-to-tray handling,
+//! and native OS desktop notifications (works reliably even while hidden in tray).
+
+use crate::bridge::coordinator::BridgeManager;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{App, AppHandle, Manager, Wry};
+use tauri_plugin_notification::NotificationExt;
+
+pub const TRAY_ID: &str = "main-tray";
+const MENU_SHOW_ID: &str = "tray_show";
+const MENU_QUIT_ID: &str = "tray_quit";
+
+/// Tracks whether an explicit quit was requested (via Tray menu or UI Quit button)
+/// so the window `CloseRequested` interceptor never blocks a real shutdown.
+#[derive(Default)]
+pub struct AppExitState {
+    is_quitting: AtomicBool,
+}
+
+impl AppExitState {
+    pub fn mark_quitting(&self) {
+        self.is_quitting.store(true, Ordering::SeqCst);
+    }
+
+    pub fn swap_quitting(&self) -> bool {
+        self.is_quitting.swap(true, Ordering::SeqCst)
+    }
+
+    pub fn is_quitting(&self) -> bool {
+        self.is_quitting.load(Ordering::SeqCst)
+    }
+}
+
+struct TrayLabels {
+    show_window: &'static str,
+    quit_app: &'static str,
+}
+
+pub fn format_brand_title(game_edition: Option<&str>) -> String {
+    match game_edition.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(ed) => format!("{ed} GlobalMarket"),
+        None => "GlobalMarket".to_string(),
+    }
+}
+
+fn format_window_and_tray_title(game_edition: Option<&str>) -> String {
+    format!("{} – D-S-Agrarservice", format_brand_title(game_edition))
+}
+
+fn tray_labels(lang: &str) -> TrayLabels {
+    match lang {
+        "de" => TrayLabels {
+            show_window: "Fenster öffnen",
+            quit_app: "GlobalMarket beenden",
+        },
+        "fr" => TrayLabels {
+            show_window: "Ouvrir la fenêtre",
+            quit_app: "Quitter GlobalMarket",
+        },
+        "es" => TrayLabels {
+            show_window: "Abrir ventana",
+            quit_app: "Salir de GlobalMarket",
+        },
+        "pl" => TrayLabels {
+            show_window: "Otwórz okno",
+            quit_app: "Zakończ GlobalMarket",
+        },
+        _ => TrayLabels {
+            show_window: "Open Window",
+            quit_app: "Quit GlobalMarket",
+        },
+    }
+}
+
+fn build_tray_menu(handle: &AppHandle<Wry>, lang: &str) -> tauri::Result<Menu<Wry>> {
+    let labels = tray_labels(lang);
+    let show_item = MenuItem::with_id(handle, MENU_SHOW_ID, labels.show_window, true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(handle)?;
+    let quit_item = MenuItem::with_id(handle, MENU_QUIT_ID, labels.quit_app, true, None::<&str>)?;
+
+    Menu::with_items(handle, &[&show_item, &separator, &quit_item])
+}
+
+/// Initializes the system tray icon and context menu at startup.
+pub fn setup_system_tray(
+    app: &App,
+    initial_lang: &str,
+    game_edition: Option<&str>,
+) -> tauri::Result<()> {
+    let handle = app.handle();
+    let tooltip = format_window_and_tray_title(game_edition);
+    let menu = build_tray_menu(handle, initial_lang)?;
+
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .tooltip(&tooltip)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app_handle, event| match event.id().as_ref() {
+            MENU_SHOW_ID => restore_main_window(app_handle),
+            MENU_QUIT_ID => quit_application(app_handle),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                restore_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
+    sync_window_and_tray_edition(handle, game_edition);
+    Ok(())
+}
+
+/// Refreshes the system tray menu labels dynamically when the user switches UI language.
+pub fn update_tray_language(app_handle: &AppHandle, lang: &str, game_edition: Option<&str>) {
+    if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
+        if let Ok(menu) = build_tray_menu(app_handle, lang) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+    sync_window_and_tray_edition(app_handle, game_edition);
+}
+
+/// Updates both the main window title and system tray tooltip to match the active FS edition (`FS25`, `FS28`, etc.).
+pub fn sync_window_and_tray_edition(app_handle: &AppHandle, game_edition: Option<&str>) {
+    let full_title = format_window_and_tray_title(game_edition);
+    if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(&full_title));
+    }
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let _ = win.set_title(&full_title);
+    }
+}
+
+/// Restores, unminimizes, and focuses the main application window.
+pub fn restore_main_window(app_handle: &AppHandle) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+/// Immediately cleans up `globalMarketOnline.xml`, removes the tray icon, and exits the process cleanly
+/// without blocking the Windows main UI message loop if an HTTP timeout is mid-flight.
+pub fn quit_application(app_handle: &AppHandle) {
+    if let Some(exit_state) = app_handle.try_state::<AppExitState>() {
+        if exit_state.swap_quitting() {
+            return;
+        }
+    }
+
+    let _ = app_handle.remove_tray_by_id(TRAY_ID);
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let _ = win.hide();
+    }
+
+    let pending_worker = app_handle
+        .try_state::<BridgeManager>()
+        .and_then(|manager| manager.prepare_fast_exit());
+
+    let handle_clone = app_handle.clone();
+    std::thread::spawn(move || {
+        if let Some(worker) = pending_worker {
+            let start = std::time::Instant::now();
+            while !worker.is_finished() && start.elapsed() < std::time::Duration::from_millis(400) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if worker.is_finished() {
+                let _ = worker.join();
+            }
+        }
+        handle_clone.exit(0);
+    });
+}
+
+/// Dispatches a localized native OS desktop notification for a newly started Great Demand.
+pub fn send_great_demand_os_notification(
+    app_handle: &AppHandle,
+    lang: &str,
+    game_edition: Option<&str>,
+    item_title: &str,
+    bonus_percent: u32,
+) {
+    let brand = format_brand_title(game_edition);
+    let (title, body) = match lang {
+        "de" => (
+            format!("{brand} – Große Nachfrage!"),
+            format!("{item_title}: Jetzt +{bonus_percent}% Verkaufsbonus auf dem Weltmarkt!"),
+        ),
+        "fr" => (
+            format!("{brand} – Forte demande !"),
+            format!("{item_title} : +{bonus_percent}% de bonus de vente sur le marché mondial !"),
+        ),
+        "es" => (
+            format!("{brand} – ¡Gran demanda!"),
+            format!("{item_title}: ¡+{bonus_percent}% de bonificación de venta en el mercado global!"),
+        ),
+        "pl" => (
+            format!("{brand} – Duży popyt!"),
+            format!("{item_title}: Teraz +{bonus_percent}% premii za sprzedaż na rynku globalnym!"),
+        ),
+        _ => (
+            format!("{brand} – Great Demand!"),
+            format!("{item_title}: +{bonus_percent}% selling bonus active on the Global Market!"),
+        ),
+    };
+
+    let _ = app_handle
+        .notification()
+        .builder()
+        .title(&title)
+        .body(&body)
+        .show();
+}
