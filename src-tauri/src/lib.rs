@@ -19,6 +19,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppExitState::default())
         .setup(|app| {
             let config_dir = app
@@ -76,6 +78,7 @@ pub fn run() {
             commands::reset_access_tier,
             commands::generate_diagnostic_report,
             commands::quit_app,
+            commands::prepare_for_update,
             commands::mock_trigger_great_demand,
             commands::mock_approve_pending,
             commands::mock_set_offline,

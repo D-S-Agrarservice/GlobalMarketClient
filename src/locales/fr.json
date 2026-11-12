@@ -143,5 +143,15 @@
   "toastPathUpdated": "Dossier de profil mis à jour.",
   "toastGreatDemand": "Forte demande : {title} (+{bonus}%)",
   "toastAccessUnlocked": "Mode débloqué : {tier}",
-  "toastAccessReset": "Retour au mode utilisateur standard."
+  "toastAccessReset": "Retour au mode utilisateur standard.",
+  "updateAvailableTitle": "Nouvelle mise à jour disponible : v{version}",
+  "updateAvailableDesc": "La mise à jour signée v{version} est prête (installée : v{currentVersion}). L’installation en 1 clic redémarrera l’application.",
+  "updateInstallBtn": "Installer (v{version})",
+  "updateDownloading": "Téléchargement… {percent}%",
+  "updateInstalling": "Installation & redémarrage…",
+  "settingsCheckUpdatesBtn": "Vérifier les mises à jour",
+  "settingsCheckingUpdates": "Vérification…",
+  "toastUpToDate": "L’application est à jour (v{version}).",
+  "toastUpdateFound": "Mise à jour v{version} trouvée – prête à être installée !",
+  "toastUpdateFailed": "Échec de la mise à jour auto ({error}). Ouverture de GitHub Releases…"
 }

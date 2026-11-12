@@ -143,5 +143,15 @@
   "toastPathUpdated": "Profile folder updated.",
   "toastGreatDemand": "Great Demand: {title} (+{bonus}%)",
   "toastAccessUnlocked": "Access mode unlocked: {tier}",
-  "toastAccessReset": "Returned to Standard User mode."
+  "toastAccessReset": "Returned to Standard User mode.",
+  "updateAvailableTitle": "New App Update Available: v{version}",
+  "updateAvailableDesc": "Signed update v{version} is ready (installed: v{currentVersion}). 1-click install will restart the app automatically.",
+  "updateInstallBtn": "Install Update (v{version})",
+  "updateDownloading": "Downloading update… {percent}%",
+  "updateInstalling": "Installing & restarting…",
+  "settingsCheckUpdatesBtn": "Check for Updates",
+  "settingsCheckingUpdates": "Checking…",
+  "toastUpToDate": "You are running the latest version (v{version}).",
+  "toastUpdateFound": "Update v{version} found – ready for 1-click install!",
+  "toastUpdateFailed": "Auto-update failed ({error}). Opening GitHub Releases…"
 }

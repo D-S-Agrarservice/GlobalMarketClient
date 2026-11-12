@@ -143,5 +143,15 @@
   "toastPathUpdated": "Zaktualizowano folder profilu.",
   "toastGreatDemand": "Duży popyt: {title} (+{bonus}%)",
   "toastAccessUnlocked": "Odblokowano tryb: {tier}",
-  "toastAccessReset": "Przywrócono standardowy tryb użytkownika."
+  "toastAccessReset": "Przywrócono standardowy tryb użytkownika.",
+  "updateAvailableTitle": "Dostępna nowa aktualizacja aplikacji: v{version}",
+  "updateAvailableDesc": "Podpisana aktualizacja v{version} jest gotowa (zainstalowana: v{currentVersion}). Instalacja 1 kliknięciem uruchomi ponownie aplikację.",
+  "updateInstallBtn": "Zainstaluj (v{version})",
+  "updateDownloading": "Pobieranie… {percent}%",
+  "updateInstalling": "Instalowanie i restart…",
+  "settingsCheckUpdatesBtn": "Sprawdź aktualizacje",
+  "settingsCheckingUpdates": "Sprawdzanie…",
+  "toastUpToDate": "Masz najnowszą wersję aplikacji (v{version}).",
+  "toastUpdateFound": "Znaleziono aktualizację v{version} – gotowa do instalacji!",
+  "toastUpdateFailed": "Błąd automatycznej aktualizacji ({error}). Otwieranie GitHub Releases…"
 }

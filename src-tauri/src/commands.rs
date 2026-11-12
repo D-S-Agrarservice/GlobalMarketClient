@@ -85,6 +85,17 @@ pub fn quit_app(app_handle: AppHandle) {
 }
 
 #[tauri::command]
+pub fn prepare_for_update(
+    app_handle: AppHandle,
+    bridge: State<'_, BridgeManager>,
+    exit_state: State<'_, crate::tray::AppExitState>,
+) {
+    exit_state.mark_quitting();
+    let _ = app_handle;
+    bridge.shutdown();
+}
+
+#[tauri::command]
 pub fn mock_trigger_great_demand(
     fill_type: Option<String>,
     bridge: State<'_, BridgeManager>,

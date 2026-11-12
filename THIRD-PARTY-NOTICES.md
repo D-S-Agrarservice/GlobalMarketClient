@@ -6,7 +6,7 @@
 
 | Component | Version | SPDX License | Copyright / Maintainers | Upstream Repository |
 | :--- | :--- | :--- | :--- | :--- |
-| `tauri` & Official Plugins (`clipboard-manager`, `dialog`, `notification`, `opener`) | `2.x` | `Apache-2.0 OR MIT` | The Tauri Programme within The Commons Conservancy | https://github.com/tauri-apps/tauri |
+| `tauri` & Official Plugins (`clipboard-manager`, `dialog`, `notification`, `opener`, `process`, `updater`) | `2.x` | `Apache-2.0 OR MIT` | The Tauri Programme within The Commons Conservancy | https://github.com/tauri-apps/tauri |
 | `tokio` | `1.x` | `MIT` | Tokio Contributors | https://github.com/tokio-rs/tokio |
 | `reqwest` | `0.12.x` | `MIT OR Apache-2.0` | Sean McArthur & Contributors | https://github.com/seanmonstar/reqwest |
 | `rustls` | `0.23.x` | `Apache-2.0 OR ISC OR MIT` | Joe Birr-Pixton & Rustls Contributors | https://github.com/rustls/rustls |

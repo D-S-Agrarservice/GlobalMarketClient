@@ -143,5 +143,15 @@
   "toastPathUpdated": "Carpeta de perfil actualizada.",
   "toastGreatDemand": "Gran demanda: {title} (+{bonus}%)",
   "toastAccessUnlocked": "Modo desbloqueado: {tier}",
-  "toastAccessReset": "Modo de usuario estándar restaurado."
+  "toastAccessReset": "Modo de usuario estándar restaurado.",
+  "updateAvailableTitle": "Nueva actualización disponible: v{version}",
+  "updateAvailableDesc": "La actualización firmada v{version} está lista (instalada: v{currentVersion}). La instalación en 1 clic reiniciará la app.",
+  "updateInstallBtn": "Instalar (v{version})",
+  "updateDownloading": "Descargando… {percent}%",
+  "updateInstalling": "Instalando y reiniciando…",
+  "settingsCheckUpdatesBtn": "Buscar actualizaciones",
+  "settingsCheckingUpdates": "Buscando…",
+  "toastUpToDate": "La aplicación está actualizada (v{version}).",
+  "toastUpdateFound": "Actualización v{version} encontrada – ¡lista para instalar!",
+  "toastUpdateFailed": "Error de actualización automática ({error}). Abriendo GitHub Releases…"
 }

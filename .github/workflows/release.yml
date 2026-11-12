@@ -1,0 +1,107 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag name (e.g. v1.0.0)"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    name: Release (${{ matrix.label }})
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            label: Windows x64
+            args: ""
+          - platform: macos-latest
+            label: macOS Universal
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            label: Linux x64
+            args: ""
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Detect signing configuration
+        id: signing
+        shell: bash
+        env:
+          SIGN_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SIGN_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "extra_args=--config src-tauri/tauri.updater.conf.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "extra_args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build & upload GlobalMarketClient bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          GM_EXTENDED_KEY_DIGEST: ${{ secrets.GM_EXTENDED_KEY_DIGEST }}
+          GM_DEVELOPER_KEY_DIGEST: ${{ secrets.GM_DEVELOPER_KEY_DIGEST }}
+        with:
+          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+          releaseName: "GlobalMarketClient ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}"
+          releaseBody: |
+            ## GlobalMarketClient ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }} (`D-S-Agrarservice`)
+
+            Cross-platform companion application for the Farming Simulator **GlobalMarket** mod.
+
+            ### Downloads
+            - **Windows (10/11 x64):** `GlobalMarketClient_x.x.x_x64-setup.exe`
+            - **macOS (Apple Silicon & Intel Universal):** `GlobalMarketClient_x.x.x_universal.dmg`
+            - **Linux (Ubuntu/Debian/SteamOS x64):** `.AppImage` / `.deb`
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: ${{ steps.signing.outputs.enabled == 'true' }}
+          args: ${{ matrix.args }} ${{ steps.signing.outputs.extra_args }}

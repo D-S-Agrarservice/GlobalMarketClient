@@ -42,5 +42,16 @@
         "installMode": "currentUser"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCRTcwOTk0Q0MxMUUzNkQKUldSdDR4SE1sQW5uNjd6YkpTRDNSWDRNaGVGZmRsWEJMTEEwLzJibkozMWszYzBIaFRRK0dFZzAK",
+      "endpoints": [
+        "https://github.com/D-S-Agrarservice/GlobalMarketClient/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

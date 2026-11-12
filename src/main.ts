@@ -8,6 +8,8 @@ import {
   requestPermission,
 } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check as checkAppUpdate, type Update } from "@tauri-apps/plugin-updater";
 import dsaLogoUrl from "./assets/dsa-logo.png";
 import {
   formatAccessTierName,
@@ -60,6 +62,10 @@ interface UiState {
   mockLockedMinVersion: boolean;
   copiedDiagFeedback: boolean;
   toastMessage: string | null;
+  checkingForUpdate: boolean;
+  availableUpdateVersion: string | null;
+  updateInstallingState: "idle" | "downloading" | "installing";
+  updateDownloadPercent: number;
 }
 
 const state: UiState = {
@@ -113,7 +119,13 @@ const state: UiState = {
   mockLockedMinVersion: false,
   copiedDiagFeedback: false,
   toastMessage: null,
+  checkingForUpdate: false,
+  availableUpdateVersion: null,
+  updateInstallingState: "idle",
+  updateDownloadPercent: 0,
 };
+
+let pendingAppUpdate: Update | null = null;
 
 let toastTimer: number | undefined;
 let copyFeedbackTimer: number | undefined;
@@ -166,6 +178,115 @@ async function ensureNotificationPermissionIfEnabled(): Promise<void> {
     }
   } catch {
     // Ignore outside Tauri runtime or on platforms without explicit permission prompt.
+  }
+}
+
+async function checkForAppUpdates(manual: boolean): Promise<void> {
+  if (state.checkingForUpdate || state.updateInstallingState !== "idle") {
+    return;
+  }
+  state.checkingForUpdate = true;
+  if (manual && state.activeModal === "settings") {
+    renderModalOnly();
+  }
+
+  try {
+    const found = await checkAppUpdate({ timeout: 8000 });
+    if (pendingAppUpdate && pendingAppUpdate !== found) {
+      try {
+        await pendingAppUpdate.close();
+      } catch {
+        // Ignore cleanup errors on previous resource handle.
+      }
+    }
+    pendingAppUpdate = found;
+    state.availableUpdateVersion = found ? found.version : null;
+    state.checkingForUpdate = false;
+
+    if (state.activeModal === "settings") {
+      renderModalOnly();
+    }
+    renderDashboardOnly();
+
+    if (manual) {
+      if (found) {
+        state.activeModal = "none";
+        renderModalOnly();
+        showToast(t("toastUpdateFound", { version: found.version }));
+      } else {
+        showToast(t("toastUpToDate", { version: state.info.appVersion }));
+      }
+    }
+  } catch {
+    state.checkingForUpdate = false;
+    if (state.activeModal === "settings") {
+      renderModalOnly();
+    }
+    if (manual) {
+      // Before the first public release is published (or when offline), latest.json returns 404;
+      // surface a calm up-to-date notice rather than a raw HTTP error.
+      showToast(t("toastUpToDate", { version: state.info.appVersion }));
+    }
+  }
+}
+
+async function installPendingAppUpdate(): Promise<void> {
+  if (!pendingAppUpdate || state.updateInstallingState !== "idle") {
+    void openExternalUrl(GITHUB_RELEASES_URL);
+    return;
+  }
+
+  state.updateInstallingState = "downloading";
+  state.updateDownloadPercent = 0;
+  renderDashboardOnly();
+
+  let totalBytes = 0;
+  let receivedBytes = 0;
+
+  try {
+    await pendingAppUpdate.download((ev) => {
+      if (ev.event === "Started") {
+        totalBytes = ev.data.contentLength ?? 0;
+        receivedBytes = 0;
+      } else if (ev.event === "Progress") {
+        receivedBytes += ev.data.chunkLength;
+        if (totalBytes > 0) {
+          const pct = Math.min(99, Math.round((receivedBytes / totalBytes) * 100));
+          if (pct !== state.updateDownloadPercent) {
+            state.updateDownloadPercent = pct;
+            const labelEl = document.querySelector<HTMLSpanElement>("#update-btn-label");
+            const barEl = document.querySelector<HTMLDivElement>("#update-progress-bar");
+            if (labelEl) {
+              labelEl.textContent = t("updateDownloading", { percent: pct });
+            }
+            if (barEl) {
+              barEl.style.width = `${pct}%`;
+            }
+          }
+        }
+      } else if (ev.event === "Finished") {
+        state.updateDownloadPercent = 100;
+      }
+    });
+
+    state.updateInstallingState = "installing";
+    state.updateDownloadPercent = 100;
+    renderDashboardOnly();
+
+    try {
+      await invoke("prepare_for_update");
+    } catch {
+      // Proceed with installation even if worker was already stopped.
+    }
+
+    await pendingAppUpdate.install({ restartAfterInstall: true });
+    await relaunch();
+  } catch (err) {
+    state.updateInstallingState = "idle";
+    state.updateDownloadPercent = 0;
+    renderDashboardOnly();
+    showToast(t("toastUpdateFailed", { error: String(err) }));
+    void openExternalUrl(GITHUB_RELEASES_URL);
   }
 }
 
@@ -435,35 +556,111 @@ function renderDashboardHtml(): string {
         ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/35 hover:border-cyan-400 transition cursor-pointer">${escapeHtml(t("tierBadgeExtended"))}</button>`
         : "";
 
+  const updateBtnLabel =
+    state.updateInstallingState === "downloading"
+      ? t("updateDownloading", { percent: state.updateDownloadPercent })
+      : state.updateInstallingState === "installing"
+        ? t("updateInstalling")
+        : state.availableUpdateVersion
+          ? t("updateInstallBtn", { version: state.availableUpdateVersion })
+          : t("outdatedAction");
+
+  const updateProgressBarHtml =
+    state.updateInstallingState !== "idle"
+      ? `
+        <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-zinc-900/90">
+          <div id="update-progress-bar" class="h-full bg-[#ff9600] transition-all duration-150" style="width: ${state.updateDownloadPercent}%"></div>
+        </div>
+      `
+      : "";
+
   const outdatedBannerHtml =
     state.snapshot.state === "outdated"
       ? `
-      <div class="flex items-center justify-between gap-3 rounded-lg border border-red-500/50 bg-red-950/40 px-3.5 py-2.5 text-xs">
-        <div class="min-w-0">
-          <p class="font-semibold text-red-200">
-            ${escapeHtml(
-              t("outdatedTitle", { minVersion: state.snapshot.minExeVersion }),
-            )}
-          </p>
-          <p class="text-red-300/90 mt-0.5">
-            ${escapeHtml(
-              t("outdatedDesc", {
-                minVersion: state.snapshot.minExeVersion,
-                currentVersion: state.snapshot.exeVersion,
-              }),
-            )}
-          </p>
+      <div class="rounded-lg border border-red-500/50 bg-red-950/40 px-3.5 py-2.5 text-xs">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="font-semibold text-red-200">
+              ${escapeHtml(
+                t("outdatedTitle", { minVersion: state.snapshot.minExeVersion }),
+              )}
+            </p>
+            <p class="text-red-300/90 mt-0.5">
+              ${escapeHtml(
+                t("outdatedDesc", {
+                  minVersion: state.snapshot.minExeVersion,
+                  currentVersion: state.snapshot.exeVersion,
+                }),
+              )}
+            </p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${
+              state.availableUpdateVersion
+                ? `
+              <button
+                id="btn-install-update"
+                type="button"
+                ${state.updateInstallingState !== "idle" ? "disabled" : ""}
+                class="rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] disabled:opacity-70 transition cursor-pointer"
+              >
+                ⬇ <span id="update-btn-label">${escapeHtml(updateBtnLabel)}</span>
+              </button>
+              <button
+                id="btn-open-releases"
+                type="button"
+                class="rounded-md border border-zinc-700 bg-zinc-900/70 px-2.5 py-1.5 text-xs font-medium text-zinc-200 hover:border-[#ff9600] transition cursor-pointer"
+              >
+                GitHub ↗
+              </button>
+            `
+                : `
+              <button
+                id="btn-open-releases"
+                type="button"
+                class="rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] transition cursor-pointer"
+              >
+                ${escapeHtml(t("outdatedAction"))}
+              </button>
+            `
+            }
+          </div>
         </div>
-        <button
-          id="btn-open-releases"
-          type="button"
-          class="shrink-0 rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] transition cursor-pointer"
-        >
-          ${escapeHtml(t("outdatedAction"))}
-        </button>
+        ${updateProgressBarHtml}
       </div>
     `
-      : "";
+      : state.availableUpdateVersion
+        ? `
+      <div class="rounded-lg border border-[#ff9600]/45 bg-[#ff9600]/10 px-3.5 py-2.5 text-xs">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="font-semibold text-[#ff9600]">
+              ⬆ ${escapeHtml(
+                t("updateAvailableTitle", { version: state.availableUpdateVersion }),
+              )}
+            </p>
+            <p class="text-zinc-300 mt-0.5">
+              ${escapeHtml(
+                t("updateAvailableDesc", {
+                  version: state.availableUpdateVersion,
+                  currentVersion: state.info.appVersion,
+                }),
+              )}
+            </p>
+          </div>
+          <button
+            id="btn-install-update"
+            type="button"
+            ${state.updateInstallingState !== "idle" ? "disabled" : ""}
+            class="shrink-0 rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] disabled:opacity-70 transition cursor-pointer"
+          >
+            ⬇ <span id="update-btn-label">${escapeHtml(updateBtnLabel)}</span>
+          </button>
+        </div>
+        ${updateProgressBarHtml}
+      </div>
+    `
+        : "";
 
   const gdLabels = resolveGreatDemandDisplayNames();
   const gdText =
@@ -1131,20 +1328,35 @@ function renderSettingsModalHtml(): string {
             </div>
           </div>
 
-          <div class="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+          <div class="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-zinc-800">
             <button
-              id="btn-cancel-modal"
+              id="btn-check-updates"
               type="button"
-              class="rounded-md border border-zinc-700 bg-zinc-800 px-3.5 py-1.5 font-medium text-zinc-200 hover:bg-zinc-700 transition cursor-pointer"
+              ${state.checkingForUpdate || state.updateInstallingState !== "idle" ? "disabled" : ""}
+              class="rounded-md border border-zinc-700 bg-[#18181b] px-3 py-1.5 font-medium text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] disabled:opacity-60 transition cursor-pointer"
             >
-              ${escapeHtml(t("settingsCancel"))}
+              🔄 ${escapeHtml(
+                state.checkingForUpdate
+                  ? t("settingsCheckingUpdates")
+                  : t("settingsCheckUpdatesBtn"),
+              )}
             </button>
-            <button
-              type="submit"
-              class="rounded-md bg-[#ff9600] px-4 py-1.5 font-semibold text-zinc-950 hover:bg-[#ffa726] transition cursor-pointer"
-            >
-              ${escapeHtml(t("settingsSave"))}
-            </button>
+
+            <div class="flex items-center gap-2 ml-auto">
+              <button
+                id="btn-cancel-modal"
+                type="button"
+                class="rounded-md border border-zinc-700 bg-zinc-800 px-3.5 py-1.5 font-medium text-zinc-200 hover:bg-zinc-700 transition cursor-pointer"
+              >
+                ${escapeHtml(t("settingsCancel"))}
+              </button>
+              <button
+                type="submit"
+                class="rounded-md bg-[#ff9600] px-4 py-1.5 font-semibold text-zinc-950 hover:bg-[#ffa726] transition cursor-pointer"
+              >
+                ${escapeHtml(t("settingsSave"))}
+              </button>
+            </div>
           </div>
         </form>
       </div>
@@ -1693,6 +1905,10 @@ function bindDashboardEvents(): void {
     });
 
   document
+    .querySelector<HTMLButtonElement>("#btn-install-update")
+    ?.addEventListener("click", () => void installPendingAppUpdate());
+
+  document
     .querySelector<HTMLButtonElement>("#btn-open-releases")
     ?.addEventListener("click", () => void openExternalUrl(GITHUB_RELEASES_URL));
 
@@ -1973,6 +2189,10 @@ function bindModalEvents(): void {
   });
 
   document
+    .querySelector<HTMLButtonElement>("#btn-check-updates")
+    ?.addEventListener("click", () => void checkForAppUpdates(true));
+
+  document
     .querySelector<HTMLFormElement>("#form-settings")
     ?.addEventListener("submit", async (ev) => {
       ev.preventDefault();
@@ -2109,9 +2329,11 @@ async function bootstrap(): Promise<void> {
   }
 
   void ensureNotificationPermissionIfEnabled();
+  void checkForAppUpdates(false);
 
   try {
     await listen<BridgeSnapshot>("bridge://status", (event) => {
+      const wasOutdated = state.snapshot.state === "outdated";
       const prevTier = getEffectiveTier();
       const prevSig = JSON.stringify({
         ...state.snapshot,
@@ -2133,6 +2355,9 @@ async function bootstrap(): Promise<void> {
         lastSyncUnix:
           nextTier === "user" ? null : state.snapshot.lastSyncUnix,
       });
+      if (!wasOutdated && event.payload.state === "outdated" && !state.availableUpdateVersion) {
+        void checkForAppUpdates(false);
+      }
       if (prevSig !== nextSig) {
         renderDashboardOnly();
       } else {
