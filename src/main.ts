@@ -32,6 +32,7 @@ import {
   GITHUB_RELEASES_URL,
   GITHUB_REPO_URL,
   type GreatDemandNotification,
+  type HeartbeatTickPayload,
   LOCAL_DEV_BACKEND_URL,
   type LogEntry,
   OFFICIAL_DEV_BACKEND_URL,
@@ -98,6 +99,8 @@ const state: UiState = {
     writeQueueCount: 0,
     activeGreatDemands: [],
     activeGreatDemandCodes: [],
+    heartbeatSeq: 0,
+    lastHeartbeatUnix: null,
     lastSyncUnix: null,
     lastError: null,
   },
@@ -309,6 +312,79 @@ function resolveGreatDemandDisplayNames(): string[] {
   return titles;
 }
 
+function formatLifebitTooltip(seq: number, lastUnix: number | null): string {
+  if (seq > 0 && lastUnix !== null) {
+    return t("lifebitTooltip", {
+      seq,
+      time: formatLocalTime(lastUnix * 1000),
+    });
+  }
+  return t("lifebitWaitingTooltip");
+}
+
+function formatSnapshotError(rawError: string | null): string | null {
+  if (!rawError) return null;
+  const slotMatch = /^Key slot limit reached \(max\. (\d+) active client slots\)$/i.exec(
+    rawError.trim(),
+  );
+  if (slotMatch) {
+    return t("logTokenSlotLimitReached", { maxSlots: slotMatch[1] });
+  }
+  if (rawError.startsWith("Unauthorized (")) {
+    return t("logTokenInvalid");
+  }
+  return rawError;
+}
+
+function syncLifebitLedsInPlace(seq: number, lastUnix: number | null): void {
+  const pill = document.querySelector<HTMLDivElement>("#status-pill");
+  if (pill && state.snapshot.state === "online") {
+    pill.title = formatLifebitTooltip(seq, lastUnix);
+  }
+
+  const ledA = document.querySelector<HTMLSpanElement>("#lifebit-led-a");
+  const ledB = document.querySelector<HTMLSpanElement>("#lifebit-led-b");
+  if (ledA && ledB) {
+    const bitOne = seq > 0 && seq % 2 === 1;
+    const bitZeroActive = seq > 0 && seq % 2 === 0;
+    ledA.className = bitOne
+      ? "inline-block h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.95)] transition-all duration-300"
+      : "inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/25 transition-all duration-300";
+    ledB.className = bitZeroActive
+      ? "inline-block h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.95)] transition-all duration-300"
+      : "inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/25 transition-all duration-300";
+  }
+
+  const debugVal = document.querySelector<HTMLSpanElement>("#debug-lifebit-val");
+  if (debugVal) {
+    debugVal.textContent = seq > 0 ? `#${seq} (${seq % 2})` : "—";
+  }
+}
+
+function triggerLifebitPulseInPlace(seq: number, timestampUnix: number): void {
+  state.snapshot.heartbeatSeq = seq;
+  state.snapshot.lastHeartbeatUnix = timestampUnix;
+  if (state.snapshot.state !== "online") {
+    return;
+  }
+
+  syncLifebitLedsInPlace(seq, timestampUnix);
+
+  const ring = document.querySelector<HTMLSpanElement>("#status-pulse-ring");
+  if (ring) {
+    ring.classList.remove("dsa-lifebit-ring-active");
+    void ring.offsetWidth;
+    ring.classList.add("dsa-lifebit-ring-active");
+  }
+
+  const dot = document.querySelector<HTMLSpanElement>("#status-dot");
+  if (dot) {
+    dot.classList.remove("dsa-lifebit-dot-active");
+    void dot.offsetWidth;
+    dot.classList.add("dsa-lifebit-dot-active");
+  }
+}
+
 function renderLogEntryHtml(entry: LogEntry): string {
   const timeStr = formatLocalTime(entry.timestampMs);
   const localizedMsg = formatLogEntryMessage(entry);
@@ -432,15 +508,21 @@ function renderDashboardHtml(): string {
   const lastSyncFormatted = state.snapshot.lastSyncUnix
     ? formatLocalTime(state.snapshot.lastSyncUnix * 1000)
     : "—";
+  const hbSeq = state.snapshot.heartbeatSeq ?? 0;
+  const lifebitDebugFormatted = hbSeq > 0 ? `#${hbSeq} (${hbSeq % 2})` : "—";
 
   const extendedDebugStripHtml = isExtendedOrDev
     ? `
       <div class="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-zinc-800/80 text-[11px] text-zinc-400 font-mono">
-        <div class="truncate max-w-[58%]" title="${escapeHtml(state.snapshot.bridgePath ?? "—")}">
+        <div class="truncate max-w-[52%]" title="${escapeHtml(state.snapshot.bridgePath ?? "—")}">
           <span class="font-sans text-zinc-500">${escapeHtml(t("debugBridgeLabel"))}</span>
           <span class="text-zinc-300">${escapeHtml(state.snapshot.bridgePath ?? "—")}</span>
         </div>
         <div class="flex items-center gap-3 shrink-0">
+          <span>
+            <span class="font-sans text-zinc-500">${escapeHtml(t("debugLifebitLabel"))}</span>
+            <span id="debug-lifebit-val" class="text-emerald-300">${lifebitDebugFormatted}</span>
+          </span>
           <span>
             <span class="font-sans text-zinc-500">${escapeHtml(t("debugQueuesLabel"))}</span>
             R:${state.snapshot.readQueueCount} / W:${state.snapshot.writeQueueCount}
@@ -649,9 +731,43 @@ function renderDashboardHtml(): string {
           type="button"
           class="mt-0.5 text-xs font-semibold text-zinc-200 focus:outline-none cursor-default select-none max-w-[260px] truncate"
         >${escapeHtml(displayMarketName)}</button>
-        <div class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1 text-xs font-semibold ${conn.pillClass}">
-          <span class="inline-block h-2.5 w-2.5 rounded-full ${conn.dotClass}"></span>
+        <div
+          id="status-pill"
+          title="${
+            state.snapshot.state === "online"
+              ? escapeHtml(
+                  formatLifebitTooltip(
+                    hbSeq,
+                    state.snapshot.lastHeartbeatUnix ?? null,
+                  ),
+                )
+              : ""
+          }"
+          class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1 text-xs font-semibold ${conn.pillClass}"
+        >
+          <span class="relative inline-flex h-2.5 w-2.5 items-center justify-center">
+            <span id="status-pulse-ring" class="pointer-events-none absolute inset-0 rounded-full ${
+              state.snapshot.state === "online" ? "bg-emerald-400/75 opacity-0" : "opacity-0"
+            }"></span>
+            <span id="status-dot" class="relative inline-block h-2.5 w-2.5 rounded-full ${conn.dotClass}"></span>
+          </span>
           <span>${escapeHtml(conn.label)}</span>
+          ${
+            state.snapshot.state === "online"
+              ? `<span class="ml-0.5 inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-950/75 px-1.5 py-0.5" aria-hidden="true">
+                  <span id="lifebit-led-a" class="${
+                    hbSeq > 0 && hbSeq % 2 === 1
+                      ? "inline-block h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.95)] transition-all duration-300"
+                      : "inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/25 transition-all duration-300"
+                  }"></span>
+                  <span id="lifebit-led-b" class="${
+                    hbSeq > 0 && hbSeq % 2 === 0
+                      ? "inline-block h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_6px_rgba(110,231,183,0.95)] transition-all duration-300"
+                      : "inline-block h-1.5 w-1.5 rounded-full bg-emerald-500/25 transition-all duration-300"
+                  }"></span>
+                </span>`
+              : ""
+          }
         </div>
       </div>
 
@@ -750,11 +866,12 @@ function renderDashboardHtml(): string {
         </div>
       </div>
 
-      ${
-        state.snapshot.lastError
-          ? `<div class="text-red-400 text-[11px] truncate" title="${escapeHtml(state.snapshot.lastError)}">⚠ ${escapeHtml(state.snapshot.lastError)}</div>`
-          : ""
-      }
+      ${(() => {
+        const displayErr = formatSnapshotError(state.snapshot.lastError);
+        return displayErr
+          ? `<div class="text-red-400 text-[11px] truncate" title="${escapeHtml(displayErr)}">⚠ ${escapeHtml(displayErr)}</div>`
+          : "";
+      })()}
 
       ${extendedDebugStripHtml}
     </section>
@@ -1998,6 +2115,8 @@ async function bootstrap(): Promise<void> {
       const prevTier = getEffectiveTier();
       const prevSig = JSON.stringify({
         ...state.snapshot,
+        heartbeatSeq: 0,
+        lastHeartbeatUnix: null,
         // Ignore lastSyncUnix changes when hidden in Standard User mode so DOM stays untouched on background polls
         lastSyncUnix:
           prevTier === "user" ? null : state.snapshot.lastSyncUnix,
@@ -2009,12 +2128,23 @@ async function bootstrap(): Promise<void> {
       const nextTier = getEffectiveTier();
       const nextSig = JSON.stringify({
         ...state.snapshot,
+        heartbeatSeq: 0,
+        lastHeartbeatUnix: null,
         lastSyncUnix:
           nextTier === "user" ? null : state.snapshot.lastSyncUnix,
       });
       if (prevSig !== nextSig) {
         renderDashboardOnly();
+      } else {
+        syncLifebitLedsInPlace(
+          state.snapshot.heartbeatSeq ?? 0,
+          state.snapshot.lastHeartbeatUnix ?? null,
+        );
       }
+    });
+
+    await listen<HeartbeatTickPayload>("bridge://heartbeat", (event) => {
+      triggerLifebitPulseInPlace(event.payload.seq, event.payload.timestampUnix);
     });
 
     await listen<LogEntry>("bridge://log", (event) => {

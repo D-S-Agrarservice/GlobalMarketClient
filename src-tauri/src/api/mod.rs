@@ -17,6 +17,8 @@ pub enum ApiError {
     Validation(String),
     #[error("Unauthorized (invalid X-Market-Token)")]
     Unauthorized,
+    #[error("Key slot limit reached (max. {max_slots} active client slots)")]
+    SlotLimitReached { max_slots: u32 },
     #[error("Internal error: {0}")]
     Internal(String),
 }

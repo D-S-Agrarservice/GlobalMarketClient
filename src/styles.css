@@ -36,3 +36,38 @@
 .dsa-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #ff9600;
 }
+
+/* Lifebit / Heartbeat radar ring & dot glow triggered every 3.5s on globalMarketOnline.xml sync */
+@keyframes dsa-lifebit-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+@keyframes dsa-lifebit-dot {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+  }
+  30% {
+    transform: scale(1.22);
+    box-shadow: 0 0 14px rgba(110, 231, 183, 1);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.8);
+  }
+}
+
+.dsa-lifebit-ring-active {
+  animation: dsa-lifebit-ring 0.95s cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.dsa-lifebit-dot-active {
+  animation: dsa-lifebit-dot 0.85s ease-out forwards;
+}

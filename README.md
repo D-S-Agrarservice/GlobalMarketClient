@@ -80,8 +80,8 @@ npm run tauri build
 ### Credits & Mitwirkende
 
 * **Projektleitung, GlobalMarket-Mod & Client:** **Floowy** (*D-S-Agrarservice*)
-* **Server-Architektur & Online-Backend:** **FGBxRamel**
-* **Besonderer Dank (Ursprungsidee & LS22-Wegbereiter):** **kevink98**
+* **Server-Architektur & Online-Backend:** **FGBxRamel** (*bydora.de*)
+* **Besonderer Dank (Ursprungsidee & LS-Wegbereiter):** **kevink98**
 * **Kernteam & Projektunterstützung:** **Kastor** *(Modding-Teamleitung)*, **Murphy**, **DSA-Testteam**
 * **Ideen & Externe Fachberatung:** **Tensuko** *(Konzeptideen)*, **Farmsim Tim** *(Externe Beratung)*
 * **Tests, Anregungen & Feedback:** **Flamy**, **PascalE**, **WeekendFarmers-Testcrew**, **OMG_its_Breide**, **OnkelSander83**
@@ -136,8 +136,8 @@ npm run tauri build
 ### Credits & Acknowledgments
 
 * **Project Lead, GlobalMarket Mod & Companion Client:** **Floowy** (*D-S-Agrarservice*)
-* **Server Architecture & Online Backend:** **FGBxRamel**
-* **Special Appreciation (Original Concept & FS22 Pioneer):** **kevink98**
+* **Server Architecture & Online Backend:** **FGBxRamel** (*bydora.de*)
+* **Special Appreciation (Original Concept & FS Pioneer):** **kevink98**
 * **Core Team & Project Support:** **Kastor** *(Modding Team Lead)*, **Murphy**, **DSA-Testteam**
 * **Concept Ideas & External Consulting:** **Tensuko** *(Concept Ideas)*, **Farmsim Tim** *(External Consulting)*
 * **Testing, Suggestions & Feedback:** **Flamy**, **PascalE**, **WeekendFarmers-Testcrew**, **OMG_its_Breide**, **OnkelSander83**

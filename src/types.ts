@@ -52,8 +52,15 @@ export interface BridgeSnapshot {
   writeQueueCount: number;
   activeGreatDemands: string[];
   activeGreatDemandCodes: string[];
+  heartbeatSeq: number;
+  lastHeartbeatUnix: number | null;
   lastSyncUnix: number | null;
   lastError: string | null;
+}
+
+export interface HeartbeatTickPayload {
+  seq: number;
+  timestampUnix: number;
 }
 
 export interface LogEntry {

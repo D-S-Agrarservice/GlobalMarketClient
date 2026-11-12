@@ -79,6 +79,13 @@ pub struct GreatDemandNotification {
     pub bonus_percent: u32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeartbeatTickPayload {
+    pub seq: u64,
+    pub timestamp_unix: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeSnapshot {
@@ -102,6 +109,8 @@ pub struct BridgeSnapshot {
     pub write_queue_count: usize,
     pub active_great_demands: Vec<String>,
     pub active_great_demand_codes: Vec<String>,
+    pub heartbeat_seq: u64,
+    pub last_heartbeat_unix: Option<u64>,
     pub last_sync_unix: Option<u64>,
     pub last_error: Option<String>,
 }
@@ -151,8 +160,12 @@ impl BridgeManager {
         }
 
         let live_backend = Arc::new(
-            FastApiBackend::new(config.backend_url.clone(), config.market_token.clone())
-                .expect("HTTP client initialization failed"),
+            FastApiBackend::new(
+                config.backend_url.clone(),
+                config.market_token.clone(),
+                config.client_id.clone(),
+            )
+            .expect("HTTP client initialization failed"),
         );
         let mock_backend = Arc::new(LocalMockBackend::new());
 
@@ -179,6 +192,8 @@ impl BridgeManager {
             write_queue_count: 0,
             active_great_demands: Vec::new(),
             active_great_demand_codes: Vec::new(),
+            heartbeat_seq: 0,
+            last_heartbeat_unix: None,
             last_sync_unix: None,
             last_error: None,
         };
@@ -291,8 +306,11 @@ impl BridgeManager {
                 || guard.config.market_token != next.market_token
                 || guard.config.fs25_profile_path != next.fs25_profile_path;
 
-            self.live_backend
-                .update_connection_config(next.backend_url.clone(), next.market_token.clone());
+            self.live_backend.update_connection_config(
+                next.backend_url.clone(),
+                next.market_token.clone(),
+                next.client_id.clone(),
+            );
 
             guard.snapshot.access_tier = next.access_tier;
             guard.snapshot.backend_mode = next.backend_mode;
@@ -374,6 +392,7 @@ impl BridgeManager {
                     self.live_backend.update_connection_config(
                         guard.config.backend_url.clone(),
                         guard.config.market_token.clone(),
+                        guard.config.client_id.clone(),
                     );
                     restart = true;
                 }
@@ -419,6 +438,7 @@ impl BridgeManager {
             self.live_backend.update_connection_config(
                 guard.config.backend_url.clone(),
                 guard.config.market_token.clone(),
+                guard.config.client_id.clone(),
             );
 
             guard.snapshot.access_tier = AccessTier::User;
@@ -678,6 +698,8 @@ impl BridgeManager {
                 snap.market_name = default_market_name;
                 snap.market_logo_url = None;
                 snap.bridge_path = None;
+                snap.heartbeat_seq = 0;
+                snap.last_heartbeat_unix = None;
                 snap.last_error =
                     Some("No Farming Simulator profile folder found.".to_string());
             });
@@ -705,6 +727,8 @@ impl BridgeManager {
                     snap.market_name = default_market_name;
                     snap.market_logo_url = None;
                     snap.bridge_path = None;
+                    snap.heartbeat_seq = 0;
+                    snap.last_heartbeat_unix = None;
                     snap.last_error = Some(err.clone());
                 });
                 if let Some(ref app) = self.app_handle {
@@ -718,6 +742,8 @@ impl BridgeManager {
         if let Err(err) = paths.ensure_directories() {
             self.update_snapshot(|snap| {
                 snap.state = BridgeConnectionState::PathMissing;
+                snap.heartbeat_seq = 0;
+                snap.last_heartbeat_unix = None;
                 snap.last_error = Some(err.clone());
             });
             push_raw_log_shared(&self.shared, &self.app_handle, LogLevel::Error, err);
@@ -742,6 +768,8 @@ impl BridgeManager {
             snap.market_logo_url = default_mock_logo;
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
+            snap.heartbeat_seq = 0;
+            snap.last_heartbeat_unix = None;
             snap.last_error = None;
         });
         if let Some(ref app) = self.app_handle {
@@ -999,17 +1027,21 @@ fn run_bridge_worker(
                     is_connected = false;
                     let err_msg = err.to_string();
 
-                    let prev_state = shared.lock().ok().map(|g| g.snapshot.state);
-                    if prev_state != Some(BridgeConnectionState::BackendOffline) {
-                        push_i18n_log_shared(
+                    let should_log = shared
+                        .lock()
+                        .ok()
+                        .map(|g| {
+                            g.snapshot.state != BridgeConnectionState::BackendOffline
+                                || g.snapshot.last_error.as_deref() != Some(err_msg.as_str())
+                        })
+                        .unwrap_or(true);
+
+                    if should_log {
+                        emit_classified_backend_error(
+                            &err,
+                            LogLevel::Warn,
                             &shared,
                             &app_handle,
-                            LogLevel::Warn,
-                            "logBackendUnreachable",
-                            [("error", err_msg.clone())],
-                            format!(
-                                "Backend unreachable ({err_msg}) – automatic reconnect active."
-                            ),
                         );
                     }
 
@@ -1037,14 +1069,39 @@ fn run_bridge_worker(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             last_heartbeat = Instant::now();
             let hb_connected = is_connected && version_ok;
-            if let Err(e) = write_heartbeat_xml(
+            match write_heartbeat_xml(
                 &paths.staging_dir,
                 &paths.online_xml_file,
                 hb_connected,
                 PROTOCOL_EXE_VERSION,
                 &min_version,
             ) {
-                push_raw_log_shared(&shared, &app_handle, LogLevel::Error, e);
+                Ok(()) if hb_connected => {
+                    let now_secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let next_seq = if let Ok(mut guard) = shared.lock() {
+                        guard.snapshot.heartbeat_seq = guard.snapshot.heartbeat_seq.wrapping_add(1);
+                        guard.snapshot.last_heartbeat_unix = Some(now_secs);
+                        guard.snapshot.heartbeat_seq
+                    } else {
+                        1
+                    };
+                    if let Some(ref app) = app_handle {
+                        let _ = app.emit(
+                            "bridge://heartbeat",
+                            HeartbeatTickPayload {
+                                seq: next_seq,
+                                timestamp_unix: now_secs,
+                            },
+                        );
+                    }
+                }
+                Ok(()) => {}
+                Err(e) => {
+                    push_raw_log_shared(&shared, &app_handle, LogLevel::Error, e);
+                }
             }
         }
 
@@ -1481,6 +1538,50 @@ fn count_statuses(items: &[MarketItemDto]) -> (usize, usize, usize) {
     (approved, pending, rejected)
 }
 
+fn emit_classified_backend_error(
+    err: &ApiError,
+    default_network_level: LogLevel,
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+) {
+    match err {
+        ApiError::SlotLimitReached { max_slots } => {
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logTokenSlotLimitReached",
+                [("maxSlots", max_slots.to_string())],
+                format!(
+                    "Key slot limit reached: All {max_slots} active player slots for this Community/Logo key are currently in use."
+                ),
+            );
+        }
+        ApiError::Unauthorized => {
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logTokenInvalid",
+                [],
+                "Community/Logo key is invalid or revoked (HTTP 401/403) – please check Settings."
+                    .to_string(),
+            );
+        }
+        _ => {
+            let msg = err.to_string();
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                default_network_level,
+                "logBackendUnreachable",
+                [("error", msg.clone())],
+                format!("Backend unreachable ({msg}) – automatic reconnect active."),
+            );
+        }
+    }
+}
+
 fn handle_backend_io_error(
     err: &ApiError,
     is_connected: &mut bool,
@@ -1489,14 +1590,7 @@ fn handle_backend_io_error(
 ) {
     *is_connected = false;
     let msg = err.to_string();
-    push_i18n_log_shared(
-        shared,
-        app_handle,
-        LogLevel::Error,
-        "logBackendUnreachable",
-        [("error", msg.clone())],
-        msg.clone(),
-    );
+    emit_classified_backend_error(err, LogLevel::Error, shared, app_handle);
     emit_snapshot_update(shared, app_handle, |snap| {
         snap.state = BridgeConnectionState::BackendOffline;
         snap.last_error = Some(msg);

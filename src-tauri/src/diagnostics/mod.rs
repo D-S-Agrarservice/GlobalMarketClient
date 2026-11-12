@@ -153,11 +153,30 @@ pub fn build_diagnostic_report(
         "none (official public market)"
     };
 
-    let last_err = snapshot
+    let cid_trimmed = config.client_id.trim();
+    let slot_prefix = if cid_trimmed.len() >= 6 {
+        let head: String = cid_trimmed.chars().take(6).collect();
+        format!("{head}…")
+    } else if cid_trimmed.is_empty() {
+        "<none>".to_string()
+    } else {
+        "<short>".to_string()
+    };
+
+    let mut last_err = snapshot
         .last_error
         .as_deref()
         .map(mask_user_paths)
         .unwrap_or_else(|| "none".to_string());
+    if !cid_trimmed.is_empty() {
+        last_err = last_err.replace(cid_trimmed, "<CLIENT>");
+    }
+    if let Some(ref tok) = config.market_token {
+        let t = tok.trim();
+        if !t.is_empty() {
+            last_err = last_err.replace(t, "<REDACTED>");
+        }
+    }
 
     let gd_str = if snapshot.active_great_demands.is_empty() {
         "none".to_string()
@@ -198,6 +217,7 @@ pub fn build_diagnostic_report(
     ));
     report.push_str(&format!("market_name: \"{}\"\n", snapshot.market_name));
     report.push_str(&format!("market_token: \"{token_state}\"\n"));
+    report.push_str(&format!("client_slot_prefix: \"{slot_prefix}\"\n"));
     report.push_str(&format!(
         "connection_state: \"{} (min_exe_version={})\"\n",
         format_state(snapshot.state),
@@ -206,7 +226,8 @@ pub fn build_diagnostic_report(
     report.push_str(&format!("fs_profile_dir: \"{profile_masked}\"\n"));
     report.push_str(&format!("bridge_dir: \"{bridge_masked}\"\n"));
     report.push_str(&format!(
-        "bridge_files: \"online_xml={online_xml_exists}, read_queue={read_count}, write_queue={write_count}\"\n"
+        "bridge_files: \"online_xml={online_xml_exists}, lifebit_seq={}, read_queue={read_count}, write_queue={write_count}\"\n",
+        snapshot.heartbeat_seq
     ));
     report.push_str(&format!(
         "whitelist_items: \"approved={}, pending={}, rejected={}\"\n",

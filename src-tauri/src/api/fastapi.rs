@@ -5,7 +5,8 @@
 //! - `GET  /api/v1/market/state`        -> `200 MarketState` or `304 Not Modified` via `ETag` / `If-None-Match`
 //! - `POST /api/v1/market/whitelist`    -> `WhitelistRequest` -> `200 MarketState`
 //! - `POST /api/v1/market/transactions` -> `TransactionRequest` -> `200 MarketState`
-//! - Optional `X-Market-Token` header for private/community markets (absent = official public market).
+//! - Optional `X-Market-Token` header for private/community/logo keys (absent = official public market).
+//! - Persistent random `X-Client-Id` header so the backend can enforce 16/32 active client slots per key without hardware tracking.
 
 use crate::api::types::{
     FillTypeStatus, MarketItemDto, MarketStateResponse, ServerHandshake, TransactionRequest,
@@ -28,13 +29,18 @@ struct CachedMarketState {
 pub struct FastApiBackend {
     base_url: RwLock<String>,
     market_token: RwLock<Option<String>>,
+    client_id: RwLock<Option<String>>,
     etag_cache: Mutex<Option<CachedMarketState>>,
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
 }
 
 impl FastApiBackend {
-    pub fn new(base_url: String, market_token: Option<String>) -> Result<Self, String> {
+    pub fn new(
+        base_url: String,
+        market_token: Option<String>,
+        client_id: String,
+    ) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .user_agent(format!(
@@ -53,17 +59,24 @@ impl FastApiBackend {
         Ok(Self {
             base_url: RwLock::new(normalize_base_url(&base_url)),
             market_token: RwLock::new(clean_token(market_token)),
+            client_id: RwLock::new(clean_client_id(&client_id)),
             etag_cache: Mutex::new(None),
             client,
             runtime,
         })
     }
 
-    /// Updates target base URL and optional `X-Market-Token`, clearing any cached ETag snapshot
-    /// whenever the target endpoint or market scope changes.
-    pub fn update_connection_config(&self, base_url: String, market_token: Option<String>) {
+    /// Updates target base URL, optional `X-Market-Token`, and `X-Client-Id`, clearing any cached
+    /// ETag snapshot whenever the target endpoint or market scope changes.
+    pub fn update_connection_config(
+        &self,
+        base_url: String,
+        market_token: Option<String>,
+        client_id: String,
+    ) {
         let normalized_url = normalize_base_url(&base_url);
         let cleaned_token = clean_token(market_token);
+        let cleaned_cid = clean_client_id(&client_id);
 
         let mut changed = false;
         if let Ok(mut guard) = self.base_url.write() {
@@ -75,6 +88,12 @@ impl FastApiBackend {
         if let Ok(mut guard) = self.market_token.write() {
             if *guard != cleaned_token {
                 *guard = cleaned_token;
+                changed = true;
+            }
+        }
+        if let Ok(mut guard) = self.client_id.write() {
+            if *guard != cleaned_cid {
+                *guard = cleaned_cid;
                 changed = true;
             }
         }
@@ -115,7 +134,10 @@ impl FastApiBackend {
         format!("{base}{suffix}")
     }
 
-    fn apply_auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn apply_auth_header(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(cid) = self.client_id.read().ok().and_then(|g| g.clone()) {
+            req = req.header("X-Client-Id", cid);
+        }
         let token = self.market_token.read().ok().and_then(|g| g.clone());
         match token {
             Some(t) => req.header("X-Market-Token", t),
@@ -277,8 +299,21 @@ fn format_reqwest_error(err: &reqwest::Error) -> String {
 
 async fn map_error_response(resp: reqwest::Response, treat_4xx_as_validation: bool) -> ApiError {
     let status = resp.status();
-    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return ApiError::Unauthorized;
+    if status == StatusCode::UNAUTHORIZED
+        || status == StatusCode::FORBIDDEN
+        || status == StatusCode::TOO_MANY_REQUESTS
+    {
+        if let Ok(body_bytes) = resp.bytes().await {
+            if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                if let Some(max_slots) = parse_slot_limit_from_json(&json_val) {
+                    return ApiError::SlotLimitReached { max_slots };
+                }
+            }
+        }
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return ApiError::Unauthorized;
+        }
+        return ApiError::Network(format!("HTTP {status}"));
     }
     if status == StatusCode::UNPROCESSABLE_ENTITY {
         if let Ok(parsed) = resp.json::<WireHttpValidationError>().await {
@@ -488,12 +523,70 @@ fn normalize_base_url(raw: &str) -> String {
 fn clean_token(token: Option<String>) -> Option<String> {
     token.and_then(|t| {
         let trimmed = t.trim().to_string();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || trimmed.chars().any(|c| c.is_control()) {
             None
         } else {
             Some(trimmed)
         }
     })
+}
+
+fn clean_client_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 64
+        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Extracts `max_slots` when the backend responds with `TOKEN_SLOT_LIMIT_REACHED`
+/// (supports FastAPI `{"detail": {"code": "TOKEN_SLOT_LIMIT_REACHED", "max_slots": 16}}`,
+/// top-level `{"code": "TOKEN_SLOT_LIMIT_REACHED", "max_slots": 32}`, or string `"TOKEN_SLOT_LIMIT_REACHED:16"`).
+fn parse_slot_limit_from_json(root: &serde_json::Value) -> Option<u32> {
+    for candidate in [root.get("detail"), Some(root)].into_iter().flatten() {
+        match candidate {
+            serde_json::Value::Object(obj) => {
+                let code = obj
+                    .get("code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if code.eq_ignore_ascii_case("TOKEN_SLOT_LIMIT_REACHED")
+                    || code.eq_ignore_ascii_case("SLOT_LIMIT_REACHED")
+                {
+                    let slots = obj
+                        .get("max_slots")
+                        .or_else(|| obj.get("limit"))
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n.clamp(1, 10_000) as u32)
+                        .unwrap_or(16);
+                    return Some(slots);
+                }
+            }
+            serde_json::Value::String(s) => {
+                let trimmed = s.trim();
+                let upper = trimmed.to_ascii_uppercase();
+                if let Some(rest) = upper
+                    .strip_prefix("TOKEN_SLOT_LIMIT_REACHED")
+                    .or_else(|| upper.strip_prefix("SLOT_LIMIT_REACHED"))
+                {
+                    let parsed_num = rest
+                        .trim_start_matches([':', '=', ' '])
+                        .parse::<u32>()
+                        .ok()
+                        .map(|n| n.clamp(1, 10_000))
+                        .unwrap_or(16);
+                    return Some(parsed_num);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Validates and resolves an optional Community Market logo URL.

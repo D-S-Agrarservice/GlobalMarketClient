@@ -358,6 +358,10 @@ fn end_to_end_bridge_processes_whitelist_transaction_and_cleans_up_on_shutdown()
     let snap = manager.get_snapshot();
     assert_eq!(snap.state, BridgeConnectionState::Online);
     assert_eq!(snap.access_tier, AccessTier::Developer);
+    assert!(
+        snap.heartbeat_seq >= 1 && snap.last_heartbeat_unix.is_some(),
+        "Online bridge worker must advance heartbeat_seq and record last_heartbeat_unix"
+    );
     assert_eq!(snap.pending_count, 1, "SPELT from mod map must be PENDING");
 
     let logs = manager.get_logs();
@@ -422,11 +426,14 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         write_queue_count: 0,
         active_great_demands: vec!["Wheat".to_string()],
         active_great_demand_codes: vec!["WHEAT".to_string()],
+        heartbeat_seq: 7,
+        last_heartbeat_unix: Some(1_729_512_002),
         last_sync_unix: Some(1_729_512_000),
         last_error: None,
     };
 
     let cfg = AppConfig {
+        client_id: "a3f901b842e7c10d".to_string(),
         access_tier: AccessTier::Developer,
         market_token: Some("SUPER_SECRET_PRIVATE_MARKET_KEY_999".to_string()),
         ..AppConfig::default()
@@ -435,7 +442,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
     let logs = vec![LogEntry {
         timestamp_ms: 1_729_512_005_123,
         level: LogLevel::Info,
-        message: format!("Loaded profile path: {user_profile}\\Documents"),
+        message: format!("Loaded profile path: {user_profile}\\Documents (cid=a3f901b842e7c10d)"),
         key: None,
         params: None,
     }];
@@ -445,6 +452,12 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("SUPER_SECRET_PRIVATE_MARKET_KEY_999"),
         "Must never leak private market token!"
     );
+    assert!(
+        !report.contains("a3f901b842e7c10d"),
+        "Must never leak full 16-char client_id in public Discord diagnostic report!"
+    );
+    assert!(report.contains("client_slot_prefix: \"a3f901…\""));
+    assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
     assert!(report.contains("game_edition: \"FS25\""));
     assert!(report.contains("tier=developer"));
@@ -512,9 +525,9 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
     let served_clone = Arc::clone(&served_requests);
 
     let server_thread = thread::spawn(move || {
-        // Serve up to 6 sequential HTTP requests on 127.0.0.1 with a bounded deadline
+        // Serve up to 8 sequential HTTP requests on 127.0.0.1 with a bounded deadline
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        for step in 0..6 {
+        for step in 0..8 {
             let mut stream = loop {
                 match listener.accept() {
                     Ok((s, _)) => break s,
@@ -574,6 +587,10 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
                     assert_eq!(
                         get_header("x-market-token").as_deref(),
                         Some("valid-community-token")
+                    );
+                    assert_eq!(
+                        get_header("x-client-id").as_deref(),
+                        Some("c84f92a17b0e3d41")
                     );
                     let json = r#"{"online":true,"min_exe_version":"1.0.0","poll_interval_sec":10,"market_name":"DSA Community Market","api_version":"2.0.0","market_logo_url":"/assets/community-logo.png"}"#;
                     format!(
@@ -638,8 +655,36 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
                         get_header("x-market-token").as_deref(),
                         Some("wrong-token")
                     );
+                    assert_eq!(
+                        get_header("x-client-id").as_deref(),
+                        Some("c84f92a17b0e3d41")
+                    );
                     "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         .to_string()
+                }
+                // 6: GET /api/v1/meta/status -> 403 TOKEN_SLOT_LIMIT_REACHED (16 slots for standard Logo/Private key)
+                6 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    assert_eq!(
+                        get_header("x-client-id").as_deref(),
+                        Some("c84f92a17b0e3d41")
+                    );
+                    let json = r#"{"detail":{"code":"TOKEN_SLOT_LIMIT_REACHED","max_slots":16}}"#;
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                // 7: GET /api/v1/meta/status -> 403 TOKEN_SLOT_LIMIT_REACHED (32 slots for Combo key)
+                7 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    let json = r#"{"detail":{"code":"TOKEN_SLOT_LIMIT_REACHED","max_slots":32}}"#;
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
                 }
                 _ => unreachable!(),
             };
@@ -655,6 +700,7 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
     let client = FastApiBackend::new(
         format!("http://{addr}/"),
         Some("valid-community-token".to_string()),
+        "c84f92a17b0e3d41".to_string(),
     )
     .unwrap();
 
@@ -707,12 +753,29 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
     assert!(cached_v2.items[0].great_demand);
 
     // Step 5: Switching token clears ETag cache and surfaces 401 Unauthorized
-    client.update_connection_config(format!("http://{addr}"), Some("wrong-token".to_string()));
+    client.update_connection_config(
+        format!("http://{addr}"),
+        Some("wrong-token".to_string()),
+        "c84f92a17b0e3d41".to_string(),
+    );
     let auth_err = client.fetch_market_state().unwrap_err();
     assert!(matches!(auth_err, ApiError::Unauthorized));
 
+    // Step 6 & 7: Key slot limits (16 for Logo/Private keys, 32 for Combo keys) map to SlotLimitReached
+    let slot_err_16 = client.check_status().unwrap_err();
+    assert!(matches!(
+        slot_err_16,
+        ApiError::SlotLimitReached { max_slots: 16 }
+    ));
+
+    let slot_err_32 = client.check_status().unwrap_err();
+    assert!(matches!(
+        slot_err_32,
+        ApiError::SlotLimitReached { max_slots: 32 }
+    ));
+
     server_thread.join().unwrap();
-    assert_eq!(served_requests.load(Ordering::SeqCst), 6);
+    assert_eq!(served_requests.load(Ordering::SeqCst), 8);
 }
 
 #[test]
