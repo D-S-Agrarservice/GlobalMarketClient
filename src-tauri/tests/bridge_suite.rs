@@ -904,12 +904,26 @@ fn access_tier_keys_and_five_language_crop_localization_work() {
 
     let _ = fs::remove_dir_all(&dir);
 
-    // 5-language basegame fillType translation
+    // 5-language basegame & production fillType translation (sourced from official FS25 l10n)
     assert_eq!(localize_fill_type("WHEAT", "de"), Some("Weizen"));
     assert_eq!(localize_fill_type("WHEAT", "en"), Some("Wheat"));
     assert_eq!(localize_fill_type("WHEAT", "fr"), Some("Blé"));
     assert_eq!(localize_fill_type("WHEAT", "es"), Some("Trigo"));
     assert_eq!(localize_fill_type("WHEAT", "pl"), Some("Pszenica"));
+
+    assert_eq!(localize_fill_type("RAISINS", "de"), Some("Rosinen"));
+    assert_eq!(localize_fill_type("RAISINS", "en"), Some("Raisins"));
+    assert_eq!(localize_fill_type("RAISINS", "fr"), Some("Raisins secs"));
+    assert_eq!(localize_fill_type("RAISINS", "es"), Some("Pasas"));
+    assert_eq!(localize_fill_type("RAISINS", "pl"), Some("Rodzynki"));
+
+    assert_eq!(localize_fill_type("RICELONGGRAIN", "de"), Some("Langkornreis"));
+    assert_eq!(localize_fill_type("PEA", "de"), Some("Erbsen"));
+    assert_eq!(localize_fill_type("GREENBEAN", "de"), Some("Buschbohnen"));
+    assert_eq!(localize_fill_type("FERMENTEDNAPACABBAGE", "de"), Some("Kimchi"));
+    assert_eq!(localize_fill_type("BUFFALOMOZZARELLA", "de"), Some("Büffelmozzarella"));
+    assert_eq!(localize_fill_type("JARRED_GREENBEAN", "de"), Some("Eingemachte Buschbohnen"));
+    assert_eq!(localize_fill_type("ONION", "de"), Some("Zwiebeln"));
     assert_eq!(localize_fill_type("CUSTOM_MOD_CROP", "en"), None);
 }
 
