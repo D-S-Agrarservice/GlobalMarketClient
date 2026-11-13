@@ -153,5 +153,13 @@
   "settingsCheckingUpdates": "Vérification…",
   "toastUpToDate": "L’application est à jour (v{version}).",
   "toastUpdateFound": "Mise à jour v{version} trouvée – prête à être installée !",
-  "toastUpdateFailed": "Échec de la mise à jour auto ({error}). Ouverture de GitHub Releases…"
+  "toastUpdateFailed": "Échec de la mise à jour auto ({error}). Ouverture de GitHub Releases…",
+  "mockTier0": "Niveau 0 : Standard",
+  "mockTier1": "Niveau 1 : Logo (Global)",
+  "mockTier2": "Niveau 2 : Marché privé",
+  "mockTier3": "Niveau 3 : Privé + Logo",
+  "logLogoCached": "Logo personnalisé mis en cache sous « {file} » (512×256 DXT5).",
+  "logLogoDownloadFailed": "Échec du téléchargement du logo personnalisé : {error}",
+  "logLogoConvertFailed": "Échec de la conversion DDS du logo personnalisé : {error}",
+  "logMockBrandingTier": "Simulation : niveau de branding défini sur {brandingTier}."
 }

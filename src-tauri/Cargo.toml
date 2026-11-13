@@ -39,6 +39,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 quick-xml = { version = "0.37", features = ["serialize"] }
 notify = "8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+image = { version = "0.25", default-features = false, features = ["webp", "png", "jpeg"] }
+sha2 = "0.10"
 thiserror = "2"
 
 [profile.release]

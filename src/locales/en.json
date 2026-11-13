@@ -153,5 +153,13 @@
   "settingsCheckingUpdates": "Checking…",
   "toastUpToDate": "You are running the latest version (v{version}).",
   "toastUpdateFound": "Update v{version} found – ready for 1-click install!",
-  "toastUpdateFailed": "Auto-update failed ({error}). Opening GitHub Releases…"
+  "toastUpdateFailed": "Auto-update failed ({error}). Opening GitHub Releases…",
+  "mockTier0": "Tier 0: Standard",
+  "mockTier1": "Tier 1: Logo (Official)",
+  "mockTier2": "Tier 2: Private Market",
+  "mockTier3": "Tier 3: Private + Logo",
+  "logLogoCached": "Cached custom market logo as '{file}' (512×256 DXT5).",
+  "logLogoDownloadFailed": "Failed to download custom market logo: {error}",
+  "logLogoConvertFailed": "Failed to convert custom market logo to DDS: {error}",
+  "logMockBrandingTier": "Simulation: Branding tier set to Tier {brandingTier}."
 }

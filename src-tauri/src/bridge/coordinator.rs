@@ -6,13 +6,18 @@
 
 use crate::api::fastapi::FastApiBackend;
 use crate::api::mock::LocalMockBackend;
-use crate::api::types::{FillTypeStatus, MarketItemDto};
+use crate::api::types::{FillTypeStatus, MarketItemDto, ServerHandshake};
 use crate::api::{ApiError, BackendService};
+use crate::bridge::dds::{
+    convert_logo_bytes_to_dds_file, decode_logo_rgba8, encode_rgba8_to_png_bytes,
+    is_valid_cached_logo_dds, logo_cache_hash12, logo_rel_path_for_hash, MAX_LOGO_RAW_BYTES,
+};
 use crate::bridge::l10n::localize_fill_type;
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, is_version_sufficient, parse_incoming_write_xml,
-    prune_market_data_xmls, write_heartbeat_xml, write_market_data_xml, IncomingPacket,
+    prune_market_data_xmls, write_heartbeat_xml, write_market_data_xml, HeartbeatBranding,
+    IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -97,7 +102,10 @@ pub struct BridgeSnapshot {
     pub backend_url: String,
     pub api_version: Option<String>,
     pub market_name: String,
+    pub branding_tier: u8,
+    pub is_private_market: bool,
     pub market_logo_url: Option<String>,
+    pub market_logo_file: Option<String>,
     pub profile_path: Option<String>,
     pub bridge_path: Option<String>,
     pub exe_version: String,
@@ -180,7 +188,10 @@ impl BridgeManager {
                 BackendMode::Mock => "Local Simulation (Mock)".to_string(),
                 BackendMode::Live => "Global Market".to_string(),
             },
+            branding_tier: 0,
+            is_private_market: false,
             market_logo_url: None,
+            market_logo_file: None,
             profile_path: config.fs25_profile_path.clone(),
             bridge_path: None,
             exe_version: PROTOCOL_EXE_VERSION.to_string(),
@@ -552,10 +563,14 @@ impl BridgeManager {
 
         match cleaned {
             None => {
-                self.mock_backend.set_simulated_logo(None);
+                self.mock_backend.set_simulated_logo(None, None);
+                let next_tier = self.mock_backend.simulated_branding_tier();
                 if cfg.backend_mode == BackendMode::Mock {
                     self.update_snapshot(|snap| {
+                        snap.branding_tier = next_tier;
+                        snap.is_private_market = matches!(next_tier, 2 | 3);
                         snap.market_logo_url = None;
+                        snap.market_logo_file = None;
                     });
                 }
                 self.push_i18n_log(
@@ -567,16 +582,20 @@ impl BridgeManager {
             }
             Some(path_str) => {
                 let file_path = Path::new(&path_str);
-                let data_url = load_local_logo_as_data_url(file_path)?;
+                let (data_url, raw_bytes) = load_local_logo_with_bytes(file_path)?;
                 let file_label = file_path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("logo")
                     .to_string();
 
-                self.mock_backend.set_simulated_logo(Some(data_url.clone()));
+                self.mock_backend
+                    .set_simulated_logo(Some(data_url.clone()), Some(raw_bytes));
+                let next_tier = self.mock_backend.simulated_branding_tier();
                 if cfg.backend_mode == BackendMode::Mock {
                     self.update_snapshot(|snap| {
+                        snap.branding_tier = next_tier;
+                        snap.is_private_market = matches!(next_tier, 2 | 3);
                         snap.market_logo_url = Some(data_url);
                     });
                 }
@@ -588,6 +607,44 @@ impl BridgeManager {
                 );
             }
         }
+
+        self.nudge_signal(WorkerSignal::ForceSyncNow);
+        Ok(self.get_snapshot())
+    }
+
+    /// Sets the simulated 3-tier market branding (`0..=3`) and optional private market name in Developer Mock mode.
+    pub fn mock_set_branding_tier(
+        &self,
+        tier: u8,
+        market_name: Option<String>,
+    ) -> Result<BridgeSnapshot, String> {
+        let cfg = self.get_config();
+        if cfg.access_tier != AccessTier::Developer {
+            return Err("Developer mode required.".to_string());
+        }
+
+        let clamped_tier = tier.min(3);
+        self.mock_backend
+            .set_simulated_branding_tier(clamped_tier, market_name);
+
+        if cfg.backend_mode == BackendMode::Mock {
+            let sim_logo = self.mock_backend.simulated_logo();
+            self.update_snapshot(|snap| {
+                snap.branding_tier = clamped_tier;
+                snap.is_private_market = matches!(clamped_tier, 2 | 3);
+                snap.market_logo_url = sim_logo;
+                if matches!(clamped_tier, 0 | 2) {
+                    snap.market_logo_file = None;
+                }
+            });
+        }
+
+        self.push_i18n_log(
+            LogLevel::Info,
+            "logMockBrandingTier",
+            [("brandingTier", clamped_tier.to_string())],
+            format!("Simulation: Branding tier set to Tier {clamped_tier}."),
+        );
 
         self.nudge_signal(WorkerSignal::ForceSyncNow);
         Ok(self.get_snapshot())
@@ -683,6 +740,10 @@ impl BridgeManager {
             BackendMode::Mock => "Local Simulation (Mock)".to_string(),
             BackendMode::Live => "Global Market".to_string(),
         };
+        let default_mock_tier = match backend_mode {
+            BackendMode::Mock => self.mock_backend.simulated_branding_tier(),
+            BackendMode::Live => 0,
+        };
         let default_mock_logo = match backend_mode {
             BackendMode::Mock => self.mock_backend.simulated_logo(),
             BackendMode::Live => None,
@@ -696,7 +757,10 @@ impl BridgeManager {
                 snap.backend_mode = backend_mode;
                 snap.backend_url = backend_url;
                 snap.market_name = default_market_name;
+                snap.branding_tier = 0;
+                snap.is_private_market = false;
                 snap.market_logo_url = None;
+                snap.market_logo_file = None;
                 snap.bridge_path = None;
                 snap.heartbeat_seq = 0;
                 snap.last_heartbeat_unix = None;
@@ -725,7 +789,10 @@ impl BridgeManager {
                     snap.backend_mode = backend_mode;
                     snap.backend_url = backend_url;
                     snap.market_name = default_market_name;
+                    snap.branding_tier = 0;
+                    snap.is_private_market = false;
                     snap.market_logo_url = None;
+                    snap.market_logo_file = None;
                     snap.bridge_path = None;
                     snap.heartbeat_seq = 0;
                     snap.last_heartbeat_unix = None;
@@ -765,7 +832,10 @@ impl BridgeManager {
             snap.backend_mode = backend_mode;
             snap.backend_url = backend_url;
             snap.market_name = default_market_name;
+            snap.branding_tier = default_mock_tier;
+            snap.is_private_market = matches!(default_mock_tier, 2 | 3);
             snap.market_logo_url = default_mock_logo;
+            snap.market_logo_file = None;
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
             snap.heartbeat_seq = 0;
@@ -884,6 +954,8 @@ fn run_bridge_worker(
     let mut whitelist_lang: Option<String> = None;
     let mut known_great_demands: HashSet<String> = HashSet::new();
     let mut initialized_gd_baseline = false;
+    let mut active_branding = HeartbeatBranding::default();
+    let mut failed_logo_attempts: HashMap<String, Instant> = HashMap::new();
 
     let bridge_display = paths.bridge_root.display().to_string();
     push_i18n_log_shared(
@@ -999,14 +1071,49 @@ fn run_bridge_worker(
                         }
                     }
 
+                    let resolved_logo_rel = if next_connected {
+                        resolve_or_cache_handshake_logo(
+                            &paths,
+                            backend.as_ref(),
+                            &hs,
+                            &mut failed_logo_attempts,
+                            &shared,
+                            &app_handle,
+                        )
+                    } else {
+                        None
+                    };
+
+                    let next_branding = if next_connected {
+                        HeartbeatBranding {
+                            branding_tier: hs.branding_tier,
+                            is_private_market: hs.is_private_market,
+                            market_name: hs.is_private_market.then(|| hs.market_name.clone()),
+                            has_custom_logo: resolved_logo_rel.is_some(),
+                            logo_file: resolved_logo_rel,
+                        }
+                        .normalized()
+                    } else {
+                        HeartbeatBranding::default()
+                    };
+
                     let changed_conn = is_connected != next_connected;
+                    let changed_branding = active_branding != next_branding;
                     is_connected = next_connected;
+                    active_branding = next_branding.clone();
                     let (r_cnt, w_cnt) = count_bridge_queues(&paths);
+
+                    let ui_logo_url = matches!(next_branding.branding_tier, 1 | 3)
+                        .then(|| hs.market_logo_url)
+                        .flatten();
 
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.state = next_state;
                         snap.market_name = hs.market_name;
-                        snap.market_logo_url = hs.market_logo_url;
+                        snap.branding_tier = next_branding.branding_tier;
+                        snap.is_private_market = next_branding.is_private_market;
+                        snap.market_logo_url = ui_logo_url;
+                        snap.market_logo_file = next_branding.logo_file.clone();
                         snap.api_version = Some(hs.api_version);
                         snap.min_exe_version = min_version.clone();
                         snap.read_queue_count = r_cnt;
@@ -1018,13 +1125,14 @@ fn run_bridge_worker(
                         };
                     });
 
-                    if changed_conn {
+                    if changed_conn || changed_branding {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
                 }
                 Err(err) => {
                     let was_online = is_connected;
                     is_connected = false;
+                    active_branding = HeartbeatBranding::default();
                     let err_msg = err.to_string();
 
                     let should_log = shared
@@ -1048,6 +1156,10 @@ fn run_bridge_worker(
                     let (r_cnt, w_cnt) = count_bridge_queues(&paths);
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.state = BridgeConnectionState::BackendOffline;
+                        snap.branding_tier = 0;
+                        snap.is_private_market = false;
+                        snap.market_logo_url = None;
+                        snap.market_logo_file = None;
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = Some(err_msg);
@@ -1075,6 +1187,7 @@ fn run_bridge_worker(
                 hb_connected,
                 PROTOCOL_EXE_VERSION,
                 &min_version,
+                hb_connected.then_some(&active_branding),
             ) {
                 Ok(()) if hb_connected => {
                     let now_secs = SystemTime::now()
@@ -1797,59 +1910,111 @@ pub fn encode_base64(bytes: &[u8]) -> String {
     out
 }
 
-fn load_local_logo_as_data_url(file_path: &Path) -> Result<String, String> {
-    const MAX_LOGO_BYTES: u64 = 8 * 1024 * 1024;
+/// Resolves or downloads & converts the active custom market logo into `logos/logo_<12char_sha256>.dds`.
+/// Skips network download and DDS re-encoding whenever the deterministic cached `.dds` file already exists.
+fn resolve_or_cache_handshake_logo(
+    paths: &BridgePaths,
+    backend: &dyn BackendService,
+    hs: &ServerHandshake,
+    failed_logo_attempts: &mut HashMap<String, Instant>,
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+) -> Option<String> {
+    if !matches!(hs.branding_tier, 1 | 3) {
+        return None;
+    }
+    let logo_url = hs.market_logo_url.as_deref()?.trim();
+    if logo_url.is_empty() {
+        return None;
+    }
 
+    let hash12 = logo_cache_hash12(logo_url.as_bytes());
+    let rel_logo = logo_rel_path_for_hash(&hash12);
+    let target_dds = paths.logos_dir.join(format!("logo_{hash12}.dds"));
+
+    if is_valid_cached_logo_dds(&target_dds) {
+        failed_logo_attempts.remove(logo_url);
+        return Some(rel_logo);
+    }
+
+    if let Some(last_fail) = failed_logo_attempts.get(logo_url) {
+        if last_fail.elapsed() < Duration::from_secs(30) {
+            return None;
+        }
+    }
+
+    let raw_bytes = match backend.fetch_logo_bytes(logo_url) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            failed_logo_attempts.insert(logo_url.to_string(), Instant::now());
+            let err_str = err.to_string();
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Warn,
+                "logLogoDownloadFailed",
+                [("error", err_str.clone())],
+                format!("Failed to download custom market logo: {err_str}"),
+            );
+            return None;
+        }
+    };
+
+    match convert_logo_bytes_to_dds_file(&raw_bytes, &paths.staging_dir, &target_dds) {
+        Ok(()) => {
+            failed_logo_attempts.remove(logo_url);
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Success,
+                "logLogoCached",
+                [("file", rel_logo.clone())],
+                format!("Custom market logo cached as '{rel_logo}' (512x256 DXT5)."),
+            );
+            Some(rel_logo)
+        }
+        Err(conv_err) => {
+            failed_logo_attempts.insert(logo_url.to_string(), Instant::now());
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Warn,
+                "logLogoConvertFailed",
+                [("error", conv_err.clone())],
+                format!("Failed to convert custom market logo to DDS: {conv_err}"),
+            );
+            None
+        }
+    }
+}
+
+/// Loads and validates a local `.webp` / `.png` / `.jpg` / `.dds` image completely in pure Rust
+/// (no external CLI tools required), returning both a WebView `data:` preview URL and raw bytes for DDS conversion.
+fn load_local_logo_with_bytes(file_path: &Path) -> Result<(String, Vec<u8>), String> {
     if !file_path.is_file() {
         return Err(format!("Logo file not found: {}", file_path.display()));
     }
 
+    let meta = fs::metadata(file_path).map_err(|e| format!("Cannot inspect logo file: {e}"))?;
+    if meta.len() > MAX_LOGO_RAW_BYTES as u64 {
+        return Err("Logo file exceeds 8 MB limit.".to_string());
+    }
+
+    let bytes = fs::read(file_path).map_err(|e| format!("Cannot read logo file: {e}"))?;
     let ext = file_path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    if ext == "dds" {
-        let mut cmd = std::process::Command::new("magick");
-        cmd.arg(format!("{}[0]", file_path.display())).args([
-            "-trim",
-            "+repage",
-            "-bordercolor",
-            "none",
-            "-border",
-            "2",
-            "-resize",
-            "512x512>",
-            "png:-",
-        ]);
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+    let decoded = decode_logo_rgba8(&bytes)?;
 
-        let output = cmd.output().map_err(|_| {
-            "Cannot convert .dds directly (ImageMagick 'magick' not found on PATH). Please convert the logo to .png or .webp first.".to_string()
-        })?;
-
-        if !output.status.success() || !output.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to convert .dds logo: {}", stderr.trim()));
-        }
-
-        return Ok(format!(
-            "data:image/png;base64,{}",
-            encode_base64(&output.stdout)
-        ));
+    if ext == "dds" || (bytes.len() >= 4 && &bytes[0..4] == b"DDS ") {
+        let png_bytes = encode_rgba8_to_png_bytes(&decoded)?;
+        let data_url = format!("data:image/png;base64,{}", encode_base64(&png_bytes));
+        return Ok((data_url, bytes));
     }
 
-    let meta = fs::metadata(file_path).map_err(|e| format!("Cannot inspect logo file: {e}"))?;
-    if meta.len() > MAX_LOGO_BYTES {
-        return Err("Logo file exceeds 8 MB limit.".to_string());
-    }
-
-    let bytes = fs::read(file_path).map_err(|e| format!("Cannot read logo file: {e}"))?;
     let mime = match ext.as_str() {
         "png" if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => "image/png",
         "webp" if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" => {
@@ -1861,10 +2026,11 @@ fn load_local_logo_as_data_url(file_path: &Path) -> Result<String, String> {
         }
         _ => {
             return Err(
-                "Unsupported logo format. Please select a PNG, WebP, JPG, or DDS file.".to_string(),
+                "Unsupported logo format. Please select a WebP, PNG, JPG, or DDS file.".to_string(),
             );
         }
     };
 
-    Ok(format!("data:{mime};base64,{}", encode_base64(&bytes)))
+    let data_url = format!("data:{mime};base64,{}", encode_base64(&bytes));
+    Ok((data_url, bytes))
 }

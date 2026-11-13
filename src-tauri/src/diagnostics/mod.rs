@@ -216,6 +216,12 @@ pub fn build_diagnostic_report(
         mask_user_paths(&config.backend_url)
     ));
     report.push_str(&format!("market_name: \"{}\"\n", snapshot.market_name));
+    report.push_str(&format!(
+        "branding: \"tier={}, private={}, logo_dds={}\"\n",
+        snapshot.branding_tier,
+        snapshot.is_private_market,
+        snapshot.market_logo_file.as_deref().unwrap_or("none")
+    ));
     report.push_str(&format!("market_token: \"{token_state}\"\n"));
     report.push_str(&format!("client_slot_prefix: \"{slot_prefix}\"\n"));
     report.push_str(&format!(

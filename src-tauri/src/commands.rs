@@ -125,3 +125,12 @@ pub fn mock_set_community_logo(
 ) -> Result<BridgeSnapshot, String> {
     bridge.mock_set_community_logo(path)
 }
+
+#[tauri::command]
+pub fn mock_set_branding_tier(
+    tier: u8,
+    market_name: Option<String>,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.mock_set_branding_tier(tier, market_name)
+}

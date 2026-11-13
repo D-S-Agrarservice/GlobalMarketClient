@@ -93,7 +93,10 @@ const state: UiState = {
     backendUrl: OFFICIAL_PROD_BACKEND_URL,
     apiVersion: null,
     marketName: "Global Market",
+    brandingTier: 0,
+    isPrivateMarket: false,
     marketLogoUrl: null,
+    marketLogoFile: null,
     profilePath: null,
     bridgePath: null,
     exeVersion: "1.0.0",
@@ -304,11 +307,24 @@ function getBrandTitle(): string {
 }
 
 function getDisplayMarketName(isMock: boolean): string {
+  const raw = state.snapshot.marketName?.trim() ?? "";
   if (isMock) {
+    if (
+      state.snapshot.isPrivateMarket &&
+      raw &&
+      raw !== "Local Simulation (Mock)" &&
+      raw !== "Global Market"
+    ) {
+      return raw;
+    }
     return t("marketNameMock");
   }
-  const raw = state.snapshot.marketName?.trim() ?? "";
-  if (!raw || raw === "Global Market" || raw === "Local Simulation (Mock)") {
+  if (
+    !state.snapshot.isPrivateMarket ||
+    !raw ||
+    raw === "Global Market" ||
+    raw === "Local Simulation (Mock)"
+  ) {
     return t("officialMarketName");
   }
   return raw;
@@ -323,7 +339,9 @@ function getSafeHeaderLogoUrl(): string {
     getEffectiveTier() === "developer" && getEffectiveBackendMode() === "mock";
   const hasToken = Boolean(state.config.marketToken?.trim());
   const custom = state.snapshot.marketLogoUrl?.trim();
-  if ((!hasToken && !isMock) || !custom) {
+  const tierAllowsLogo =
+    state.snapshot.brandingTier === 1 || state.snapshot.brandingTier === 3;
+  if ((!hasToken && !isMock) || !tierAllowsLogo || !custom) {
     return dsaLogoUrl;
   }
   const lower = custom.toLowerCase();
@@ -838,6 +856,16 @@ function renderDashboardHtml(): string {
             >
               ⬆ ${escapeHtml(state.mockLockedMinVersion ? t("mockBtnMinVerOff") : t("mockBtnMinVerOn"))}
             </button>
+            <select
+              id="sel-mock-tier"
+              aria-label="Mock Branding Tier"
+              class="rounded border border-purple-500/40 bg-zinc-900 px-2 py-1 text-xs font-medium text-purple-200 hover:border-purple-400 focus:border-[#ff9600] focus:outline-none cursor-pointer"
+            >
+              <option value="0" ${state.snapshot.brandingTier === 0 ? "selected" : ""} class="bg-[#252528] text-zinc-100">${escapeHtml(t("mockTier0"))}</option>
+              <option value="1" ${state.snapshot.brandingTier === 1 ? "selected" : ""} class="bg-[#252528] text-zinc-100">${escapeHtml(t("mockTier1"))}</option>
+              <option value="2" ${state.snapshot.brandingTier === 2 ? "selected" : ""} class="bg-[#252528] text-zinc-100">${escapeHtml(t("mockTier2"))}</option>
+              <option value="3" ${state.snapshot.brandingTier === 3 ? "selected" : ""} class="bg-[#252528] text-zinc-100">${escapeHtml(t("mockTier3"))}</option>
+            </select>
             <button
               id="btn-mock-logo"
               type="button"
@@ -2011,6 +2039,23 @@ function bindDashboardEvents(): void {
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
+  document
+    .querySelector<HTMLSelectElement>("#sel-mock-tier")
+    ?.addEventListener("change", async (ev) => {
+      const target = ev.currentTarget as HTMLSelectElement;
+      const tierNum = Math.max(0, Math.min(3, Number.parseInt(target.value, 10) || 0));
+      try {
+        const snap = await invoke<BridgeSnapshot>("mock_set_branding_tier", {
+          tier: tierNum,
+          marketName: null,
+        });
+        applySnapshot(snap);
+        renderDashboardOnly();
       } catch (err) {
         showToast(String(err));
       }

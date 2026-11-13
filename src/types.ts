@@ -40,7 +40,10 @@ export interface BridgeSnapshot {
   backendUrl: string;
   apiVersion: string | null;
   marketName: string;
+  brandingTier: number;
+  isPrivateMarket: boolean;
   marketLogoUrl: string | null;
+  marketLogoFile: string | null;
   profilePath: string | null;
   bridgePath: string | null;
   exeVersion: string;
@@ -174,6 +177,18 @@ export const OPEN_SOURCE_PACKAGES: ReadonlyArray<OpenSourcePackage> = [
     author: "Johann Tuffe & Contributors",
     license: "MIT",
     url: "https://github.com/tafia/quick-xml",
+  },
+  {
+    name: "image & image-webp",
+    author: "Image-rs Contributors",
+    license: "MIT OR Apache-2.0",
+    url: "https://github.com/image-rs/image",
+  },
+  {
+    name: "RustCrypto sha2",
+    author: "RustCrypto Contributors",
+    license: "MIT OR Apache-2.0",
+    url: "https://github.com/RustCrypto/hashes",
   },
   {
     name: "Notify File Watcher",

@@ -115,7 +115,13 @@ pub struct ServerHandshake {
     pub poll_interval_sec: u64,
     pub market_name: String,
     pub api_version: String,
-    /// Optional custom logo URL returned by the backend when a valid Community Market `X-Market-Token` is active.
+    /// Online market branding tier (`0` = Standard, `1` = Logo on Official Market, `2` = Private Market, `3` = Private + Logo).
+    #[serde(default)]
+    pub branding_tier: u8,
+    /// `true` when operating on an isolated private/community market (`branding_tier` `2` or `3`).
+    #[serde(default)]
+    pub is_private_market: bool,
+    /// Optional custom logo URL returned by the backend when a valid Community/Logo `X-Market-Token` is active.
     #[serde(default)]
     pub market_logo_url: Option<String>,
 }

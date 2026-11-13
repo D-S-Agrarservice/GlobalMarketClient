@@ -12,6 +12,8 @@
 | `rustls` | `0.23.x` | `Apache-2.0 OR ISC OR MIT` | Joe Birr-Pixton & Rustls Contributors | https://github.com/rustls/rustls |
 | `serde` & `serde_json` | `1.x` | `MIT OR Apache-2.0` | Erick Tryzelaar, David Tolnay & Contributors | https://github.com/serde-rs/serde |
 | `quick-xml` | `0.37.x` | `MIT` | Johann Tuffe & Contributors | https://github.com/tafia/quick-xml |
+| `image` & `image-webp` | `0.25.x` | `MIT OR Apache-2.0` | Image-rs Contributors | https://github.com/image-rs/image |
+| `sha2` | `0.10.x` | `MIT OR Apache-2.0` | RustCrypto Contributors | https://github.com/RustCrypto/hashes |
 | `notify` | `8.x` | `CC0-1.0` | Felix Passenberg & Notify Contributors | https://github.com/notify-rs/notify |
 | `thiserror` | `2.x` | `MIT OR Apache-2.0` | David Tolnay & Contributors | https://github.com/dtolnay/thiserror |
 

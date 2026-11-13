@@ -13,6 +13,8 @@ use crate::api::types::{
     WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
+use crate::bridge::dds::MAX_LOGO_RAW_BYTES;
+use crate::bridge::xml::sanitize_market_name;
 use reqwest::header::{ETAG, IF_NONE_MATCH};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -158,7 +160,13 @@ struct WireMetaStatus {
     market_name: String,
     #[serde(default = "default_api_ver")]
     api_version: String,
+    #[serde(default, alias = "tier")]
+    branding_tier: Option<u8>,
+    #[serde(default, alias = "private_market")]
+    is_private_market: Option<bool>,
     #[serde(default)]
+    has_custom_logo: Option<bool>,
+    #[serde(default, alias = "logo_url")]
     market_logo_url: Option<String>,
 }
 
@@ -377,14 +385,25 @@ impl BackendService for FastApiBackend {
                 .json()
                 .await
                 .map_err(|e| ApiError::Validation(e.to_string()))?;
-            let market_logo_url =
+            let resolved_logo =
                 resolve_safe_logo_url(parsed.market_logo_url, &base_url, has_token);
+            let (branding_tier, is_private_market, market_name, market_logo_url) =
+                derive_handshake_branding(
+                    has_token,
+                    &parsed.market_name,
+                    resolved_logo,
+                    parsed.branding_tier,
+                    parsed.is_private_market,
+                    parsed.has_custom_logo,
+                );
             Ok(ServerHandshake {
                 online: parsed.online,
                 min_exe_version: parsed.min_exe_version,
                 poll_interval_sec: parsed.poll_interval_sec.max(2),
-                market_name: parsed.market_name,
+                market_name,
                 api_version: parsed.api_version,
+                branding_tier,
+                is_private_market,
                 market_logo_url,
             })
         })
@@ -514,6 +533,147 @@ impl BackendService for FastApiBackend {
         self.store_or_clear_etag(etag_opt, &state);
         Ok(state)
     }
+
+    fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError> {
+        let base_url = self
+            .base_url
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| crate::config::DEFAULT_OFFICIAL_BACKEND_URL.to_string());
+        let has_token = self
+            .market_token
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .is_some();
+
+        let Some(safe_url) = resolve_safe_logo_url(Some(logo_url.to_string()), &base_url, has_token)
+        else {
+            return Err(ApiError::Validation(
+                "Untrusted or unauthorized market logo URL.".to_string(),
+            ));
+        };
+
+        let same_authority_as_api =
+            extract_scheme_and_authority(&safe_url) == extract_scheme_and_authority(&base_url);
+        let mut req = self.client.get(&safe_url);
+        if same_authority_as_api {
+            req = self.apply_auth_header(req);
+        }
+
+        self.runtime.block_on(async move {
+            let mut resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?;
+            if !resp.status().is_success() {
+                return Err(map_error_response(resp, false).await);
+            }
+            if let Some(len) = resp.content_length() {
+                if len > MAX_LOGO_RAW_BYTES as u64 {
+                    return Err(ApiError::Validation(
+                        "Remote logo exceeds 8 MB size limit.".to_string(),
+                    ));
+                }
+            }
+
+            let mut buf = Vec::new();
+            while let Some(chunk) = resp
+                .chunk()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?
+            {
+                if buf.len().saturating_add(chunk.len()) > MAX_LOGO_RAW_BYTES {
+                    return Err(ApiError::Validation(
+                        "Remote logo exceeds 8 MB size limit.".to_string(),
+                    ));
+                }
+                buf.extend_from_slice(&chunk);
+            }
+
+            if buf.is_empty() {
+                return Err(ApiError::Validation(
+                    "Remote logo response body was empty.".to_string(),
+                ));
+            }
+            Ok(buf)
+        })
+    }
+}
+
+/// Hybrid 3-tier branding resolver supporting both explicit backend fields (`branding_tier` / `is_private_market`)
+/// and automatic derivation from `(has_token, market_name, market_logo_url)`.
+pub fn derive_handshake_branding(
+    has_token: bool,
+    raw_market_name: &str,
+    resolved_logo_url: Option<String>,
+    explicit_tier: Option<u8>,
+    explicit_private: Option<bool>,
+    explicit_has_logo: Option<bool>,
+) -> (u8, bool, String, Option<String>) {
+    if !has_token {
+        return (0, false, "Global Market".to_string(), None);
+    }
+
+    let logo_url = if explicit_has_logo == Some(false) {
+        None
+    } else {
+        resolved_logo_url
+    };
+
+    let clean_name = sanitize_market_name(raw_market_name);
+    let is_official_name = clean_name.as_deref().map_or(true, is_official_market_name);
+
+    match explicit_tier {
+        Some(0) => (0, false, "Global Market".to_string(), None),
+        Some(1) => {
+            if logo_url.is_some() {
+                (1, false, "Global Market".to_string(), logo_url)
+            } else {
+                (0, false, "Global Market".to_string(), None)
+            }
+        }
+        Some(2) => (
+            2,
+            true,
+            clean_name.unwrap_or_else(|| "Community Market".to_string()),
+            None,
+        ),
+        Some(3) => {
+            let priv_name = clean_name.unwrap_or_else(|| "Community Market".to_string());
+            if logo_url.is_some() {
+                (3, true, priv_name, logo_url)
+            } else {
+                (2, true, priv_name, None)
+            }
+        }
+        _ => {
+            let is_priv = explicit_private.unwrap_or(!is_official_name);
+            match (is_priv, logo_url.is_some()) {
+                (false, false) => (0, false, "Global Market".to_string(), None),
+                (false, true) => (1, false, "Global Market".to_string(), logo_url),
+                (true, false) => (
+                    2,
+                    true,
+                    clean_name.unwrap_or_else(|| "Community Market".to_string()),
+                    None,
+                ),
+                (true, true) => (
+                    3,
+                    true,
+                    clean_name.unwrap_or_else(|| "Community Market".to_string()),
+                    logo_url,
+                ),
+            }
+        }
+    }
+}
+
+fn is_official_market_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("Global Market")
+        || trimmed.eq_ignore_ascii_case("Official Global Market")
 }
 
 fn normalize_base_url(raw: &str) -> String {

@@ -28,4 +28,5 @@ pub trait BackendService: Send + Sync {
     fn sync_whitelist(&self, req: WhitelistSyncRequest) -> Result<MarketStateResponse, ApiError>;
     fn fetch_market_state(&self) -> Result<MarketStateResponse, ApiError>;
     fn submit_transaction(&self, tx: TransactionRequest) -> Result<MarketStateResponse, ApiError>;
+    fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError>;
 }

@@ -153,5 +153,13 @@
   "settingsCheckingUpdates": "Buscando…",
   "toastUpToDate": "La aplicación está actualizada (v{version}).",
   "toastUpdateFound": "Actualización v{version} encontrada – ¡lista para instalar!",
-  "toastUpdateFailed": "Error de actualización automática ({error}). Abriendo GitHub Releases…"
+  "toastUpdateFailed": "Error de actualización automática ({error}). Abriendo GitHub Releases…",
+  "mockTier0": "Nivel 0: Estándar",
+  "mockTier1": "Nivel 1: Logo (Global)",
+  "mockTier2": "Nivel 2: Mercado privado",
+  "mockTier3": "Nivel 3: Privado + Logo",
+  "logLogoCached": "Logo personalizado guardado en caché como «{file}» (512×256 DXT5).",
+  "logLogoDownloadFailed": "Error al descargar el logo personalizado: {error}",
+  "logLogoConvertFailed": "Error al convertir el logo personalizado a DDS: {error}",
+  "logMockBrandingTier": "Simulación: nivel de marca establecido en {brandingTier}."
 }

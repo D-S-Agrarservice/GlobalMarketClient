@@ -153,5 +153,13 @@
   "settingsCheckingUpdates": "Sprawdzanie…",
   "toastUpToDate": "Masz najnowszą wersję aplikacji (v{version}).",
   "toastUpdateFound": "Znaleziono aktualizację v{version} – gotowa do instalacji!",
-  "toastUpdateFailed": "Błąd automatycznej aktualizacji ({error}). Otwieranie GitHub Releases…"
+  "toastUpdateFailed": "Błąd automatycznej aktualizacji ({error}). Otwieranie GitHub Releases…",
+  "mockTier0": "Poziom 0: Standardowy",
+  "mockTier1": "Poziom 1: Logo (Globalny)",
+  "mockTier2": "Poziom 2: Rynek prywatny",
+  "mockTier3": "Poziom 3: Prywatny + Logo",
+  "logLogoCached": "Zapisano logo społeczności w pamięci podręcznej jako „{file}” (512×256 DXT5).",
+  "logLogoDownloadFailed": "Nie udało się pobrać logo społeczności: {error}",
+  "logLogoConvertFailed": "Błąd konwersji logo społeczności do DDS: {error}",
+  "logMockBrandingTier": "Symulacja: ustawiono poziom brandingu na {brandingTier}."
 }

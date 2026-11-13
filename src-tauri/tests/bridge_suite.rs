@@ -1,6 +1,8 @@
 //! Comprehensive integration & unit test suite for the FS25 GlobalMarket Rust Core (Phases 2–4 & 3.5).
 
-use globalmarket_client_lib::api::fastapi::{resolve_safe_logo_url, FastApiBackend};
+use globalmarket_client_lib::api::fastapi::{
+    derive_handshake_branding, resolve_safe_logo_url, FastApiBackend,
+};
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
     FillTypeStatus, MarketItemDto, TransactionRequest, TransactionType, WhitelistItemDto,
@@ -10,26 +12,34 @@ use globalmarket_client_lib::api::{ApiError, BackendService};
 use globalmarket_client_lib::bridge::coordinator::{
     encode_base64, BridgeConnectionState, BridgeManager,
 };
+use globalmarket_client_lib::bridge::dds::{
+    convert_logo_bytes_to_dds_bytes, decode_dds_to_rgba8, is_valid_cached_logo_dds,
+    logo_cache_hash12, logo_rel_path_for_hash, EXPECTED_LOGO_DDS_BYTES, LOGO_CANVAS_HEIGHT,
+    LOGO_CANVAS_WIDTH, LOGO_MIPMAP_COUNT,
+};
 use globalmarket_client_lib::bridge::l10n::localize_fill_type;
 use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
-    is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, write_heartbeat_xml,
-    write_market_data_xml, IncomingPacket, MAX_RETAINED_MARKET_SYNC_FILES,
+    is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
+    sanitize_market_name, write_heartbeat_xml, write_market_data_xml, HeartbeatBranding,
+    IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::{
     digest_access_key, qualify_transaction_id, verify_access_key, verify_access_key_with_digests,
     AccessTier, AppConfig, BackendMode, DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL,
     OFFICIAL_LOGO_CDN_URL,
 };
+use image::codecs::webp::WebPEncoder;
+use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[test]
 fn writes_heartbeat_and_market_xml_strictly_without_utf8_bom() {
@@ -39,7 +49,7 @@ fn writes_heartbeat_and_market_xml_strictly_without_utf8_bom() {
     let read_dir = dir.join("read");
     let online_file = dir.join("globalMarketOnline.xml");
 
-    write_heartbeat_xml(&staging, &online_file, true, "1.0.0.0", "1.0.0.0").unwrap();
+    write_heartbeat_xml(&staging, &online_file, true, "1.0.0.0", "1.0.0.0", None).unwrap();
     let online_bytes = fs::read(&online_file).unwrap();
     assert!(
         !online_bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
@@ -47,6 +57,11 @@ fn writes_heartbeat_and_market_xml_strictly_without_utf8_bom() {
     );
     let online_str = String::from_utf8(online_bytes).unwrap();
     assert!(online_str.contains("isConnected=\"true\""));
+    assert!(online_str.contains("brandingTier=\"0\""));
+    assert!(online_str.contains("isPrivateMarket=\"false\""));
+    assert!(online_str.contains("hasCustomLogo=\"false\""));
+    assert!(!online_str.contains("marketName="));
+    assert!(!online_str.contains("logoFile="));
     assert!(online_str.contains("<version>1.0.0.0</version>"));
     assert!(online_str.contains("<minVersion>1.0.0.0</minVersion>"));
 
@@ -413,8 +428,11 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         backend_mode: BackendMode::Mock,
         backend_url: "http://127.0.0.1:8000".to_string(),
         api_version: Some("2.0.0".to_string()),
+        branding_tier: 3,
+        is_private_market: true,
         market_name: "DSA Test Market".to_string(),
         market_logo_url: None,
+        market_logo_file: Some("logos/logo_a1b2c3d4e5f6.dds".to_string()),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
         exe_version: "1.0.0".to_string(),
@@ -1038,4 +1056,517 @@ fn official_domains_and_trusted_logo_cdn_validation_work() {
             "Untrusted logo URL must be rejected: {rejected}"
         );
     }
+}
+
+#[test]
+fn heartbeat_xml_3_tier_branding_and_lua_sanitization_rules_work() {
+    let dir = env::temp_dir().join(format!("fs25_gm_branding_xml_test_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let staging = dir.join(".staging");
+    let online_file = dir.join("globalMarketOnline.xml");
+
+    // Tier 1: Official Global Market + custom logo (must NOT emit marketName)
+    let tier1 = HeartbeatBranding {
+        branding_tier: 1,
+        is_private_market: false,
+        market_name: Some("Ignored Name On Tier 1".to_string()),
+        has_custom_logo: true,
+        logo_file: Some("logos/logo_a1b2c3d4e5f6.dds".to_string()),
+    };
+    write_heartbeat_xml(&staging, &online_file, true, "1.0.0", "1.0.0", Some(&tier1)).unwrap();
+    let xml_t1 = fs::read_to_string(&online_file).unwrap();
+    assert!(xml_t1.contains("brandingTier=\"1\""));
+    assert!(xml_t1.contains("isPrivateMarket=\"false\""));
+    assert!(!xml_t1.contains("marketName="));
+    assert!(xml_t1.contains("hasCustomLogo=\"true\""));
+    assert!(xml_t1.contains("logoFile=\"logos/logo_a1b2c3d4e5f6.dds\""));
+
+    // Tier 2: Private Market + standard logo (must NOT emit logoFile; escapes XML characters)
+    let tier2 = HeartbeatBranding {
+        branding_tier: 2,
+        is_private_market: true,
+        market_name: Some("  D&S \"Agrar\" <Ost>  ".to_string()),
+        has_custom_logo: false,
+        logo_file: Some("logos/logo_ignored.dds".to_string()),
+    };
+    write_heartbeat_xml(&staging, &online_file, true, "1.0.0", "1.0.0", Some(&tier2)).unwrap();
+    let xml_t2 = fs::read_to_string(&online_file).unwrap();
+    assert!(xml_t2.contains("brandingTier=\"2\""));
+    assert!(xml_t2.contains("isPrivateMarket=\"true\""));
+    assert!(xml_t2.contains("marketName=\"D&amp;S &quot;Agrar&quot; &lt;Ost&gt;\""));
+    assert!(xml_t2.contains("hasCustomLogo=\"false\""));
+    assert!(!xml_t2.contains("logoFile="));
+
+    // Tier 3: Private Market + custom logo
+    let tier3 = HeartbeatBranding {
+        branding_tier: 3,
+        is_private_market: true,
+        market_name: Some("LSMT Community Markt".to_string()),
+        has_custom_logo: true,
+        logo_file: Some("logos/logo_a1b2c3d4e5f6.dds".to_string()),
+    };
+    write_heartbeat_xml(&staging, &online_file, true, "1.0.0", "1.0.0", Some(&tier3)).unwrap();
+    let xml_t3 = fs::read_to_string(&online_file).unwrap();
+    assert!(xml_t3.contains("brandingTier=\"3\""));
+    assert!(xml_t3.contains("isPrivateMarket=\"true\""));
+    assert!(xml_t3.contains("marketName=\"LSMT Community Markt\""));
+    assert!(xml_t3.contains("hasCustomLogo=\"true\""));
+    assert!(xml_t3.contains("logoFile=\"logos/logo_a1b2c3d4e5f6.dds\""));
+
+    // Disconnected heartbeat always resets branding attributes to safe Tier 0 defaults
+    write_heartbeat_xml(
+        &staging,
+        &online_file,
+        false,
+        "1.0.0",
+        "1.0.0",
+        Some(&tier3),
+    )
+    .unwrap();
+    let xml_offline = fs::read_to_string(&online_file).unwrap();
+    assert!(xml_offline.contains("isConnected=\"false\""));
+    assert!(xml_offline.contains("brandingTier=\"0\""));
+    assert!(xml_offline.contains("isPrivateMarket=\"false\""));
+    assert!(xml_offline.contains("hasCustomLogo=\"false\""));
+    assert!(!xml_offline.contains("marketName="));
+    assert!(!xml_offline.contains("logoFile="));
+
+    // UTF-8 multi-byte truncation strictly respects 48-byte Lua limit without splitting German umlauts
+    let long_umlaut_name = "Süddeutsche Agrargemeinschaft für Öko-Landbau ÄÖÜ 2026";
+    let clean_umlaut = sanitize_market_name(long_umlaut_name).unwrap();
+    assert!(clean_umlaut.len() <= MAX_MARKET_NAME_BYTES);
+    assert!(std::str::from_utf8(clean_umlaut.as_bytes()).is_ok());
+
+    // Relative logoFile validation matches GlobalMarketBranding.sanitizeLogoRelPath
+    assert_eq!(
+        sanitize_logo_rel_path("logos/logo_a1b2c3d4e5f6.dds"),
+        Some("logos/logo_a1b2c3d4e5f6.dds".to_string())
+    );
+    assert_eq!(
+        sanitize_logo_rel_path("logos\\logo_a1b2c3d4e5f6.DDS"),
+        Some("logos/logo_a1b2c3d4e5f6.DDS".to_string())
+    );
+    assert_eq!(
+        sanitize_logo_rel_path("custom_banner.dds"),
+        Some("custom_banner.dds".to_string())
+    );
+    for invalid_logo in [
+        "",
+        ".dds",
+        "logos/.dds",
+        "../secret.dds",
+        "logos/../secret.dds",
+        "C:/temp/logo.dds",
+        "logos/sub/nested.dds",
+        "logos/logo_a1b2.png",
+        "logos/logo_a1b2.webp",
+        "logos/logo space.dds",
+    ] {
+        assert_eq!(
+            sanitize_logo_rel_path(invalid_logo),
+            None,
+            "Invalid logoFile path must be rejected: {invalid_logo}"
+        );
+    }
+
+    // Hybrid handshake tier derivation (auto-derived vs explicit fields)
+    assert_eq!(
+        derive_handshake_branding(
+            false,
+            "LSMT",
+            Some("https://img.gm.bydora.de/a.webp".to_string()),
+            Some(3),
+            Some(true),
+            Some(true)
+        ),
+        (0, false, "Global Market".to_string(), None)
+    );
+    assert_eq!(
+        derive_handshake_branding(
+            true,
+            "Global Market",
+            Some("https://img.gm.bydora.de/a.webp".to_string()),
+            None,
+            None,
+            None
+        ),
+        (
+            1,
+            false,
+            "Global Market".to_string(),
+            Some("https://img.gm.bydora.de/a.webp".to_string())
+        )
+    );
+    assert_eq!(
+        derive_handshake_branding(true, "LSMT Markt", None, None, None, None),
+        (2, true, "LSMT Markt".to_string(), None)
+    );
+    assert_eq!(
+        derive_handshake_branding(
+            true,
+            "LSMT Markt",
+            Some("https://img.gm.bydora.de/lsmt.webp".to_string()),
+            None,
+            None,
+            None
+        ),
+        (
+            3,
+            true,
+            "LSMT Markt".to_string(),
+            Some("https://img.gm.bydora.de/lsmt.webp".to_string())
+        )
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn encode_test_webp(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+    let img = RgbaImage::from_pixel(width, height, Rgba(color));
+    let mut buf = Vec::new();
+    WebPEncoder::new_lossless(&mut buf)
+        .write_image(img.as_raw(), width, height, ExtendedColorType::Rgba8)
+        .expect("lossless WebP encode");
+    buf
+}
+
+#[test]
+fn pure_rust_webp_to_bottom_left_dxt5_dds_with_10_mipmaps_works() {
+    // Case A: Wide banner 600x256 WebP -> scales proportionally to 512x218, placed bottom-left (x = 0..511, y = 38..255)
+    let wide_webp = encode_test_webp(600, 256, [240, 160, 20, 255]);
+    let wide_dds = convert_logo_bytes_to_dds_bytes(&wide_webp).unwrap();
+    assert_eq!(wide_dds.len(), EXPECTED_LOGO_DDS_BYTES);
+    assert_eq!(&wide_dds[0..4], b"DDS ");
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[4], wide_dds[5], wide_dds[6], wide_dds[7]]),
+        124
+    );
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[8], wide_dds[9], wide_dds[10], wide_dds[11]]),
+        0x000A_1007
+    );
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[12], wide_dds[13], wide_dds[14], wide_dds[15]]),
+        LOGO_CANVAS_HEIGHT
+    );
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[16], wide_dds[17], wide_dds[18], wide_dds[19]]),
+        LOGO_CANVAS_WIDTH
+    );
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[28], wide_dds[29], wide_dds[30], wide_dds[31]]),
+        LOGO_MIPMAP_COUNT
+    );
+    assert_eq!(&wide_dds[84..88], b"DXT5");
+    assert_eq!(
+        u32::from_le_bytes([wide_dds[108], wide_dds[109], wide_dds[110], wide_dds[111]]),
+        0x0040_1008
+    );
+
+    let wide_decoded = decode_dds_to_rgba8(&wide_dds).unwrap();
+    assert_eq!(
+        (wide_decoded.width(), wide_decoded.height()),
+        (LOGO_CANVAS_WIDTH, LOGO_CANVAS_HEIGHT)
+    );
+    // Top transparent margin (y = 10 < 38) must be transparent
+    assert_eq!(wide_decoded.get_pixel(10, 10)[3], 0);
+    assert_eq!(wide_decoded.get_pixel(500, 10)[3], 0);
+    // Bottom-left and bottom-right must be opaque warm gold
+    let bl = wide_decoded.get_pixel(10, 255);
+    let br = wide_decoded.get_pixel(500, 255);
+    assert!(bl[3] >= 250 && bl[0] > 200 && bl[1] > 120 && bl[2] < 60);
+    assert!(br[3] >= 250 && br[0] > 200 && br[1] > 120 && br[2] < 60);
+
+    // Case B: Square crest 512x512 WebP -> scales proportionally to 256x256, placed bottom-left (x = 0..255, y = 0..255)
+    let square_webp = encode_test_webp(512, 512, [30, 200, 80, 255]);
+    let square_dds = convert_logo_bytes_to_dds_bytes(&square_webp).unwrap();
+    assert_eq!(square_dds.len(), EXPECTED_LOGO_DDS_BYTES);
+
+    let square_decoded = decode_dds_to_rgba8(&square_dds).unwrap();
+    let crest_left = square_decoded.get_pixel(128, 255);
+    let crest_top_left = square_decoded.get_pixel(128, 10);
+    assert!(crest_left[3] >= 250 && crest_left[1] > 170);
+    assert!(crest_top_left[3] >= 250 && crest_top_left[1] > 170);
+    // Right half (x >= 260) must remain completely transparent
+    assert_eq!(square_decoded.get_pixel(400, 128)[3], 0);
+    assert_eq!(square_decoded.get_pixel(511, 255)[3], 0);
+}
+
+#[test]
+fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking loopback listener");
+    let addr = listener.local_addr().unwrap();
+
+    let tier3_webp = Arc::new(encode_test_webp(600, 256, [220, 120, 30, 255]));
+    let tier1_webp = Arc::new(encode_test_webp(512, 512, [40, 160, 230, 255]));
+    let tier3_logo_hits = Arc::new(AtomicUsize::new(0));
+    let tier1_logo_hits = Arc::new(AtomicUsize::new(0));
+    let stop_server = Arc::new(AtomicBool::new(false));
+
+    let tier3_webp_srv = Arc::clone(&tier3_webp);
+    let tier1_webp_srv = Arc::clone(&tier1_webp);
+    let tier3_hits_srv = Arc::clone(&tier3_logo_hits);
+    let tier1_hits_srv = Arc::clone(&tier1_logo_hits);
+    let stop_srv = Arc::clone(&stop_server);
+
+    let server_thread = thread::spawn(move || {
+        while !stop_srv.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut request_line = String::new();
+                    if reader.read_line(&mut request_line).is_err() || request_line.is_empty() {
+                        continue;
+                    }
+                    let mut token_hdr: Option<String> = None;
+                    let mut content_length: usize = 0;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty()
+                        {
+                            break;
+                        }
+                        if let Some((k, v)) = line.split_once(':') {
+                            let kl = k.trim().to_ascii_lowercase();
+                            let vt = v.trim().to_string();
+                            if kl == "x-market-token" {
+                                token_hdr = Some(vt);
+                            } else if kl == "content-length" {
+                                content_length = vt.parse().unwrap_or(0);
+                            }
+                        }
+                    }
+                    if content_length > 0 {
+                        let mut body = vec![0_u8; content_length];
+                        let _ = reader.read_exact(&mut body);
+                    }
+                    drop(reader);
+
+                    if request_line.starts_with("GET /api/v1/meta/status ") {
+                        let body = match token_hdr.as_deref() {
+                            Some("token-alpha-tier3") => format!(
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                            ),
+                            Some("token-bravo-tier1") => format!(
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
+                            ),
+                            _ => "{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":0,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":false}".to_string(),
+                        };
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if request_line.starts_with("GET /api/v1/market/state ") {
+                        let body = r#"{"updated_at":1763058000,"items":[{"fill_type":"WHEAT","fill_level":1000000,"trend":1.0,"great_demand":false,"great_demand_bonus":0.0,"great_demand_remaining":0,"status":"APPROVED"}]}"#;
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"e1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if request_line.starts_with("GET /logos/lsmt.webp ") {
+                        tier3_hits_srv.fetch_add(1, Ordering::SeqCst);
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            tier3_webp_srv.len()
+                        );
+                        let _ = stream.write_all(hdr.as_bytes());
+                        let _ = stream.write_all(&tier3_webp_srv);
+                    } else if request_line.starts_with("GET /logos/tier1.webp ") {
+                        tier1_hits_srv.fetch_add(1, Ordering::SeqCst);
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: image/webp\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            tier1_webp_srv.len()
+                        );
+                        let _ = stream.write_all(hdr.as_bytes());
+                        let _ = stream.write_all(&tier1_webp_srv);
+                    } else {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                    let _ = stream.flush();
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let dir = env::temp_dir().join(format!(
+        "fs25_gm_e2e_branding_cache_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let profile_dir = dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let cfg_file = dir.join("settings.json");
+    let init_cfg = AppConfig {
+        fs25_profile_path: Some(dir.join("unconfigured_profile").to_string_lossy().into_owned()),
+        ..AppConfig::default()
+    };
+    init_cfg.save_to_file(&cfg_file).unwrap();
+
+    let mgr = BridgeManager::new(cfg_file, None);
+    let dummy_ext = digest_access_key("UNIT-TEST-SUPPORT-ONLY");
+    let dummy_dev = digest_access_key("UNIT-TEST-DEVELOPER-ONLY");
+    mgr.unlock_access_tier_with_digests(
+        "UNIT-TEST-DEVELOPER-ONLY",
+        dummy_ext,
+        dummy_dev,
+        Duration::from_secs(1800),
+    )
+    .unwrap();
+
+    let url_a = format!("http://{addr}/logos/lsmt.webp");
+    let url_b = format!("http://{addr}/logos/tier1.webp");
+    let expected_rel_a = logo_rel_path_for_hash(&logo_cache_hash12(url_a.as_bytes()));
+    let expected_rel_b = logo_rel_path_for_hash(&logo_cache_hash12(url_b.as_bytes()));
+
+    let bridge_root = profile_dir.join("modSettings").join("FS25_GlobalMarket");
+    let online_xml_path = bridge_root.join("globalMarketOnline.xml");
+
+    let wait_for = |pred: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            if pred() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        false
+    };
+
+    // 1. Activate Token A (Tier 3: Private Market + WebP Logo)
+    let mut cfg = mgr.get_config();
+    cfg.backend_mode = BackendMode::Live;
+    cfg.backend_url = format!("http://{addr}");
+    cfg.fs25_profile_path = Some(profile_dir.to_string_lossy().into_owned());
+    cfg.market_token = Some("token-alpha-tier3".to_string());
+    mgr.update_config(cfg).unwrap();
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.branding_tier == 3
+                && s.market_logo_file.as_deref() == Some(expected_rel_a.as_str())
+        }),
+        "Worker should sync Tier 3 branding and cache DDS for Token A"
+    );
+
+    let dds_path_a = bridge_root.join(&expected_rel_a);
+    assert!(is_valid_cached_logo_dds(&dds_path_a));
+    assert_eq!(tier3_logo_hits.load(Ordering::SeqCst), 1);
+
+    let xml_a = fs::read_to_string(&online_xml_path).unwrap();
+    assert!(xml_a.contains("brandingTier=\"3\""));
+    assert!(xml_a.contains("isPrivateMarket=\"true\""));
+    assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
+    assert!(xml_a.contains("hasCustomLogo=\"true\""));
+    assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
+
+    // 2. Switch to Token B (Tier 1: Official Market + Custom WebP Logo, NO marketName)
+    let mut cfg_b = mgr.get_config();
+    cfg_b.market_token = Some("token-bravo-tier1".to_string());
+    mgr.update_config(cfg_b).unwrap();
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.branding_tier == 1
+                && s.market_logo_file.as_deref() == Some(expected_rel_b.as_str())
+        }),
+        "Worker should switch immediately to Tier 1 branding for Token B"
+    );
+
+    let dds_path_b = bridge_root.join(&expected_rel_b);
+    assert!(is_valid_cached_logo_dds(&dds_path_b));
+    assert_eq!(tier1_logo_hits.load(Ordering::SeqCst), 1);
+
+    let xml_b = fs::read_to_string(&online_xml_path).unwrap();
+    assert!(xml_b.contains("brandingTier=\"1\""));
+    assert!(xml_b.contains("isPrivateMarket=\"false\""));
+    assert!(!xml_b.contains("marketName="));
+    assert!(xml_b.contains("hasCustomLogo=\"true\""));
+    assert!(xml_b.contains(&format!("logoFile=\"{expected_rel_b}\"")));
+
+    // 3. Switch back to Token A -> MUST reuse cached logos/logo_<hashA>.dds WITHOUT re-downloading!
+    let mut cfg_a2 = mgr.get_config();
+    cfg_a2.market_token = Some("token-alpha-tier3".to_string());
+    mgr.update_config(cfg_a2).unwrap();
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.branding_tier == 3
+                && s.market_logo_file.as_deref() == Some(expected_rel_a.as_str())
+                && fs::read_to_string(&online_xml_path)
+                    .map(|x| x.contains(&format!("logoFile=\"{expected_rel_a}\"")))
+                    .unwrap_or(false)
+        }),
+        "Worker should restore Token A logoFile from local DDS cache"
+    );
+    assert_eq!(
+        tier3_logo_hits.load(Ordering::SeqCst),
+        1,
+        "Cached logos/logo_<hash>.dds must prevent redundant WebP downloads & re-encodes"
+    );
+
+    // 4. Clear token (Official Market Tier 0) -> immediately clears logoFile & marketName in XML
+    let mut cfg_official = mgr.get_config();
+    cfg_official.market_token = None;
+    mgr.update_config(cfg_official).unwrap();
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.branding_tier == 0
+                && !s.is_private_market
+                && s.market_logo_file.is_none()
+                && fs::read_to_string(&online_xml_path)
+                    .map(|x| x.contains("brandingTier=\"0\"") && !x.contains("logoFile="))
+                    .unwrap_or(false)
+        }),
+        "Clearing token should immediately reset globalMarketOnline.xml to Tier 0"
+    );
+
+    // 5. Also verify Developer Mock mode Tier 0..3 simulation + DDS output
+    let mut cfg_mock = mgr.get_config();
+    cfg_mock.backend_mode = BackendMode::Mock;
+    mgr.update_config(cfg_mock).unwrap();
+    let mock_snap = mgr.mock_set_branding_tier(3, None).unwrap();
+    assert_eq!(mock_snap.branding_tier, 3);
+    assert!(mock_snap.is_private_market);
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.branding_tier == 3 && s.market_logo_file.is_some()
+        }),
+        "Developer Mock Tier 3 should generate a cached DDS logo automatically"
+    );
+
+    mgr.shutdown();
+    stop_server.store(true, Ordering::SeqCst);
+    let _ = server_thread.join();
+
+    // Cached DDS files in logos/ must survive client shutdown for instant reuse on next launch
+    assert!(is_valid_cached_logo_dds(&dds_path_a));
+    assert!(is_valid_cached_logo_dds(&dds_path_b));
+
+    let _ = fs::remove_dir_all(&dir);
 }

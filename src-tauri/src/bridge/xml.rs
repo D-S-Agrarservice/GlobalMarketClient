@@ -27,6 +27,112 @@ static STAGING_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// prevents directory buildup while the game is closed without racing an active Lua file read.
 pub const MAX_RETAINED_MARKET_SYNC_FILES: usize = 3;
 
+/// Maximum UTF-8 byte & character length accepted by `GlobalMarketBranding.lua` (`MAX_MARKET_NAME_LEN = 48`).
+pub const MAX_MARKET_NAME_BYTES: usize = 48;
+
+/// Optional 3-tier market branding attributes written onto `<globalMarketOnline ...>` (`FS25_GlobalMarket v0.9.9.22+`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatBranding {
+    /// Branding tier (`0` = Official Standard, `1` = Official + Logo, `2` = Private Market, `3` = Private + Logo).
+    pub branding_tier: u8,
+    pub is_private_market: bool,
+    pub market_name: Option<String>,
+    pub has_custom_logo: bool,
+    pub logo_file: Option<String>,
+}
+
+impl HeartbeatBranding {
+    /// Enforces strict Lua tier invariants (`GlobalMarketBranding.lua`) and sanitizes `marketName` / `logoFile`.
+    pub fn normalized(&self) -> Self {
+        let clean_name = self.market_name.as_deref().and_then(sanitize_market_name);
+        let clean_logo = self.logo_file.as_deref().and_then(sanitize_logo_rel_path);
+        let logo_ready = self.has_custom_logo && clean_logo.is_some();
+
+        match self.branding_tier {
+            1 if logo_ready => Self {
+                branding_tier: 1,
+                is_private_market: false,
+                market_name: None,
+                has_custom_logo: true,
+                logo_file: clean_logo,
+            },
+            2 => Self {
+                branding_tier: 2,
+                is_private_market: true,
+                market_name: clean_name,
+                has_custom_logo: false,
+                logo_file: None,
+            },
+            3 if logo_ready => Self {
+                branding_tier: 3,
+                is_private_market: true,
+                market_name: clean_name,
+                has_custom_logo: true,
+                logo_file: clean_logo,
+            },
+            3 => Self {
+                branding_tier: 2,
+                is_private_market: true,
+                market_name: clean_name,
+                has_custom_logo: false,
+                logo_file: None,
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+/// Sanitizes an incoming custom market name identically to `GlobalMarketBranding.sanitizeMarketName`
+/// while truncating on a valid UTF-8 codepoint boundary (`<= 48` UTF-8 bytes) so Lua `string.sub(1, 48)`
+/// can never split multi-byte characters (such as German umlauts).
+pub fn sanitize_market_name(raw: &str) -> Option<String> {
+    let without_ctrl: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut collapsed = without_ctrl
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    if collapsed.len() > MAX_MARKET_NAME_BYTES {
+        let mut end = MAX_MARKET_NAME_BYTES;
+        while end > 0 && !collapsed.is_char_boundary(end) {
+            end -= 1;
+        }
+        collapsed.truncate(end);
+        collapsed = collapsed.trim_end().to_string();
+    }
+    (!collapsed.is_empty()).then_some(collapsed)
+}
+
+/// Validates a relative `.dds` logo path inside `modSettings/FS<YY>_GlobalMarket/` identically to
+/// `GlobalMarketBranding.sanitizeLogoRelPath` (`<file>.dds` or `logos/<file>.dds`, ASCII `[A-Za-z0-9_.-]`).
+pub fn sanitize_logo_rel_path(raw: &str) -> Option<String> {
+    let normalized = raw.replace('\\', "/");
+    let clean = normalized.trim();
+    if clean.is_empty() || clean.contains("..") || clean.contains(':') {
+        return None;
+    }
+
+    let file_part = clean.strip_prefix("logos/").unwrap_or(clean);
+    if file_part.len() <= 4
+        || !file_part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        return None;
+    }
+
+    if !file_part.to_ascii_lowercase().ends_with(".dds") {
+        return None;
+    }
+
+    Some(clean.to_string())
+}
+
 #[derive(Debug, Clone)]
 pub enum IncomingPacket {
     UpdateWhitelist(WhitelistSyncRequest),
@@ -62,13 +168,14 @@ fn parse_version_parts(raw: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Atomically writes `globalMarketOnline.xml` (Spec Section 3.1).
+/// Atomically writes `globalMarketOnline.xml` (Spec Section 3.1 + 3-tier market branding attributes).
 pub fn write_heartbeat_xml(
     staging_dir: &Path,
     online_xml_path: &Path,
     is_connected: bool,
     exe_version: &str,
     min_version: &str,
+    branding: Option<&HeartbeatBranding>,
 ) -> Result<(), String> {
     let timestamp = now_unix_secs();
     let connected_str = if is_connected { "true" } else { "false" };
@@ -79,9 +186,47 @@ pub fn write_heartbeat_xml(
         min_version
     });
 
+    let effective = if is_connected {
+        branding.map(HeartbeatBranding::normalized).unwrap_or_default()
+    } else {
+        HeartbeatBranding::default()
+    };
+
+    let is_priv_str = if effective.is_private_market {
+        "true"
+    } else {
+        "false"
+    };
+    let has_logo_str = if effective.has_custom_logo {
+        "true"
+    } else {
+        "false"
+    };
+
+    let mut root_attrs = format!(
+        "timestamp=\"{timestamp}\" isConnected=\"{connected_str}\" brandingTier=\"{}\" isPrivateMarket=\"{is_priv_str}\"",
+        effective.branding_tier
+    );
+
+    if effective.is_private_market {
+        if let Some(ref name) = effective.market_name {
+            let name_escaped = escape(name);
+            root_attrs.push_str(&format!(" marketName=\"{name_escaped}\""));
+        }
+    }
+
+    root_attrs.push_str(&format!(" hasCustomLogo=\"{has_logo_str}\""));
+
+    if effective.has_custom_logo {
+        if let Some(ref rel_logo) = effective.logo_file {
+            let logo_escaped = escape(rel_logo);
+            root_attrs.push_str(&format!(" logoFile=\"{logo_escaped}\""));
+        }
+    }
+
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n\
-<globalMarketOnline timestamp=\"{timestamp}\" isConnected=\"{connected_str}\">\n\
+<globalMarketOnline {root_attrs}>\n\
     <version>{ver_escaped}</version>\n\
     <minVersion>{min_escaped}</minVersion>\n\
 </globalMarketOnline>\n"

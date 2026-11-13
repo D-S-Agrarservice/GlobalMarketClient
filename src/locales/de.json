@@ -153,5 +153,13 @@
   "settingsCheckingUpdates": "Prüfe…",
   "toastUpToDate": "App ist auf dem neuesten Stand (v{version}).",
   "toastUpdateFound": "Update v{version} gefunden – bereit zur 1-Klick-Installation!",
-  "toastUpdateFailed": "Auto-Update fehlgeschlagen ({error}). Öffne GitHub Releases…"
+  "toastUpdateFailed": "Auto-Update fehlgeschlagen ({error}). Öffne GitHub Releases…",
+  "mockTier0": "Stufe 0: Standard",
+  "mockTier1": "Stufe 1: Logo (Global)",
+  "mockTier2": "Stufe 2: Privat-Markt",
+  "mockTier3": "Stufe 3: Privat + Logo",
+  "logLogoCached": "Community-Logo als ‚{file}‘ im Cache gespeichert (512×256 DXT5).",
+  "logLogoDownloadFailed": "Community-Logo konnte nicht geladen werden: {error}",
+  "logLogoConvertFailed": "DDS-Konvertierung des Community-Logos fehlgeschlagen: {error}",
+  "logMockBrandingTier": "Simulation: Branding-Stufe auf Stufe {brandingTier} gesetzt."
 }

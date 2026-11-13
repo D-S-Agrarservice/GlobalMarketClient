@@ -10,17 +10,23 @@ use crate::api::types::{
     TransactionType, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
+use crate::bridge::xml::sanitize_market_name;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CAPACITY_LITERS: f32 = 2_000_000.0;
+const DEFAULT_MOCK_PRIVATE_MARKET_NAME: &str = "WeekendFarmers (Mock)";
+const FALLBACK_MOCK_LOGO_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
 
 #[derive(Debug)]
 struct MockState {
     simulate_offline: bool,
     simulated_min_version: String,
+    simulated_branding_tier: u8,
+    simulated_private_market_name: String,
     simulated_logo_url: Option<String>,
+    simulated_logo_bytes: Option<Vec<u8>>,
     items: BTreeMap<String, MarketItemDto>,
     processed_tx_ids: Vec<String>,
 }
@@ -59,7 +65,10 @@ impl Default for MockState {
         Self {
             simulate_offline: false,
             simulated_min_version: "1.0.0".to_string(),
+            simulated_branding_tier: 0,
+            simulated_private_market_name: DEFAULT_MOCK_PRIVATE_MARKET_NAME.to_string(),
             simulated_logo_url: None,
+            simulated_logo_bytes: None,
             items,
             processed_tx_ids: Vec::new(),
         }
@@ -97,19 +106,64 @@ impl LocalMockBackend {
         }
     }
 
-    /// Set or clear a simulated Community Logo (`data:image/...;base64,...` or URL) in Mock mode.
-    pub fn set_simulated_logo(&self, logo_url: Option<String>) {
+    /// Set or clear a simulated Community Logo (`data:image/...;base64,...` + raw image bytes) in Mock mode.
+    pub fn set_simulated_logo(&self, logo_url: Option<String>, logo_bytes: Option<Vec<u8>>) {
         if let Ok(mut guard) = self.state.lock() {
+            let has_logo = logo_url.is_some() && logo_bytes.is_some();
             guard.simulated_logo_url = logo_url;
+            guard.simulated_logo_bytes = logo_bytes;
+            if has_logo {
+                guard.simulated_branding_tier = match guard.simulated_branding_tier {
+                    2 | 3 => 3,
+                    _ => 1,
+                };
+            } else {
+                guard.simulated_branding_tier = match guard.simulated_branding_tier {
+                    2 | 3 => 2,
+                    _ => 0,
+                };
+            }
         }
     }
 
-    /// Returns the currently active simulated Community Logo URL/data-URI, if any.
-    pub fn simulated_logo(&self) -> Option<String> {
+    /// Overrides the simulated 3-tier market branding (`0..=3`) and optional private market name in Mock mode.
+    pub fn set_simulated_branding_tier(&self, tier: u8, custom_name: Option<String>) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.simulated_branding_tier = tier.min(3);
+            if let Some(raw) = custom_name {
+                if let Some(clean) = sanitize_market_name(&raw) {
+                    guard.simulated_private_market_name = clean;
+                }
+            }
+            if matches!(guard.simulated_branding_tier, 1 | 3) && guard.simulated_logo_bytes.is_none()
+            {
+                let data_url = format!(
+                    "data:image/png;base64,{}",
+                    crate::bridge::coordinator::encode_base64(FALLBACK_MOCK_LOGO_PNG)
+                );
+                guard.simulated_logo_url = Some(data_url);
+                guard.simulated_logo_bytes = Some(FALLBACK_MOCK_LOGO_PNG.to_vec());
+            }
+        }
+    }
+
+    /// Returns the currently active simulated branding tier (`0..=3`).
+    pub fn simulated_branding_tier(&self) -> u8 {
         self.state
             .lock()
-            .ok()
-            .and_then(|guard| guard.simulated_logo_url.clone())
+            .map(|g| g.simulated_branding_tier)
+            .unwrap_or(0)
+    }
+
+    /// Returns the currently active simulated Community Logo URL/data-URI, if active in tier `1` or `3`.
+    pub fn simulated_logo(&self) -> Option<String> {
+        self.state.lock().ok().and_then(|guard| {
+            if matches!(guard.simulated_branding_tier, 1 | 3) {
+                guard.simulated_logo_url.clone()
+            } else {
+                None
+            }
+        })
     }
 
     /// Approve all currently `PENDING` mod fillTypes (tests seamless live transition in FS25).
@@ -176,13 +230,28 @@ impl BackendService for LocalMockBackend {
             ));
         }
 
+        let tier = guard.simulated_branding_tier.min(3);
+        let is_private_market = matches!(tier, 2 | 3);
+        let market_name = if is_private_market {
+            guard.simulated_private_market_name.clone()
+        } else {
+            "Local Simulation (Mock)".to_string()
+        };
+        let market_logo_url = if matches!(tier, 1 | 3) {
+            guard.simulated_logo_url.clone()
+        } else {
+            None
+        };
+
         Ok(ServerHandshake {
             online: true,
             min_exe_version: guard.simulated_min_version.clone(),
             poll_interval_sec: 5,
-            market_name: "Local Simulation (Mock)".to_string(),
+            market_name,
             api_version: "2.0.0-mock".to_string(),
-            market_logo_url: guard.simulated_logo_url.clone(),
+            branding_tier: tier,
+            is_private_market,
+            market_logo_url,
         })
     }
 
@@ -304,6 +373,17 @@ impl BackendService for LocalMockBackend {
         }
 
         Ok(Self::snapshot_locked(&guard))
+    }
+
+    fn fetch_logo_bytes(&self, _logo_url: &str) -> Result<Vec<u8>, ApiError> {
+        let guard = self
+            .state
+            .lock()
+            .map_err(|_| ApiError::Internal("Mock mutex poisoned".to_string()))?;
+        guard
+            .simulated_logo_bytes
+            .clone()
+            .ok_or_else(|| ApiError::Validation("No simulated logo configured in Mock mode".to_string()))
     }
 }
 

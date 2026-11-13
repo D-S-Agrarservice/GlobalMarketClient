@@ -25,6 +25,8 @@ pub struct BridgePaths {
     pub read_dir: PathBuf,
     /// `.../modSettings/FS<YY>_GlobalMarket/write` (Lua -> EXE)
     pub write_dir: PathBuf,
+    /// `.../modSettings/FS<YY>_GlobalMarket/logos` (cached `512x256` DXT5 `.dds` community logos)
+    pub logos_dir: PathBuf,
     /// `.../modSettings/FS<YY>_GlobalMarket/.staging` (invisible temp staging outside `read/`)
     pub staging_dir: PathBuf,
 }
@@ -35,6 +37,7 @@ impl BridgePaths {
             &self.bridge_root,
             &self.read_dir,
             &self.write_dir,
+            &self.logos_dir,
             &self.staging_dir,
         ] {
             fs::create_dir_all(dir).map_err(|e| {
@@ -125,6 +128,7 @@ pub fn resolve_bridge_paths(raw_selected: &Path) -> Result<BridgePaths, String> 
         server_whitelist_file: bridge_root.join("server_whitelist.xml"),
         read_dir: bridge_root.join("read"),
         write_dir: bridge_root.join("write"),
+        logos_dir: bridge_root.join("logos"),
         staging_dir: bridge_root.join(".staging"),
         profile_dir,
         bridge_root,
