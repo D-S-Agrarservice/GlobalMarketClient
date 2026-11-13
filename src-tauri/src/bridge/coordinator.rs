@@ -21,7 +21,7 @@ use crate::bridge::xml::{
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
-    DEFAULT_OFFICIAL_BACKEND_URL,
+    SavedTokenProfile, TokenVault, DEFAULT_OFFICIAL_BACKEND_URL,
 };
 use crate::PROTOCOL_EXE_VERSION;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -106,6 +106,8 @@ pub struct BridgeSnapshot {
     pub is_private_market: bool,
     pub market_logo_url: Option<String>,
     pub market_logo_file: Option<String>,
+    pub active_token_id: Option<String>,
+    pub saved_tokens: Vec<SavedTokenProfile>,
     pub profile_path: Option<String>,
     pub bridge_path: Option<String>,
     pub exe_version: String,
@@ -133,6 +135,7 @@ enum WorkerSignal {
 struct SharedState {
     config: AppConfig,
     config_file: PathBuf,
+    token_vault: TokenVault,
     snapshot: BridgeSnapshot,
     logs: VecDeque<LogEntry>,
     extended_expires_at: Option<Instant>,
@@ -155,6 +158,31 @@ impl BridgeManager {
         let mut config = AppConfig::load_from_file(&config_file);
         let mut should_persist = !config_existed;
 
+        let vault_path = TokenVault::vault_path_for_config(&config_file);
+        let mut token_vault = TokenVault::load_or_empty(vault_path);
+
+        // Crash-safe one-time migration: seal any legacy plaintext `marketToken` from older
+        // `settings.json` files into `tokens.vault` first, then scrub `settings.json`.
+        if let Some(legacy_raw) = config.market_token.take() {
+            if !legacy_raw.trim().is_empty() {
+                if let Ok(profile) = token_vault.upsert_token(&legacy_raw, None) {
+                    if token_vault.save().is_ok() {
+                        config.active_token_id = Some(profile.id);
+                        should_persist = true;
+                    }
+                }
+            } else {
+                should_persist = true;
+            }
+        }
+
+        if let Some(ref active_id) = config.active_token_id {
+            if token_vault.get_profile(active_id).is_none() {
+                config.active_token_id = None;
+                should_persist = true;
+            }
+        }
+
         // Auto-discover FS25 profile path on first start if none is saved yet.
         if config.fs25_profile_path.is_none() {
             if let Some(found) = discover_fs25_profile_path() {
@@ -167,10 +195,15 @@ impl BridgeManager {
             let _ = config.save_to_file(&config_file);
         }
 
+        let initial_raw_token = config
+            .active_token_id
+            .as_deref()
+            .and_then(|id| token_vault.resolve_raw_token(id));
+
         let live_backend = Arc::new(
             FastApiBackend::new(
                 config.backend_url.clone(),
-                config.market_token.clone(),
+                initial_raw_token,
                 config.client_id.clone(),
             )
             .expect("HTTP client initialization failed"),
@@ -192,6 +225,8 @@ impl BridgeManager {
             is_private_market: false,
             market_logo_url: None,
             market_logo_file: None,
+            active_token_id: config.active_token_id.clone(),
+            saved_tokens: token_vault.list_profiles(),
             profile_path: config.fs25_profile_path.clone(),
             bridge_path: None,
             exe_version: PROTOCOL_EXE_VERSION.to_string(),
@@ -214,6 +249,7 @@ impl BridgeManager {
             shared: Arc::new(Mutex::new(SharedState {
                 config,
                 config_file,
+                token_vault,
                 snapshot: initial_snapshot,
                 logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
                 extended_expires_at: None,
@@ -291,7 +327,7 @@ impl BridgeManager {
         Ok(self.get_snapshot())
     }
 
-    /// Updates user configuration (language, notifications, tray behavior, backend mode/URL/token).
+    /// Updates user configuration (language, notifications, tray behavior, backend mode/URL, or active token profile).
     pub fn update_config(&self, mut next: AppConfig) -> Result<BridgeSnapshot, String> {
         next.language = crate::config::normalize_language(&next.language);
 
@@ -311,21 +347,50 @@ impl BridgeManager {
                 next.backend_url = DEFAULT_OFFICIAL_BACKEND_URL.to_string();
             }
 
+            // If a caller supplied a legacy/direct `market_token` string, vault it immediately
+            // and never retain plaintext on `AppConfig`.
+            if let Some(raw_tok) = next.market_token.take() {
+                let trimmed = raw_tok.trim();
+                if !trimmed.is_empty() {
+                    let profile = guard.token_vault.upsert_token(trimmed, None)?;
+                    guard.token_vault.save()?;
+                    next.active_token_id = Some(profile.id);
+                }
+            }
+
+            if let Some(ref req_id) = next.active_token_id {
+                let cleaned = req_id.trim().to_string();
+                if cleaned.is_empty() {
+                    next.active_token_id = None;
+                } else if guard.token_vault.get_profile(&cleaned).is_some() {
+                    next.active_token_id = Some(cleaned);
+                } else {
+                    next.active_token_id = guard.config.active_token_id.clone();
+                }
+            }
+
+            let resolved_raw_token = next
+                .active_token_id
+                .as_deref()
+                .and_then(|id| guard.token_vault.resolve_raw_token(id));
+
             let lang_diff = guard.config.language != next.language;
             let restart = guard.config.backend_mode != next.backend_mode
                 || guard.config.backend_url != next.backend_url
-                || guard.config.market_token != next.market_token
+                || guard.config.active_token_id != next.active_token_id
                 || guard.config.fs25_profile_path != next.fs25_profile_path;
 
             self.live_backend.update_connection_config(
                 next.backend_url.clone(),
-                next.market_token.clone(),
+                resolved_raw_token,
                 next.client_id.clone(),
             );
 
             guard.snapshot.access_tier = next.access_tier;
             guard.snapshot.backend_mode = next.backend_mode;
             guard.snapshot.backend_url = next.backend_url.clone();
+            guard.snapshot.active_token_id = next.active_token_id.clone();
+            guard.snapshot.saved_tokens = guard.token_vault.list_profiles();
 
             guard.config = next;
             guard.config.save_to_file(&guard.config_file)?;
@@ -336,8 +401,243 @@ impl BridgeManager {
             self.restart_worker();
         } else if lang_changed {
             self.nudge_signal(WorkerSignal::RefreshLocalization);
+        } else {
+            self.emit_current_snapshot();
         }
         Ok(self.get_snapshot())
+    }
+
+    /// Seals a new (or updated) market/logo token inside the OS-protected `TokenVault`,
+    /// selects it as the active profile, and immediately switches the live connection.
+    pub fn add_market_token(
+        &self,
+        raw_token: &str,
+        custom_label: Option<&str>,
+    ) -> Result<BridgeSnapshot, String> {
+        let (masked_hint, should_restart) = {
+            let mut guard = self
+                .shared
+                .lock()
+                .map_err(|_| "Internal state lock poisoned".to_string())?;
+
+            let profile = guard.token_vault.upsert_token(raw_token, custom_label)?;
+            guard.token_vault.save()?;
+
+            let raw_resolved = guard.token_vault.resolve_raw_token(&profile.id);
+            guard.config.active_token_id = Some(profile.id.clone());
+            guard.config.save_to_file(&guard.config_file)?;
+
+            self.live_backend.update_connection_config(
+                guard.config.backend_url.clone(),
+                raw_resolved,
+                guard.config.client_id.clone(),
+            );
+
+            guard.snapshot.active_token_id = Some(profile.id.clone());
+            guard.snapshot.saved_tokens = guard.token_vault.list_profiles();
+
+            (
+                profile.masked_hint,
+                guard.config.backend_mode == BackendMode::Live,
+            )
+        };
+
+        self.push_i18n_log(
+            LogLevel::Success,
+            "logTokenSavedAndActivated",
+            [("hint", masked_hint.clone())],
+            format!("Saved and activated market token ({masked_hint})."),
+        );
+
+        if should_restart {
+            self.restart_worker();
+        } else {
+            self.emit_current_snapshot();
+        }
+        Ok(self.get_snapshot())
+    }
+
+    /// Switches between the Official Global Market (`token_id == None`) and any saved token profile.
+    pub fn select_active_market_token(
+        &self,
+        token_id: Option<String>,
+    ) -> Result<BridgeSnapshot, String> {
+        let cleaned_id = token_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let (changed, selected_profile, should_restart) = {
+            let mut guard = self
+                .shared
+                .lock()
+                .map_err(|_| "Internal state lock poisoned".to_string())?;
+
+            let (resolved_tok, prof_opt) = if let Some(ref id) = cleaned_id {
+                let Some(prof) = guard.token_vault.get_profile(id) else {
+                    return Err("Unknown market token profile.".to_string());
+                };
+                let Some(raw) = guard.token_vault.resolve_raw_token(id) else {
+                    return Err("Unknown market token profile.".to_string());
+                };
+                (Some(raw), Some(prof))
+            } else {
+                (None, None)
+            };
+
+            if guard.config.active_token_id == cleaned_id {
+                return Ok(guard.snapshot.clone());
+            }
+
+            guard.config.active_token_id = cleaned_id.clone();
+            guard.config.save_to_file(&guard.config_file)?;
+
+            self.live_backend.update_connection_config(
+                guard.config.backend_url.clone(),
+                resolved_tok,
+                guard.config.client_id.clone(),
+            );
+
+            guard.snapshot.active_token_id = cleaned_id;
+            guard.snapshot.saved_tokens = guard.token_vault.list_profiles();
+
+            (
+                true,
+                prof_opt,
+                guard.config.backend_mode == BackendMode::Live,
+            )
+        };
+
+        if changed {
+            if let Some(prof) = selected_profile {
+                let display = prof
+                    .custom_label
+                    .or(prof.detected_market_name)
+                    .unwrap_or_else(|| prof.masked_hint.clone());
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logMarketProfileSelected",
+                    [("profile", display.clone())],
+                    format!("Switched active market token to '{display}'."),
+                );
+            } else {
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logMarketSwitchedOfficial",
+                    [],
+                    "Switched to Official Global Market (no token).".to_string(),
+                );
+            }
+
+            if should_restart {
+                self.restart_worker();
+            } else {
+                self.emit_current_snapshot();
+            }
+        }
+        Ok(self.get_snapshot())
+    }
+
+    /// Updates the optional user-defined nickname on an existing saved token profile.
+    pub fn update_market_token_label(
+        &self,
+        token_id: &str,
+        custom_label: Option<&str>,
+    ) -> Result<BridgeSnapshot, String> {
+        {
+            let mut guard = self
+                .shared
+                .lock()
+                .map_err(|_| "Internal state lock poisoned".to_string())?;
+            if guard.token_vault.update_custom_label(token_id, custom_label) {
+                guard.token_vault.save()?;
+                guard.snapshot.saved_tokens = guard.token_vault.list_profiles();
+            }
+        }
+        self.emit_current_snapshot();
+        Ok(self.get_snapshot())
+    }
+
+    /// Deletes a saved token profile from the OS vault. If it was currently active, cleanly
+    /// switches back to the Official Global Market (`Tier 0`).
+    pub fn remove_market_token(&self, token_id: &str) -> Result<BridgeSnapshot, String> {
+        let clean_target = token_id.trim();
+        let (removed, was_active, masked_hint, should_restart) = {
+            let mut guard = self
+                .shared
+                .lock()
+                .map_err(|_| "Internal state lock poisoned".to_string())?;
+
+            let hint = guard
+                .token_vault
+                .get_profile(clean_target)
+                .map(|p| p.masked_hint)
+                .unwrap_or_else(|| "••••••".to_string());
+            let was_removed = guard.token_vault.remove_token(clean_target);
+            if !was_removed {
+                return Ok(guard.snapshot.clone());
+            }
+            guard.token_vault.save()?;
+
+            let active_hit = guard.config.active_token_id.as_deref() == Some(clean_target);
+            if active_hit {
+                guard.config.active_token_id = None;
+                guard.config.save_to_file(&guard.config_file)?;
+                self.live_backend.update_connection_config(
+                    guard.config.backend_url.clone(),
+                    None,
+                    guard.config.client_id.clone(),
+                );
+                guard.snapshot.active_token_id = None;
+            }
+            guard.snapshot.saved_tokens = guard.token_vault.list_profiles();
+
+            (
+                true,
+                active_hit,
+                hint,
+                active_hit && guard.config.backend_mode == BackendMode::Live,
+            )
+        };
+
+        if removed {
+            self.push_i18n_log(
+                LogLevel::Info,
+                "logTokenRemoved",
+                [("hint", masked_hint.clone())],
+                format!("Removed saved market token ({masked_hint})."),
+            );
+            if should_restart {
+                self.restart_worker();
+            } else if was_active {
+                self.emit_current_snapshot();
+            } else {
+                self.emit_current_snapshot();
+            }
+        }
+        Ok(self.get_snapshot())
+    }
+
+    /// Generates an anonymized Markdown diagnostic report with all vault tokens scrubbed.
+    pub fn generate_diagnostic_report(&self) -> String {
+        check_and_expire_extended_tier_shared(&self.shared, &self.app_handle);
+        let (snap, cfg, logs, secrets) = match self.shared.lock() {
+            Ok(g) => (
+                g.snapshot.clone(),
+                g.config.clone(),
+                g.logs.iter().cloned().collect::<Vec<_>>(),
+                g.token_vault.all_raw_tokens(),
+            ),
+            Err(e) => {
+                let g = e.into_inner();
+                (
+                    g.snapshot.clone(),
+                    g.config.clone(),
+                    g.logs.iter().cloned().collect::<Vec<_>>(),
+                    g.token_vault.all_raw_tokens(),
+                )
+            }
+        };
+        crate::diagnostics::build_diagnostic_report_with_secrets(&snap, &cfg, &logs, &secrets)
     }
 
     /// Validates an access key and unlocks `AccessTier::Extended` (30-minute session TTL)
@@ -400,9 +700,14 @@ impl BridgeManager {
                 {
                     guard.config.backend_mode = BackendMode::Live;
                     guard.config.backend_url = DEFAULT_OFFICIAL_BACKEND_URL.to_string();
+                    let active_tok = guard
+                        .config
+                        .active_token_id
+                        .as_deref()
+                        .and_then(|id| guard.token_vault.resolve_raw_token(id));
                     self.live_backend.update_connection_config(
                         guard.config.backend_url.clone(),
-                        guard.config.market_token.clone(),
+                        active_tok,
                         guard.config.client_id.clone(),
                     );
                     restart = true;
@@ -446,9 +751,14 @@ impl BridgeManager {
             guard.config.access_tier = AccessTier::User;
             guard.config.backend_mode = BackendMode::Live;
             guard.config.backend_url = DEFAULT_OFFICIAL_BACKEND_URL.to_string();
+            let active_tok = guard
+                .config
+                .active_token_id
+                .as_deref()
+                .and_then(|id| guard.token_vault.resolve_raw_token(id));
             self.live_backend.update_connection_config(
                 guard.config.backend_url.clone(),
-                guard.config.market_token.clone(),
+                active_tok,
                 guard.config.client_id.clone(),
             );
 
@@ -724,29 +1034,45 @@ impl BridgeManager {
     fn restart_worker(&self) {
         self.shutdown();
 
-        let (profile_opt, backend_mode, backend_url, access_tier) = {
+        let (profile_opt, backend_mode, backend_url, access_tier, active_saved_profile) = {
             let Ok(guard) = self.shared.lock() else {
                 return;
             };
+            let active_prof = guard
+                .config
+                .active_token_id
+                .as_deref()
+                .and_then(|id| guard.token_vault.get_profile(id));
             (
                 guard.config.fs25_profile_path.clone(),
                 guard.config.backend_mode,
                 guard.config.backend_url.clone(),
                 guard.config.access_tier,
+                active_prof,
             )
         };
 
         let default_market_name = match backend_mode {
             BackendMode::Mock => "Local Simulation (Mock)".to_string(),
-            BackendMode::Live => "Global Market".to_string(),
+            BackendMode::Live => active_saved_profile
+                .as_ref()
+                .filter(|p| p.is_private_market)
+                .and_then(|p| p.detected_market_name.clone())
+                .unwrap_or_else(|| "Global Market".to_string()),
         };
         let default_mock_tier = match backend_mode {
             BackendMode::Mock => self.mock_backend.simulated_branding_tier(),
-            BackendMode::Live => 0,
+            BackendMode::Live => active_saved_profile
+                .as_ref()
+                .and_then(|p| p.branding_tier)
+                .unwrap_or(0),
         };
         let default_mock_logo = match backend_mode {
             BackendMode::Mock => self.mock_backend.simulated_logo(),
-            BackendMode::Live => None,
+            BackendMode::Live => active_saved_profile
+                .as_ref()
+                .filter(|p| matches!(p.branding_tier, Some(1 | 3)))
+                .and_then(|p| p.cached_logo_url.clone()),
         };
 
         let Some(raw_profile) = profile_opt else {
@@ -825,6 +1151,15 @@ impl BridgeManager {
         }
 
         let detected_ed = paths.game_edition.clone();
+        let remembered_logo_dds = if backend_mode == BackendMode::Live {
+            active_saved_profile
+                .as_ref()
+                .and_then(|p| p.cached_logo_file.as_deref())
+                .filter(|rel| is_valid_cached_logo_dds(&paths.bridge_root.join(rel)))
+                .map(ToOwned::to_owned)
+        } else {
+            None
+        };
         self.update_snapshot(|snap| {
             snap.state = BridgeConnectionState::Connecting;
             snap.game_edition = Some(detected_ed.clone());
@@ -835,7 +1170,7 @@ impl BridgeManager {
             snap.branding_tier = default_mock_tier;
             snap.is_private_market = matches!(default_mock_tier, 2 | 3);
             snap.market_logo_url = default_mock_logo;
-            snap.market_logo_file = None;
+            snap.market_logo_file = remembered_logo_dds;
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
             snap.heartbeat_seq = 0;
@@ -1106,6 +1441,27 @@ fn run_bridge_worker(
                     let ui_logo_url = matches!(next_branding.branding_tier, 1 | 3)
                         .then(|| hs.market_logo_url)
                         .flatten();
+
+                    if next_connected {
+                        if let Ok(mut guard) = shared.lock() {
+                            if guard.config.backend_mode == BackendMode::Live {
+                                if let Some(active_id) = guard.config.active_token_id.clone() {
+                                    if guard.token_vault.record_handshake_metadata(
+                                        &active_id,
+                                        next_branding.branding_tier,
+                                        next_branding.is_private_market,
+                                        hs.is_private_market.then_some(hs.market_name.as_str()),
+                                        ui_logo_url.as_deref(),
+                                        next_branding.logo_file.as_deref(),
+                                    ) {
+                                        let _ = guard.token_vault.save();
+                                        guard.snapshot.saved_tokens =
+                                            guard.token_vault.list_profiles();
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.state = next_state;

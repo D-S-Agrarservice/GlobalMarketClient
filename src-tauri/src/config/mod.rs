@@ -1,4 +1,8 @@
-//! Persistent user configuration (FS25 profile path, language, notifications, access tier, client ID, optional market token).
+//! Persistent user configuration (FS25 profile path, language, notifications, access tier, client ID, active token profile ID).
+
+pub mod vault;
+
+pub use vault::{SavedTokenProfile, TokenVault};
 
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::RandomState;
@@ -88,7 +92,13 @@ pub struct AppConfig {
     pub backend_mode: BackendMode,
     /// Base URL of the FastAPI server (e.g. `https://api.example.com`).
     pub backend_url: String,
-    /// Optional license/access token for private/community markets (empty = public global market).
+    /// ID of the currently active token profile stored in the OS-protected `tokens.vault`
+    /// (`None` = Official Global Market without any token, i.e. Tier 0).
+    pub active_token_id: Option<String>,
+    /// Legacy plaintext token field retained strictly as read-only (`skip_serializing`) for automatic
+    /// one-time migration from older `settings.json` files into `tokens.vault`. Never written to disk
+    /// and never serialized over Tauri IPC.
+    #[serde(default, skip_serializing)]
     pub market_token: Option<String>,
 }
 
@@ -104,6 +114,7 @@ impl Default for AppConfig {
             log_auto_scroll: true,
             backend_mode: BackendMode::Live,
             backend_url: DEFAULT_OFFICIAL_BACKEND_URL.to_string(),
+            active_token_id: None,
             market_token: None,
         }
     }
@@ -140,7 +151,10 @@ impl AppConfig {
                     }
                 }
 
-                if needs_save {
+                // Only rewrite `settings.json` immediately when no legacy plaintext token is pending
+                // migration; if `market_token` is present, `BridgeManager::new` seals it into
+                // `tokens.vault` first before rewriting `settings.json`.
+                if needs_save && parsed.market_token.is_none() {
                     let _ = parsed.save_to_file(config_file);
                 }
                 return parsed;

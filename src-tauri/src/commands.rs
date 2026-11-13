@@ -2,7 +2,6 @@
 
 use crate::bridge::coordinator::{BridgeManager, BridgeSnapshot, LogEntry};
 use crate::config::AppConfig;
-use crate::diagnostics::build_diagnostic_report;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
@@ -72,11 +71,42 @@ pub fn reset_access_tier(bridge: State<'_, BridgeManager>) -> Result<AppConfig, 
 }
 
 #[tauri::command]
+pub fn add_market_token(
+    token: String,
+    custom_label: Option<String>,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.add_market_token(&token, custom_label.as_deref())
+}
+
+#[tauri::command]
+pub fn select_active_market_token(
+    token_id: Option<String>,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.select_active_market_token(token_id)
+}
+
+#[tauri::command]
+pub fn update_market_token_label(
+    token_id: String,
+    custom_label: Option<String>,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.update_market_token_label(&token_id, custom_label.as_deref())
+}
+
+#[tauri::command]
+pub fn remove_market_token(
+    token_id: String,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.remove_market_token(&token_id)
+}
+
+#[tauri::command]
 pub fn generate_diagnostic_report(bridge: State<'_, BridgeManager>) -> String {
-    let snapshot = bridge.get_snapshot();
-    let config = bridge.get_config();
-    let logs = bridge.get_logs();
-    build_diagnostic_report(&snapshot, &config, &logs)
+    bridge.generate_diagnostic_report()
 }
 
 #[tauri::command]

@@ -115,6 +115,17 @@ pub fn build_diagnostic_report(
     config: &AppConfig,
     logs: &[LogEntry],
 ) -> String {
+    build_diagnostic_report_with_secrets(snapshot, config, logs, &[])
+}
+
+/// Generates a Discord-ready Markdown diagnostic block while scrubbing both legacy `config.market_token`
+/// and all secrets held inside the OS-protected `TokenVault`.
+pub fn build_diagnostic_report_with_secrets(
+    snapshot: &BridgeSnapshot,
+    config: &AppConfig,
+    logs: &[LogEntry],
+    vault_secrets: &[String],
+) -> String {
     let profile_masked = snapshot
         .profile_path
         .as_deref()
@@ -143,14 +154,23 @@ pub fn build_diagnostic_report(
         BackendMode::Live => "live (FastAPI)",
     };
 
-    let has_token = config
-        .market_token
-        .as_deref()
-        .is_some_and(|t| !t.trim().is_empty());
+    let has_token = config.active_token_id.is_some()
+        || snapshot.active_token_id.is_some()
+        || config
+            .market_token
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty());
+    let saved_cnt = snapshot.saved_tokens.len();
     let token_state = if has_token {
-        "configured (redacted)"
+        if saved_cnt > 0 {
+            format!("configured (redacted, vault_profiles={saved_cnt})")
+        } else {
+            "configured (redacted)".to_string()
+        }
+    } else if saved_cnt > 0 {
+        format!("none (official public market, vault_profiles={saved_cnt})")
     } else {
-        "none (official public market)"
+        "none (official public market)".to_string()
     };
 
     let cid_trimmed = config.client_id.trim();
@@ -173,6 +193,12 @@ pub fn build_diagnostic_report(
     }
     if let Some(ref tok) = config.market_token {
         let t = tok.trim();
+        if !t.is_empty() {
+            last_err = last_err.replace(t, "<REDACTED>");
+        }
+    }
+    for sec in vault_secrets {
+        let t = sec.trim();
         if !t.is_empty() {
             last_err = last_err.replace(t, "<REDACTED>");
         }
@@ -257,6 +283,12 @@ pub fn build_diagnostic_report(
             }
             if let Some(ref tok) = config.market_token {
                 let t = tok.trim();
+                if !t.is_empty() {
+                    msg = msg.replace(t, "<REDACTED>");
+                }
+            }
+            for sec in vault_secrets {
+                let t = sec.trim();
                 if !t.is_empty() {
                     msg = msg.replace(t, "<REDACTED>");
                 }

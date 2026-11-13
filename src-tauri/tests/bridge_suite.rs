@@ -24,6 +24,9 @@ use globalmarket_client_lib::bridge::xml::{
     sanitize_market_name, write_heartbeat_xml, write_market_data_xml, HeartbeatBranding,
     IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
 };
+use globalmarket_client_lib::config::vault::{
+    compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
+};
 use globalmarket_client_lib::config::{
     digest_access_key, qualify_transaction_id, verify_access_key, verify_access_key_with_digests,
     AccessTier, AppConfig, BackendMode, DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL,
@@ -433,6 +436,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         market_name: "DSA Test Market".to_string(),
         market_logo_url: None,
         market_logo_file: Some("logos/logo_a1b2c3d4e5f6.dds".to_string()),
+        active_token_id: None,
+        saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
         exe_version: "1.0.0".to_string(),
@@ -1448,19 +1453,25 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
         false
     };
 
-    // 1. Activate Token A (Tier 3: Private Market + WebP Logo)
+    // 1. Configure Live endpoint and add/activate Token A (Tier 3: Private Market + WebP Logo)
     let mut cfg = mgr.get_config();
     cfg.backend_mode = BackendMode::Live;
     cfg.backend_url = format!("http://{addr}");
     cfg.fs25_profile_path = Some(profile_dir.to_string_lossy().into_owned());
-    cfg.market_token = Some("token-alpha-tier3".to_string());
     mgr.update_config(cfg).unwrap();
+
+    let id_a = compute_token_profile_id("token-alpha-tier3");
+    let id_b = compute_token_profile_id("token-bravo-tier1");
+    mgr.add_market_token("token-alpha-tier3", Some("Stammtisch"))
+        .unwrap();
 
     assert!(
         wait_for(&|| {
             let s = mgr.get_snapshot();
             s.state == BridgeConnectionState::Online
+                && s.heartbeat_seq >= 1
                 && s.branding_tier == 3
+                && s.active_token_id.as_deref() == Some(id_a.as_str())
                 && s.market_logo_file.as_deref() == Some(expected_rel_a.as_str())
         }),
         "Worker should sync Tier 3 branding and cache DDS for Token A"
@@ -1470,6 +1481,25 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(is_valid_cached_logo_dds(&dds_path_a));
     assert_eq!(tier3_logo_hits.load(Ordering::SeqCst), 1);
 
+    // Verify learned vault metadata for Token A
+    let snap_after_a = mgr.get_snapshot();
+    let prof_a = snap_after_a
+        .saved_tokens
+        .iter()
+        .find(|p| p.id == id_a)
+        .expect("SavedTokenProfile for Token A must exist");
+    assert_eq!(prof_a.custom_label.as_deref(), Some("Stammtisch"));
+    assert_eq!(
+        prof_a.detected_market_name.as_deref(),
+        Some("LSMT Community Markt")
+    );
+    assert_eq!(prof_a.branding_tier, Some(3));
+    assert!(prof_a.is_private_market);
+    assert_eq!(
+        prof_a.cached_logo_file.as_deref(),
+        Some(expected_rel_a.as_str())
+    );
+
     let xml_a = fs::read_to_string(&online_xml_path).unwrap();
     assert!(xml_a.contains("brandingTier=\"3\""));
     assert!(xml_a.contains("isPrivateMarket=\"true\""));
@@ -1477,16 +1507,17 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
 
-    // 2. Switch to Token B (Tier 1: Official Market + Custom WebP Logo, NO marketName)
-    let mut cfg_b = mgr.get_config();
-    cfg_b.market_token = Some("token-bravo-tier1".to_string());
-    mgr.update_config(cfg_b).unwrap();
+    // 2. Add & switch to Token B (Tier 1: Official Market + Custom WebP Logo, NO marketName)
+    mgr.add_market_token("token-bravo-tier1", Some("Unser Wappen"))
+        .unwrap();
 
     assert!(
         wait_for(&|| {
             let s = mgr.get_snapshot();
             s.state == BridgeConnectionState::Online
+                && s.heartbeat_seq >= 1
                 && s.branding_tier == 1
+                && s.active_token_id.as_deref() == Some(id_b.as_str())
                 && s.market_logo_file.as_deref() == Some(expected_rel_b.as_str())
         }),
         "Worker should switch immediately to Tier 1 branding for Token B"
@@ -1496,6 +1527,16 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(is_valid_cached_logo_dds(&dds_path_b));
     assert_eq!(tier1_logo_hits.load(Ordering::SeqCst), 1);
 
+    let snap_after_b = mgr.get_snapshot();
+    assert_eq!(snap_after_b.saved_tokens.len(), 2);
+    let prof_b = snap_after_b
+        .saved_tokens
+        .iter()
+        .find(|p| p.id == id_b)
+        .expect("SavedTokenProfile for Token B must exist");
+    assert_eq!(prof_b.branding_tier, Some(1));
+    assert!(!prof_b.is_private_market);
+
     let xml_b = fs::read_to_string(&online_xml_path).unwrap();
     assert!(xml_b.contains("brandingTier=\"1\""));
     assert!(xml_b.contains("isPrivateMarket=\"false\""));
@@ -1503,16 +1544,16 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_b.contains("hasCustomLogo=\"true\""));
     assert!(xml_b.contains(&format!("logoFile=\"{expected_rel_b}\"")));
 
-    // 3. Switch back to Token A -> MUST reuse cached logos/logo_<hashA>.dds WITHOUT re-downloading!
-    let mut cfg_a2 = mgr.get_config();
-    cfg_a2.market_token = Some("token-alpha-tier3".to_string());
-    mgr.update_config(cfg_a2).unwrap();
+    // 3. Switch back to Token A via 1-click profile ID -> MUST reuse cached logos/logo_<hashA>.dds WITHOUT re-downloading!
+    mgr.select_active_market_token(Some(id_a.clone())).unwrap();
 
     assert!(
         wait_for(&|| {
             let s = mgr.get_snapshot();
             s.state == BridgeConnectionState::Online
+                && s.heartbeat_seq >= 1
                 && s.branding_tier == 3
+                && s.active_token_id.as_deref() == Some(id_a.as_str())
                 && s.market_logo_file.as_deref() == Some(expected_rel_a.as_str())
                 && fs::read_to_string(&online_xml_path)
                     .map(|x| x.contains(&format!("logoFile=\"{expected_rel_a}\"")))
@@ -1526,23 +1567,23 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
         "Cached logos/logo_<hash>.dds must prevent redundant WebP downloads & re-encodes"
     );
 
-    // 4. Clear token (Official Market Tier 0) -> immediately clears logoFile & marketName in XML
-    let mut cfg_official = mgr.get_config();
-    cfg_official.market_token = None;
-    mgr.update_config(cfg_official).unwrap();
+    // 4. Switch to Official Market (None / Tier 0) while keeping both tokens saved in vault!
+    mgr.select_active_market_token(None).unwrap();
 
     assert!(
         wait_for(&|| {
             let s = mgr.get_snapshot();
             s.state == BridgeConnectionState::Online
                 && s.branding_tier == 0
+                && s.active_token_id.is_none()
+                && s.saved_tokens.len() == 2
                 && !s.is_private_market
                 && s.market_logo_file.is_none()
                 && fs::read_to_string(&online_xml_path)
                     .map(|x| x.contains("brandingTier=\"0\"") && !x.contains("logoFile="))
                     .unwrap_or(false)
         }),
-        "Clearing token should immediately reset globalMarketOnline.xml to Tier 0"
+        "Switching to Official Market should immediately reset globalMarketOnline.xml to Tier 0 while retaining saved profiles"
     );
 
     // 5. Also verify Developer Mock mode Tier 0..3 simulation + DDS output
@@ -1568,5 +1609,145 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(is_valid_cached_logo_dds(&dds_path_a));
     assert!(is_valid_cached_logo_dds(&dds_path_b));
 
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn os_token_vault_dpapi_migration_and_write_only_security_work() {
+    // 1. OS seal/unseal roundtrip & tamper rejection
+    let sample_secret = b"{\"version\":1,\"entries\":[{\"raw_token\":\"gm_top_secret_token_9876\"}]}";
+    let sealed = seal_vault_bytes(sample_secret).expect("OS vault seal must succeed silently");
+    #[cfg(target_os = "windows")]
+    {
+        assert!(
+            sealed.starts_with(b"GMV1WIN\0"),
+            "Windows vault must use DPAPI GMV1WIN header"
+        );
+        let contains_plaintext = sealed
+            .windows("gm_top_secret_token_9876".len())
+            .any(|w| w == b"gm_top_secret_token_9876");
+        assert!(
+            !contains_plaintext,
+            "Windows DPAPI ciphertext must never contain plaintext token bytes"
+        );
+    }
+
+    let unsealed = unseal_vault_bytes(&sealed).expect("OS vault unseal must succeed");
+    assert_eq!(unsealed, sample_secret);
+
+    let mut tampered = sealed.clone();
+    let last_idx = tampered.len() - 1;
+    tampered[last_idx] ^= 0x5A;
+    assert!(
+        unseal_vault_bytes(&tampered).is_err(),
+        "Tampered vault file must be rejected by OS integrity/DPAPI check"
+    );
+
+    // 2. Crash-safe automatic migration from legacy settings.json -> tokens.vault
+    let dir = env::temp_dir().join(format!("fs25_gm_vault_mig_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let cfg_file = dir.join("settings.json");
+    let vault_file = TokenVault::vault_path_for_config(&cfg_file);
+    let legacy_secret = "gm_legacy_secret_key_4321";
+    let expected_legacy_id = compute_token_profile_id(legacy_secret);
+
+    let legacy_json = serde_json::json!({
+        "language": "de",
+        "backendMode": "mock",
+        "marketToken": legacy_secret
+    });
+    fs::write(&cfg_file, serde_json::to_string_pretty(&legacy_json).unwrap()).unwrap();
+
+    let mgr = BridgeManager::new(cfg_file.clone(), None);
+    assert!(
+        vault_file.is_file(),
+        "Legacy marketToken must be migrated into encrypted tokens.vault on startup"
+    );
+
+    let rewritten_settings = fs::read_to_string(&cfg_file).unwrap();
+    assert!(
+        !rewritten_settings.contains(legacy_secret),
+        "Rewritten settings.json must NEVER contain the raw token string"
+    );
+    assert!(
+        !rewritten_settings.contains("marketToken"),
+        "Rewritten settings.json must omit deprecated marketToken field"
+    );
+    assert!(
+        rewritten_settings.contains(&expected_legacy_id),
+        "Rewritten settings.json must store only activeTokenId"
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+        let raw_vault_on_disk = fs::read(&vault_file).unwrap();
+        let leaked_on_disk = raw_vault_on_disk
+            .windows(legacy_secret.len())
+            .any(|w| w == legacy_secret.as_bytes());
+        assert!(
+            !leaked_on_disk,
+            "Encrypted tokens.vault on Windows must not expose legacy secret in plaintext"
+        );
+    }
+
+    // 3. Strict Write-Only IPC & Diagnostic Redaction guarantees
+    let second_secret = "gm_second_private_token_abcd";
+    let snap = mgr
+        .add_market_token(second_secret, Some("Zweiter Hof"))
+        .unwrap();
+    assert_eq!(snap.saved_tokens.len(), 2);
+
+    let serialized_cfg = serde_json::to_string(&mgr.get_config()).unwrap();
+    let serialized_snap = serde_json::to_string(&snap).unwrap();
+    let diag_report = mgr.generate_diagnostic_report();
+
+    for secret in [legacy_secret, second_secret] {
+        assert!(
+            !serialized_cfg.contains(secret),
+            "get_app_config IPC JSON must never serialize raw token"
+        );
+        assert!(
+            !serialized_snap.contains(secret),
+            "get_bridge_snapshot IPC JSON must never serialize raw token"
+        );
+        assert!(
+            !diag_report.contains(secret),
+            "Diagnostic report must never leak any vaulted token"
+        );
+    }
+    assert!(serialized_snap.contains("••••4321"));
+    assert!(serialized_snap.contains("••••abcd"));
+
+    // 4. Label update + removal of all tokens cleans up tokens.vault from disk
+    let second_id = compute_token_profile_id(second_secret);
+    let updated_snap = mgr
+        .update_market_token_label(&second_id, Some("Umbenannter Hof"))
+        .unwrap();
+    assert_eq!(
+        updated_snap
+            .saved_tokens
+            .iter()
+            .find(|p| p.id == second_id)
+            .and_then(|p| p.custom_label.as_deref()),
+        Some("Umbenannter Hof")
+    );
+
+    let after_rm_active = mgr.remove_market_token(&second_id).unwrap();
+    assert!(
+        after_rm_active.active_token_id.is_none(),
+        "Removing the active token must fall back cleanly to Official Market (None)"
+    );
+    assert_eq!(after_rm_active.saved_tokens.len(), 1);
+
+    let after_rm_all = mgr.remove_market_token(&expected_legacy_id).unwrap();
+    assert!(after_rm_all.saved_tokens.is_empty());
+    assert!(
+        !vault_file.exists(),
+        "Removing the last saved token must remove tokens.vault cleanly"
+    );
+
+    mgr.shutdown();
     let _ = fs::remove_dir_all(&dir);
 }

@@ -19,6 +19,17 @@ export interface AppInfo {
   platform: string;
 }
 
+export interface SavedTokenProfile {
+  id: string;
+  customLabel: string | null;
+  detectedMarketName: string | null;
+  brandingTier: number | null;
+  isPrivateMarket: boolean;
+  maskedHint: string;
+  cachedLogoFile: string | null;
+  cachedLogoUrl: string | null;
+}
+
 export interface AppConfig {
   clientId?: string;
   accessTier: AccessTier;
@@ -29,7 +40,7 @@ export interface AppConfig {
   logAutoScroll: boolean;
   backendMode: BackendMode;
   backendUrl: string;
-  marketToken: string | null;
+  activeTokenId: string | null;
 }
 
 export interface BridgeSnapshot {
@@ -44,6 +55,8 @@ export interface BridgeSnapshot {
   isPrivateMarket: boolean;
   marketLogoUrl: string | null;
   marketLogoFile: string | null;
+  activeTokenId: string | null;
+  savedTokens: SavedTokenProfile[];
   profilePath: string | null;
   bridgePath: string | null;
   exeVersion: string;

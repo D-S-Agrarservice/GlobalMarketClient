@@ -40,6 +40,7 @@ import {
   OFFICIAL_DEV_BACKEND_URL,
   OFFICIAL_PROD_BACKEND_URL,
   OPEN_SOURCE_PACKAGES,
+  type SavedTokenProfile,
 } from "./types";
 
 const MAX_UI_LOGS = 250;
@@ -83,7 +84,7 @@ const state: UiState = {
     logAutoScroll: true,
     backendMode: "live",
     backendUrl: OFFICIAL_PROD_BACKEND_URL,
-    marketToken: null,
+    activeTokenId: null,
   },
   snapshot: {
     state: "connecting",
@@ -97,6 +98,8 @@ const state: UiState = {
     isPrivateMarket: false,
     marketLogoUrl: null,
     marketLogoFile: null,
+    activeTokenId: null,
+    savedTokens: [],
     profilePath: null,
     bridgePath: null,
     exeVersion: "1.0.0",
@@ -334,10 +337,78 @@ function normalizeUrlForCompare(raw: string): string {
   return raw.trim().replace(/\/+$/, "").toLowerCase();
 }
 
+function getActiveTokenId(): string | null {
+  return state.snapshot.activeTokenId ?? state.config.activeTokenId ?? null;
+}
+
+function getSavedTokens(): SavedTokenProfile[] {
+  return state.snapshot.savedTokens ?? [];
+}
+
+function formatSwitcherOptionLabel(prof: SavedTokenProfile): string {
+  if (prof.brandingTier === 1) {
+    return prof.customLabel
+      ? `🖼 ${prof.customLabel} · Global (${prof.maskedHint})`
+      : `🖼 ${t("switcherOfficialWithLogo")} (${prof.maskedHint})`;
+  }
+  if (prof.brandingTier === 2 || prof.brandingTier === 3 || prof.isPrivateMarket) {
+    const title =
+      prof.customLabel || prof.detectedMarketName || t("switcherUnverifiedProfile");
+    return `🔒 ${title} (${prof.maskedHint})`;
+  }
+  const fallback =
+    prof.customLabel || prof.detectedMarketName || t("switcherUnverifiedProfile");
+  return `🔑 ${fallback} (${prof.maskedHint})`;
+}
+
+function formatProfileCardTitle(prof: SavedTokenProfile): string {
+  if (prof.brandingTier === 1) {
+    return prof.customLabel || t("switcherOfficialWithLogo");
+  }
+  if (
+    prof.customLabel &&
+    prof.detectedMarketName &&
+    prof.customLabel !== prof.detectedMarketName
+  ) {
+    return `${prof.customLabel} (${prof.detectedMarketName})`;
+  }
+  return (
+    prof.customLabel || prof.detectedMarketName || t("switcherUnverifiedProfile")
+  );
+}
+
+function formatProfileTierBadge(prof: SavedTokenProfile): {
+  text: string;
+  classes: string;
+} {
+  switch (prof.brandingTier) {
+    case 1:
+      return {
+        text: t("settingsProfileTier1Badge"),
+        classes: "border-sky-500/35 bg-sky-500/10 text-sky-300",
+      };
+    case 2:
+      return {
+        text: t("settingsProfileTier2Badge"),
+        classes: "border-[#ff9600]/35 bg-[#ff9600]/10 text-[#ff9600]",
+      };
+    case 3:
+      return {
+        text: t("settingsProfileTier3Badge"),
+        classes: "border-[#ff9600]/45 bg-[#ff9600]/15 text-amber-200",
+      };
+    default:
+      return {
+        text: t("settingsProfilePendingBadge"),
+        classes: "border-zinc-700 bg-zinc-800 text-zinc-400",
+      };
+  }
+}
+
 function getSafeHeaderLogoUrl(): string {
   const isMock =
     getEffectiveTier() === "developer" && getEffectiveBackendMode() === "mock";
-  const hasToken = Boolean(state.config.marketToken?.trim());
+  const hasToken = Boolean(getActiveTokenId()?.trim());
   const custom = state.snapshot.marketLogoUrl?.trim();
   const tierAllowsLogo =
     state.snapshot.brandingTier === 1 || state.snapshot.brandingTier === 3;
@@ -396,6 +467,7 @@ function applySnapshot(snap: BridgeSnapshot): void {
   state.config.accessTier = snap.accessTier;
   state.config.backendMode = snap.backendMode;
   state.config.backendUrl = snap.backendUrl;
+  state.config.activeTokenId = snap.activeTokenId;
   if (snap.profilePath) {
     state.config.fs25ProfilePath = snap.profilePath;
   }
@@ -914,8 +986,48 @@ function renderDashboardHtml(): string {
     ? `<span class="rounded bg-[#ff9600]/15 border border-[#ff9600]/35 px-1.5 py-0.2 font-mono text-[10px] font-bold text-[#ff9600]">${escapeHtml(state.snapshot.gameEdition)}</span>`
     : "";
 
+  const activeTokenId = getActiveTokenId();
+  const savedTokens = getSavedTokens();
+
+  const marketScopeBadgeHtml =
+    state.snapshot.brandingTier === 1
+      ? `<span class="rounded border border-sky-500/35 bg-sky-500/10 px-1.5 py-0.2 text-[10px] font-semibold text-sky-300 shrink-0">🖼 ${escapeHtml(t("headerBadgeTier1Logo"))}</span>`
+      : state.snapshot.isPrivateMarket
+        ? `<span class="rounded border border-[#ff9600]/35 bg-[#ff9600]/10 px-1.5 py-0.2 text-[10px] font-semibold text-[#ff9600] shrink-0">🔒 ${escapeHtml(t("headerBadgePrivateMarket"))}</span>`
+        : "";
+
+  const quickMarketOptionsHtml = [
+    `<option value="" ${!activeTokenId ? "selected" : ""} class="bg-[#252528] text-zinc-100">🌐 ${escapeHtml(t("switcherOfficialStandard"))}</option>`,
+    ...savedTokens.map(
+      (prof) =>
+        `<option value="${escapeHtml(prof.id)}" ${prof.id === activeTokenId ? "selected" : ""} class="bg-[#252528] text-zinc-100">${escapeHtml(formatSwitcherOptionLabel(prof))}</option>`,
+    ),
+  ].join("");
+
+  const quickMarketSwitcherHtml =
+    !isMock && savedTokens.length > 0
+      ? `
+        <select
+          id="select-quick-market"
+          aria-label="${escapeHtml(t("switcherAriaLabel"))}"
+          title="${escapeHtml(t("switcherAriaLabel"))}"
+          class="w-48 truncate rounded-md border ${
+            activeTokenId
+              ? state.snapshot.brandingTier === 1
+                ? "border-sky-500/50 bg-sky-500/10 text-sky-100"
+                : "border-[#ff9600]/55 bg-[#ff9600]/10 text-amber-100"
+              : "border-zinc-700 bg-[#252528] text-zinc-200"
+          } px-2.5 py-1.5 text-xs font-semibold hover:border-[#ff9600] focus:border-[#ff9600] focus:outline-none cursor-pointer"
+        >
+          ${quickMarketOptionsHtml}
+        </select>
+      `
+      : "";
+
+  const rightControlWidthClass = !isMock && savedTokens.length > 0 ? "w-48" : "w-40";
+
   return `
-    <!-- 3-Column Hero Header: Left Brand/Version | Center Logo + Hidden 5x Trigger + Status | Right Settings + Language -->
+    <!-- 3-Column Hero Header: Left Brand/Version | Center Logo + Hidden 5x Trigger + Status | Right Settings + Language + Market Switcher -->
     <header class="grid grid-cols-[1fr_auto_1fr] items-center gap-4 rounded-lg border border-zinc-800 bg-gradient-to-b from-[#252528] to-[#1e1e21] px-5 py-3.5 shrink-0">
       <!-- Left Column: Dynamic Edition Title, Subtitle, Creator & Version -->
       <div class="flex flex-col items-start gap-1 min-w-0">
@@ -950,12 +1062,15 @@ function renderDashboardHtml(): string {
               : "drop-shadow-[0_3px_12px_rgba(0,0,0,0.55)]"
           }"
         />
-        <button
-          id="btn-secret-version"
-          data-secret-trigger="true"
-          type="button"
-          class="mt-0.5 text-xs font-semibold text-zinc-200 focus:outline-none cursor-default select-none max-w-[260px] truncate"
-        >${escapeHtml(displayMarketName)}</button>
+        <div class="mt-0.5 flex items-center justify-center gap-1.5 max-w-[280px]">
+          <button
+            id="btn-secret-version"
+            data-secret-trigger="true"
+            type="button"
+            class="text-xs font-semibold text-zinc-200 focus:outline-none cursor-default select-none truncate"
+          >${escapeHtml(displayMarketName)}</button>
+          ${marketScopeBadgeHtml}
+        </div>
         <div
           id="status-pill"
           title="${
@@ -996,13 +1111,13 @@ function renderDashboardHtml(): string {
         </div>
       </div>
 
-      <!-- Right Column: Settings Button on top + Quick Language Selector stacked underneath -->
+      <!-- Right Column: Settings Button + Quick Language Selector + Quick Market Switcher -->
       <div class="flex flex-col items-end gap-2">
         <button
           id="btn-open-settings"
           type="button"
           title="${escapeHtml(t("btnSettings"))}"
-          class="w-40 flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-[#252528] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer"
+          class="${rightControlWidthClass} flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-[#252528] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer"
         >
           <svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
@@ -1014,10 +1129,12 @@ function renderDashboardHtml(): string {
         <select
           id="select-quick-lang"
           aria-label="Language"
-          class="w-40 rounded-md border border-zinc-700 bg-[#252528] px-2.5 py-1.5 text-xs font-semibold text-zinc-200 hover:border-[#ff9600]/60 focus:border-[#ff9600] focus:outline-none cursor-pointer"
+          class="${rightControlWidthClass} rounded-md border border-zinc-700 bg-[#252528] px-2.5 py-1.5 text-xs font-semibold text-zinc-200 hover:border-[#ff9600]/60 focus:border-[#ff9600] focus:outline-none cursor-pointer"
         >
           ${langOptionsHtml}
         </select>
+
+        ${quickMarketSwitcherHtml}
       </div>
     </header>
 
@@ -1190,6 +1307,139 @@ function renderDashboardHtml(): string {
   `;
 }
 
+function renderSavedProfilesListHtml(): string {
+  const activeTokenId = getActiveTokenId();
+  const savedTokens = getSavedTokens();
+  const isOfficialActive = !activeTokenId;
+
+  const officialCardHtml = `
+    <div class="flex items-center justify-between gap-3 rounded-lg border ${
+      isOfficialActive
+        ? "border-emerald-500/45 bg-emerald-500/10"
+        : "border-zinc-800 bg-[#18181b]/90"
+    } px-3 py-2">
+      <div class="min-w-0">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="font-semibold text-zinc-100">🌐 ${escapeHtml(t("settingsOfficialMarketOption"))}</span>
+        </div>
+        <p class="text-[11px] text-zinc-400 truncate">${escapeHtml(t("settingsOfficialMarketOptionDesc"))}</p>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        ${
+          isOfficialActive
+            ? `<span class="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">${escapeHtml(t("settingsProfileActiveBadge"))}</span>`
+            : `<button type="button" data-select-token="" class="rounded border border-zinc-700 bg-[#252528] px-2.5 py-1 text-[11px] font-semibold text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer">${escapeHtml(t("settingsProfileActivateBtn"))}</button>`
+        }
+      </div>
+    </div>
+  `;
+
+  const savedCardsHtml = savedTokens
+    .map((prof) => {
+      const isActive = prof.id === activeTokenId;
+      const icon =
+        prof.brandingTier === 1
+          ? "🖼"
+          : prof.brandingTier === 2 || prof.brandingTier === 3 || prof.isPrivateMarket
+            ? "🔒"
+            : "🔑";
+      const badge = formatProfileTierBadge(prof);
+      return `
+        <div class="flex items-center justify-between gap-3 rounded-lg border ${
+          isActive
+            ? prof.brandingTier === 1
+              ? "border-sky-500/45 bg-sky-500/10"
+              : "border-[#ff9600]/50 bg-[#ff9600]/10"
+            : "border-zinc-800 bg-[#18181b]/90"
+        } px-3 py-2">
+          <div class="min-w-0 space-y-0.5">
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="font-semibold text-zinc-100 truncate">${icon} ${escapeHtml(formatProfileCardTitle(prof))}</span>
+              <span class="rounded border border-zinc-700/80 bg-zinc-900/90 px-1.5 py-0.2 font-mono text-[10px] text-zinc-400">${escapeHtml(prof.maskedHint)}</span>
+            </div>
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="rounded border px-1.5 py-0.2 text-[10px] font-medium ${badge.classes}">${escapeHtml(badge.text)}</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            ${
+              isActive
+                ? `<span class="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">${escapeHtml(t("settingsProfileActiveBadge"))}</span>`
+                : `<button type="button" data-select-token="${escapeHtml(prof.id)}" class="rounded border border-zinc-700 bg-[#252528] px-2.5 py-1 text-[11px] font-semibold text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer">${escapeHtml(t("settingsProfileActivateBtn"))}</button>`
+            }
+            <button
+              type="button"
+              data-remove-token="${escapeHtml(prof.id)}"
+              class="rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-300 hover:bg-red-500/20 hover:border-red-400 transition cursor-pointer"
+            >
+              ${escapeHtml(t("settingsProfileRemoveBtn"))}
+            </button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `${officialCardHtml}${savedCardsHtml}`;
+}
+
+function bindSavedProfilesListEvents(): void {
+  const container = document.querySelector<HTMLDivElement>(
+    "#settings-saved-profiles-list",
+  );
+  if (!container) return;
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-select-token]")
+    .forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const rawId = btn.getAttribute("data-select-token") ?? "";
+        const tokenId = rawId.trim().length > 0 ? rawId.trim() : null;
+        try {
+          const snap = await invoke<BridgeSnapshot>(
+            "select_active_market_token",
+            { tokenId },
+          );
+          applySnapshot(snap);
+          refreshSavedProfilesListInModal();
+          renderDashboardOnly();
+          showToast(t("toastMarketSwitched"));
+        } catch (err) {
+          showToast(String(err));
+        }
+      });
+    });
+
+  container
+    .querySelectorAll<HTMLButtonElement>("[data-remove-token]")
+    .forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const tokenId = btn.getAttribute("data-remove-token")?.trim();
+        if (!tokenId) return;
+        try {
+          const snap = await invoke<BridgeSnapshot>("remove_market_token", {
+            tokenId,
+          });
+          applySnapshot(snap);
+          refreshSavedProfilesListInModal();
+          renderDashboardOnly();
+          showToast(t("toastTokenRemoved"));
+        } catch (err) {
+          showToast(String(err));
+        }
+      });
+    });
+}
+
+function refreshSavedProfilesListInModal(): void {
+  const container = document.querySelector<HTMLDivElement>(
+    "#settings-saved-profiles-list",
+  );
+  if (!container) return;
+  container.innerHTML = renderSavedProfilesListHtml();
+  bindSavedProfilesListEvents();
+}
+
 function renderSettingsModalHtml(): string {
   const currentLang = normalizeLangForForm(state.config.language);
   const isDev = getEffectiveTier() === "developer";
@@ -1341,18 +1591,51 @@ function renderSettingsModalHtml(): string {
 
             ${devServerFieldsHtml}
 
-            <div>
-              <label for="cfg-token" class="block font-semibold text-zinc-200 mb-1">
-                ${escapeHtml(t("settingsMarketToken"))}
+            <div class="space-y-2">
+              <label class="block font-semibold text-zinc-200">
+                ${escapeHtml(t("settingsSavedMarketsLabel"))}
               </label>
+              <div id="settings-saved-profiles-list" class="space-y-1.5">
+                ${renderSavedProfilesListHtml()}
+              </div>
+            </div>
+
+            <div class="rounded-lg border border-zinc-800 bg-[#18181b]/80 p-3 space-y-2">
+              <p class="text-[11px] font-semibold text-zinc-200">
+                🔑 ${escapeHtml(t("settingsAddTokenSection"))}
+              </p>
               <input
-                id="cfg-token"
-                type="password"
-                value="${escapeHtml(state.config.marketToken ?? "")}"
-                placeholder="${escapeHtml(t("settingsMarketTokenPlaceholder"))}"
-                class="w-full rounded-md border border-zinc-700 bg-[#18181b] px-3 py-1.5 font-mono text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+                id="cfg-token-label"
+                type="text"
+                maxlength="36"
+                autocomplete="off"
+                placeholder="${escapeHtml(t("settingsTokenLabelPlaceholder"))}"
+                class="w-full rounded-md border border-zinc-700 bg-[#202023] px-2.5 py-1.5 text-xs text-zinc-100 focus:border-[#ff9600] focus:outline-none"
               />
-              <p class="mt-1 text-[11px] text-zinc-500">${escapeHtml(t("settingsMarketTokenHint"))}</p>
+              <div class="flex items-center gap-2">
+                <input
+                  id="cfg-new-token"
+                  type="password"
+                  value=""
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  placeholder="${escapeHtml(t("settingsNewTokenPlaceholder"))}"
+                  class="flex-1 min-w-0 rounded-md border border-zinc-700 bg-[#202023] px-2.5 py-1.5 font-mono text-xs text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+                />
+                <button
+                  id="btn-add-token"
+                  type="button"
+                  class="shrink-0 rounded-md border border-[#ff9600]/60 bg-[#ff9600]/15 px-3 py-1.5 text-xs font-semibold text-[#ff9600] hover:bg-[#ff9600] hover:text-zinc-950 transition cursor-pointer"
+                >
+                  + ${escapeHtml(t("settingsAddTokenBtn"))}
+                </button>
+              </div>
+              <p class="text-[11px] text-zinc-500 leading-snug">
+                ${escapeHtml(t("settingsMarketTokenHint"))}
+              </p>
+              <p class="text-[11px] text-emerald-400/80 leading-snug">
+                🛡 ${escapeHtml(t("settingsVaultSecurityHint"))}
+              </p>
             </div>
           </div>
 
@@ -1888,6 +2171,24 @@ function bindDashboardEvents(): void {
     });
 
   document
+    .querySelector<HTMLSelectElement>("#select-quick-market")
+    ?.addEventListener("change", async (ev) => {
+      const target = ev.currentTarget as HTMLSelectElement;
+      const tokenId = target.value.trim().length > 0 ? target.value.trim() : null;
+      try {
+        const snap = await invoke<BridgeSnapshot>(
+          "select_active_market_token",
+          { tokenId },
+        );
+        applySnapshot(snap);
+        renderDashboardOnly();
+        showToast(t("toastMarketSwitched"));
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
+  document
     .querySelector<HTMLButtonElement>("#btn-open-settings")
     ?.addEventListener("click", () => {
       state.activeModal = "settings";
@@ -2237,6 +2538,73 @@ function bindModalEvents(): void {
     .querySelector<HTMLButtonElement>("#btn-check-updates")
     ?.addEventListener("click", () => void checkForAppUpdates(true));
 
+  bindSavedProfilesListEvents();
+
+  const submitPendingTokenInputs = async (): Promise<boolean> => {
+    const tokenInput = document.querySelector<HTMLInputElement>("#cfg-new-token");
+    const labelInput =
+      document.querySelector<HTMLInputElement>("#cfg-token-label");
+    const rawToken = tokenInput?.value.trim() ?? "";
+    if (rawToken.length === 0) {
+      return false;
+    }
+    const rawLabel = labelInput?.value.trim() ?? "";
+    const snap = await invoke<BridgeSnapshot>("add_market_token", {
+      token: rawToken,
+      customLabel: rawLabel.length > 0 ? rawLabel : null,
+    });
+    if (tokenInput) {
+      tokenInput.value = "";
+    }
+    if (labelInput) {
+      labelInput.value = "";
+    }
+    applySnapshot(snap);
+    refreshSavedProfilesListInModal();
+    renderDashboardOnly();
+    return true;
+  };
+
+  const handleAddTokenClick = async (): Promise<void> => {
+    const tokenInput = document.querySelector<HTMLInputElement>("#cfg-new-token");
+    if (!tokenInput || tokenInput.value.trim().length === 0) {
+      tokenInput?.focus();
+      return;
+    }
+    try {
+      await submitPendingTokenInputs();
+      showToast(t("toastTokenAdded"));
+    } catch (err) {
+      showToast(String(err));
+    }
+  };
+
+  document
+    .querySelector<HTMLButtonElement>("#btn-add-token")
+    ?.addEventListener("click", () => void handleAddTokenClick());
+
+  document
+    .querySelector<HTMLInputElement>("#cfg-new-token")
+    ?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        void handleAddTokenClick();
+      }
+    });
+
+  document
+    .querySelector<HTMLInputElement>("#cfg-token-label")
+    ?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        const tokenInput =
+          document.querySelector<HTMLInputElement>("#cfg-new-token");
+        if (tokenInput && tokenInput.value.trim().length > 0) {
+          ev.preventDefault();
+          void handleAddTokenClick();
+        }
+      }
+    });
+
   document
     .querySelector<HTMLFormElement>("#form-settings")
     ?.addEventListener("submit", async (ev) => {
@@ -2259,26 +2627,26 @@ function bindModalEvents(): void {
         ? document.querySelector<HTMLInputElement>("#cfg-url")?.value.trim() ||
           state.config.backendUrl
         : state.config.backendUrl;
-      const tokenRaw =
-        document.querySelector<HTMLInputElement>("#cfg-token")?.value.trim() ?? "";
-
-      const nextConfig: AppConfig = {
-        ...state.config,
-        language: setLocale(langVal),
-        minimizeToTray: trayVal,
-        notificationsEnabled: notifyVal,
-        logAutoScroll: autoScrollVal,
-        backendMode: modeVal,
-        backendUrl: urlVal,
-        marketToken: tokenRaw.length > 0 ? tokenRaw : null,
-      };
 
       try {
+        await submitPendingTokenInputs();
+
+        const nextConfig: AppConfig = {
+          ...state.config,
+          language: setLocale(langVal),
+          minimizeToTray: trayVal,
+          notificationsEnabled: notifyVal,
+          logAutoScroll: autoScrollVal,
+          backendMode: modeVal,
+          backendUrl: urlVal,
+        };
+
         const snap = await invoke<BridgeSnapshot>("update_app_config", {
           config: nextConfig,
         });
         state.config = {
           ...nextConfig,
+          activeTokenId: snap.activeTokenId ?? nextConfig.activeTokenId,
         };
         applySnapshot(snap);
         state.activeModal = "none";
@@ -2405,6 +2773,9 @@ async function bootstrap(): Promise<void> {
       }
       if (prevSig !== nextSig) {
         renderDashboardOnly();
+        if (state.activeModal === "settings") {
+          refreshSavedProfilesListInModal();
+        }
       } else {
         syncLifebitLedsInPlace(
           state.snapshot.heartbeatSeq ?? 0,
