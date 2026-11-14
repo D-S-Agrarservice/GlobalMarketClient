@@ -4,19 +4,73 @@ on:
   push:
     tags:
       - "v*.*.*"
+      - "[0-9]*.*.*"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag name (e.g. v0.9.9 or v1.0.0)"
+        description: "Release tag name (e.g. v0.9.9-beta or v1.0.0)"
         required: true
-        default: "v0.9.9"
+        default: "v0.9.9-beta"
+      prerelease:
+        description: "Mark release as Pre-release (Beta / RC)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Check Release Target
+    runs-on: ubuntu-22.04
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      tag_name: ${{ steps.check.outputs.tag_name }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - name: Determine release state
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag_name }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$REF_NAME"
+          fi
+
+          IS_PRERELEASE="false"
+          if [ "$INPUT_PRERELEASE" = "true" ] || [[ "$TAG" == *-* ]]; then
+            IS_PRERELEASE="true"
+          fi
+
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+          # Publishing a Draft Release in the GitHub Web UI creates the Git tag and triggers
+          # a tag `push` event. Skip rebuilding if a release with uploaded assets already exists.
+          if [ "$EVENT_NAME" = "push" ]; then
+            EXISTING_WITH_ASSETS=$(gh api "repos/${{ github.repository }}/releases?per_page=20" | \
+              jq --arg tag "$TAG" '[.[] | select(.tag_name == $tag and (.assets | length) > 0)] | length')
+            if [ "${EXISTING_WITH_ASSETS:-0}" -gt 0 ]; then
+              echo "Release for tag '$TAG' already exists with uploaded assets — skipping duplicate build."
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "should_build=true" >> "$GITHUB_OUTPUT"
+
   publish-tauri:
     name: Release (${{ matrix.label }})
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -90,10 +144,10 @@ jobs:
           GM_EXTENDED_KEY_DIGEST: ${{ secrets.GM_EXTENDED_KEY_DIGEST }}
           GM_DEVELOPER_KEY_DIGEST: ${{ secrets.GM_DEVELOPER_KEY_DIGEST }}
         with:
-          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
-          releaseName: "GlobalMarketClient ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}"
+          tagName: ${{ needs.prepare.outputs.tag_name }}
+          releaseName: "GlobalMarketClient ${{ needs.prepare.outputs.tag_name }}"
           releaseBody: |
-            ## GlobalMarketClient ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }} (`D-S-Agrarservice`)
+            ## GlobalMarketClient ${{ needs.prepare.outputs.tag_name }} (`D-S-Agrarservice`)
 
             Cross-platform companion application for the Farming Simulator **GlobalMarket** mod.
 
@@ -102,6 +156,6 @@ jobs:
             - **macOS (Apple Silicon & Intel Universal):** `GlobalMarketClient_x.x.x_universal.dmg`
             - **Linux (Ubuntu/Debian/SteamOS x64):** `.AppImage` / `.deb`
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           includeUpdaterJson: ${{ steps.signing.outputs.enabled == 'true' }}
           args: ${{ matrix.args }} ${{ steps.signing.outputs.extra_args }}
