@@ -359,14 +359,10 @@ pub fn prune_market_data_xmls(read_dir: &Path, keep_newest: usize) {
     }
 }
 
-/// Removes `globalMarketOnline.xml`, all unread `read/gmDataSync_*.xml` snapshots,
-/// and any leftover `.staging/*.tmp` files when stopping or exiting the bridge.
-pub fn cleanup_bridge_runtime_files(
-    online_xml_path: &Path,
-    read_dir: &Path,
-    staging_dir: &Path,
-) {
-    remove_heartbeat_xml(online_xml_path);
+/// Removes unread `read/gmDataSync_*.xml` snapshots and any leftover `.staging/*.tmp` files
+/// while keeping `globalMarketOnline.xml` intact (used during live market/token restarts so
+/// Dedicated Server Lua polling never sees a transient missing heartbeat file).
+pub fn cleanup_bridge_transfer_files(read_dir: &Path, staging_dir: &Path) {
     prune_market_data_xmls(read_dir, 0);
     if let Ok(entries) = fs::read_dir(staging_dir) {
         for entry in entries.flatten() {
@@ -376,6 +372,17 @@ pub fn cleanup_bridge_runtime_files(
             }
         }
     }
+}
+
+/// Removes `globalMarketOnline.xml`, all unread `read/gmDataSync_*.xml` snapshots,
+/// and any leftover `.staging/*.tmp` files when stopping or exiting the bridge.
+pub fn cleanup_bridge_runtime_files(
+    online_xml_path: &Path,
+    read_dir: &Path,
+    staging_dir: &Path,
+) {
+    remove_heartbeat_xml(online_xml_path);
+    cleanup_bridge_transfer_files(read_dir, staging_dir);
 }
 
 fn parse_sync_filename_sort_key(filename: &str) -> Option<(u64, u64)> {

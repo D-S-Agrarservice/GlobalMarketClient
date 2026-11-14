@@ -15,9 +15,9 @@ use crate::bridge::dds::{
 use crate::bridge::l10n::localize_fill_type;
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
-    cleanup_bridge_runtime_files, is_version_sufficient, parse_incoming_write_xml,
-    prune_market_data_xmls, write_heartbeat_xml_with_latest, write_market_data_xml,
-    HeartbeatBranding, IncomingPacket,
+    cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, is_version_sufficient,
+    parse_incoming_write_xml, prune_market_data_xmls, write_heartbeat_xml_with_latest,
+    write_market_data_xml, HeartbeatBranding, IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -29,7 +29,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -41,6 +41,10 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(3500);
 const FALLBACK_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 /// Support/Diagnostic (`AccessTier::Extended`) mode automatically resets to `User` after 30 minutes.
 pub const EXTENDED_TIER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+const STOP_RUNNING: u8 = 0;
+const STOP_SHUTDOWN: u8 = 1;
+const STOP_RESTART_PRESERVE_HEARTBEAT: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,7 +152,7 @@ pub struct BridgeManager {
     mock_backend: Arc<LocalMockBackend>,
     live_backend: Arc<FastApiBackend>,
     worker_tx: Mutex<Option<Sender<WorkerSignal>>>,
-    worker_stop_flag: Mutex<Option<Arc<AtomicBool>>>,
+    worker_stop_mode: Mutex<Option<Arc<AtomicU8>>>,
     worker_handle: Mutex<Option<JoinHandle<()>>>,
     active_paths: Mutex<Option<BridgePaths>>,
 }
@@ -259,7 +263,7 @@ impl BridgeManager {
             mock_backend,
             live_backend,
             worker_tx: Mutex::new(None),
-            worker_stop_flag: Mutex::new(None),
+            worker_stop_mode: Mutex::new(None),
             worker_handle: Mutex::new(None),
             active_paths: Mutex::new(None),
         };
@@ -995,9 +999,9 @@ impl BridgeManager {
     /// Signals the worker to stop immediately, cleans up `globalMarketOnline.xml` + `read/gmDataSync_*.xml`
     /// synchronously, and returns the worker `JoinHandle` so GUI shutdown never blocks the main event loop.
     pub fn prepare_fast_exit(&self) -> Option<JoinHandle<()>> {
-        if let Ok(mut flag_guard) = self.worker_stop_flag.lock() {
-            if let Some(flag) = flag_guard.take() {
-                flag.store(true, Ordering::SeqCst);
+        if let Ok(mut mode_guard) = self.worker_stop_mode.lock() {
+            if let Some(mode) = mode_guard.take() {
+                mode.store(STOP_SHUTDOWN, Ordering::SeqCst);
             }
         }
         if let Ok(mut tx_guard) = self.worker_tx.lock() {
@@ -1022,9 +1026,9 @@ impl BridgeManager {
 
     /// Cleanly stops the worker and removes `globalMarketOnline.xml` + unread `read/gmDataSync_*.xml` files.
     pub fn shutdown(&self) {
-        if let Ok(mut flag_guard) = self.worker_stop_flag.lock() {
-            if let Some(flag) = flag_guard.take() {
-                flag.store(true, Ordering::SeqCst);
+        if let Ok(mut mode_guard) = self.worker_stop_mode.lock() {
+            if let Some(mode) = mode_guard.take() {
+                mode.store(STOP_SHUTDOWN, Ordering::SeqCst);
             }
         }
         if let Ok(mut tx_guard) = self.worker_tx.lock() {
@@ -1048,6 +1052,56 @@ impl BridgeManager {
         }
     }
 
+    /// Stops the active worker for an internal live restart (e.g. token/profile or backend switch).
+    /// When restarting on the same `bridge_root`, `globalMarketOnline.xml` is intentionally preserved
+    /// so Dedicated Server Lua polling never observes a transient missing heartbeat file while the new
+    /// worker performs its HTTPS handshake; only unread `read/gmDataSync_*.xml` and `.staging/*.tmp`
+    /// files are cleared. If switching to a different profile folder (or `None`), the previous folder
+    /// receives a full runtime cleanup including `globalMarketOnline.xml`.
+    fn stop_worker_for_restart(&self, preserve_for_bridge_root: Option<&Path>) {
+        let prev_paths = self
+            .active_paths
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+
+        let preserve_heartbeat = prev_paths.as_ref().is_some_and(|prev| {
+            preserve_for_bridge_root.is_some_and(|next_root| next_root == prev.bridge_root.as_path())
+        });
+        let target_stop_mode = if preserve_heartbeat {
+            STOP_RESTART_PRESERVE_HEARTBEAT
+        } else {
+            STOP_SHUTDOWN
+        };
+
+        if let Ok(mut mode_guard) = self.worker_stop_mode.lock() {
+            if let Some(mode) = mode_guard.take() {
+                mode.store(target_stop_mode, Ordering::SeqCst);
+            }
+        }
+        if let Ok(mut tx_guard) = self.worker_tx.lock() {
+            if let Some(tx) = tx_guard.take() {
+                let _ = tx.send(WorkerSignal::Stop);
+            }
+        }
+        if let Ok(mut handle_guard) = self.worker_handle.lock() {
+            if let Some(handle) = handle_guard.take() {
+                let _ = handle.join();
+            }
+        }
+        if let Some(paths) = prev_paths {
+            if preserve_heartbeat {
+                cleanup_bridge_transfer_files(&paths.read_dir, &paths.staging_dir);
+            } else {
+                cleanup_bridge_runtime_files(
+                    &paths.online_xml_file,
+                    &paths.read_dir,
+                    &paths.staging_dir,
+                );
+            }
+        }
+    }
+
     fn nudge_signal(&self, sig: WorkerSignal) {
         if let Ok(guard) = self.worker_tx.lock() {
             if let Some(tx) = guard.as_ref() {
@@ -1064,8 +1118,6 @@ impl BridgeManager {
     }
 
     fn restart_worker(&self) {
-        self.shutdown();
-
         let (profile_opt, backend_mode, backend_url, access_tier, active_saved_profile) = {
             let Ok(guard) = self.shared.lock() else {
                 return;
@@ -1083,6 +1135,16 @@ impl BridgeManager {
                 active_prof,
             )
         };
+
+        let resolved_paths = profile_opt
+            .as_deref()
+            .map(|raw_profile| resolve_bridge_paths(Path::new(raw_profile)));
+        let preserve_root = resolved_paths
+            .as_ref()
+            .and_then(|res| res.as_ref().ok())
+            .map(|p| p.bridge_root.as_path());
+
+        self.stop_worker_for_restart(preserve_root);
 
         let default_market_name = match backend_mode {
             BackendMode::Mock => "Local Simulation (Mock)".to_string(),
@@ -1107,7 +1169,7 @@ impl BridgeManager {
                 .and_then(|p| p.cached_logo_url.clone()),
         };
 
-        let Some(raw_profile) = profile_opt else {
+        let Some(paths_res) = resolved_paths else {
             self.update_snapshot(|snap| {
                 snap.state = BridgeConnectionState::PathMissing;
                 snap.game_edition = None;
@@ -1137,7 +1199,7 @@ impl BridgeManager {
             return;
         };
 
-        let paths = match resolve_bridge_paths(Path::new(&raw_profile)) {
+        let paths = match paths_res {
             Ok(p) => p,
             Err(err) => {
                 self.update_snapshot(|snap| {
@@ -1165,6 +1227,7 @@ impl BridgeManager {
         };
 
         if let Err(err) = paths.ensure_directories() {
+            cleanup_bridge_runtime_files(&paths.online_xml_file, &paths.read_dir, &paths.staging_dir);
             self.update_snapshot(|snap| {
                 snap.state = BridgeConnectionState::PathMissing;
                 snap.heartbeat_seq = 0;
@@ -1219,8 +1282,11 @@ impl BridgeManager {
         };
 
         let (tx, rx) = mpsc::channel::<WorkerSignal>();
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_flag_worker = Arc::clone(&stop_flag);
+        // Kick off the initial handshake immediately instead of waiting for the first 500 ms poll timeout.
+        let _ = tx.send(WorkerSignal::Wakeup);
+
+        let stop_mode = Arc::new(AtomicU8::new(STOP_RUNNING));
+        let stop_mode_worker = Arc::clone(&stop_mode);
         let shared_clone = Arc::clone(&self.shared);
         let app_clone = self.app_handle.clone();
 
@@ -1234,7 +1300,7 @@ impl BridgeManager {
                         backend,
                         rx,
                         watcher_tx,
-                        stop_flag_worker,
+                        stop_mode_worker,
                         shared_clone,
                         app_clone,
                     );
@@ -1242,8 +1308,8 @@ impl BridgeManager {
             })
             .expect("failed to spawn bridge worker thread");
 
-        if let Ok(mut flag_guard) = self.worker_stop_flag.lock() {
-            *flag_guard = Some(stop_flag);
+        if let Ok(mut mode_guard) = self.worker_stop_mode.lock() {
+            *mode_guard = Some(stop_mode);
         }
         if let Ok(mut tx_guard) = self.worker_tx.lock() {
             *tx_guard = Some(tx);
@@ -1287,7 +1353,7 @@ fn run_bridge_worker(
     backend: Arc<dyn BackendService>,
     rx: mpsc::Receiver<WorkerSignal>,
     watcher_tx: Sender<WorkerSignal>,
-    stop_flag: Arc<AtomicBool>,
+    stop_mode: Arc<AtomicU8>,
     shared: Arc<Mutex<SharedState>>,
     app_handle: Option<AppHandle>,
 ) {
@@ -1338,7 +1404,7 @@ fn run_bridge_worker(
     );
 
     loop {
-        if stop_flag.load(Ordering::SeqCst) {
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
         let mut force_sync = false;
@@ -1350,7 +1416,7 @@ fn run_bridge_worker(
             Ok(WorkerSignal::Wakeup) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if stop_flag.load(Ordering::SeqCst) {
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
 
@@ -1392,7 +1458,7 @@ fn run_bridge_worker(
         if status_refresh_due {
             last_status_check = Instant::now();
             let status_res = backend.check_status();
-            if stop_flag.load(Ordering::SeqCst) {
+            if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
                 break;
             }
             match status_res {
@@ -1622,7 +1688,7 @@ fn run_bridge_worker(
         // 2. Heartbeat file (`globalMarketOnline.xml`) every 3.5s.
         // Even when Outdated or BackendOffline, write `isConnected="false"` + `minVersion`
         // so Lua immediately enforces `minVersion` or displays the red HUD icon.
-        if stop_flag.load(Ordering::SeqCst) {
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -1844,13 +1910,13 @@ fn run_bridge_worker(
         }
 
         // 4. Periodic market state poll.
-        if stop_flag.load(Ordering::SeqCst) {
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
         if is_connected && (force_sync || last_market_poll.elapsed() >= poll_interval) {
             last_market_poll = Instant::now();
             let market_res = backend.fetch_market_state();
-            if stop_flag.load(Ordering::SeqCst) {
+            if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
                 break;
             }
             match market_res {
@@ -1881,8 +1947,13 @@ fn run_bridge_worker(
         }
     }
 
-    // Always clean up `globalMarketOnline.xml` and unread `read/gmDataSync_*.xml` snapshots when leaving the worker loop.
-    cleanup_bridge_runtime_files(&paths.online_xml_file, &paths.read_dir, &paths.staging_dir);
+    // Preserve `globalMarketOnline.xml` across live restart handovers (`STOP_RESTART_PRESERVE_HEARTBEAT`)
+    // so the new worker can overwrite it atomically; delete it immediately on real shutdown.
+    if stop_mode.load(Ordering::SeqCst) == STOP_RESTART_PRESERVE_HEARTBEAT {
+        cleanup_bridge_transfer_files(&paths.read_dir, &paths.staging_dir);
+    } else {
+        cleanup_bridge_runtime_files(&paths.online_xml_file, &paths.read_dir, &paths.staging_dir);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

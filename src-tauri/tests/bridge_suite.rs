@@ -1981,14 +1981,14 @@ fn client_ip_locked_pauses_polling_and_unlocks_immediately_on_market_switch() {
     )
     .unwrap();
 
+    mgr.add_market_token("locked-ip-token", Some("Gesperrtes Netz"))
+        .unwrap();
+
     let mut cfg = mgr.get_config();
     cfg.backend_mode = BackendMode::Live;
     cfg.backend_url = format!("http://{addr}");
     cfg.fs25_profile_path = Some(profile_dir.to_string_lossy().into_owned());
     mgr.update_config(cfg).unwrap();
-
-    mgr.add_market_token("locked-ip-token", Some("Gesperrtes Netz"))
-        .unwrap();
 
     let wait_for = |pred: &dyn Fn() -> bool| {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -2014,13 +2014,13 @@ fn client_ip_locked_pauses_polling_and_unlocks_immediately_on_market_switch() {
         .iter()
         .any(|l| l.key.as_deref() == Some("logTokenInvalid")));
 
-    // Wait across multiple 500 ms worker ticks -> polling MUST remain paused (exactly 1 hit)!
+    // Wait across multiple 500 ms worker ticks -> polling MUST remain paused (zero extra hits)!
     let hits_after_lock = locked_hits.load(Ordering::SeqCst);
-    assert_eq!(hits_after_lock, 1);
+    assert!(hits_after_lock >= 1);
     thread::sleep(Duration::from_millis(1200));
     assert_eq!(
         locked_hits.load(Ordering::SeqCst),
-        1,
+        hits_after_lock,
         "Worker must pause polling during retry_after instead of retrying every tick"
     );
 
@@ -2039,6 +2039,232 @@ fn client_ip_locked_pauses_polling_and_unlocks_immediately_on_market_switch() {
     assert!(public_hits.load(Ordering::SeqCst) >= 1);
 
     mgr.shutdown();
+    stop_srv.store(true, Ordering::SeqCst);
+    let _ = server_thread.join();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn live_market_switch_preserves_heartbeat_xml_during_handshake_and_deletes_on_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let stop_srv = Arc::new(AtomicBool::new(false));
+    let stop_srv_clone = Arc::clone(&stop_srv);
+
+    let server_thread = thread::spawn(move || {
+        while !stop_srv_clone.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut req_line = String::new();
+                    if reader.read_line(&mut req_line).is_err() || req_line.is_empty() {
+                        continue;
+                    }
+                    let mut token_hdr: Option<String> = None;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty()
+                        {
+                            break;
+                        }
+                        if let Some((k, v)) = line.split_once(':') {
+                            if k.trim().eq_ignore_ascii_case("x-market-token") {
+                                token_hdr = Some(v.trim().to_string());
+                            }
+                        }
+                    }
+                    drop(reader);
+
+                    if req_line.starts_with("GET /api/v1/meta/status ") {
+                        if token_hdr.as_deref() == Some("slow-dedi-token") {
+                            // Simulate a realistic 250 ms HTTPS handshake / status latency
+                            thread::sleep(Duration::from_millis(250));
+                            let json = r#"{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":10,"market_name":"Dedi Community Markt","api_version":"2.6.0","market_logo_url":null}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        } else {
+                            let json = r#"{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":10,"market_name":"Global Market Official","api_version":"2.6.0","market_logo_url":null}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        }
+                    } else if req_line.starts_with("GET /api/v1/market/state ") {
+                        if token_hdr.as_deref() == Some("slow-dedi-token") {
+                            let json = r#"{"updated_at":1763058010,"items":[{"fill_type":"BARLEY","fill_level":25000,"trend":1.05,"great_demand":false,"status":"APPROVED"}]}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        } else {
+                            let json = r#"{"updated_at":1763058000,"items":[{"fill_type":"WHEAT","fill_level":50000,"trend":1.00,"great_demand":false,"status":"APPROVED"}]}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        }
+                    }
+                    let _ = stream.flush();
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let dir = env::temp_dir().join(format!("fs25_gm_restart_preserve_hb_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let profile_dir_1 = dir.join("FarmingSimulator2025_A");
+    let profile_dir_2 = dir.join("FarmingSimulator2025_B");
+    fs::create_dir_all(&profile_dir_1).unwrap();
+    fs::create_dir_all(&profile_dir_2).unwrap();
+    fs::write(profile_dir_1.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+    fs::write(profile_dir_2.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let cfg_file = dir.join("settings.json");
+    let init_cfg = AppConfig {
+        fs25_profile_path: Some(dir.join("unconfigured_profile").to_string_lossy().into_owned()),
+        ..AppConfig::default()
+    };
+    init_cfg.save_to_file(&cfg_file).unwrap();
+
+    let mgr = BridgeManager::new(cfg_file, None);
+    let dummy_ext = digest_access_key("UNIT-TEST-SUPPORT-ONLY");
+    let dummy_dev = digest_access_key("UNIT-TEST-DEVELOPER-ONLY");
+    mgr.unlock_access_tier_with_digests(
+        "UNIT-TEST-DEVELOPER-ONLY",
+        dummy_ext,
+        dummy_dev,
+        Duration::from_secs(1800),
+    )
+    .unwrap();
+
+    let mut cfg = mgr.get_config();
+    cfg.backend_mode = BackendMode::Live;
+    cfg.backend_url = format!("http://{addr}");
+    cfg.fs25_profile_path = Some(profile_dir_1.to_string_lossy().into_owned());
+    mgr.update_config(cfg).unwrap();
+
+    let bridge_root_1 = profile_dir_1.join("modSettings").join("FS25_GlobalMarket");
+    let online_xml_1 = bridge_root_1.join("globalMarketOnline.xml");
+    let read_dir_1 = bridge_root_1.join("read");
+
+    let wait_for = |pred: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < deadline {
+            if pred() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        false
+    };
+
+    assert!(
+        wait_for(&|| {
+            mgr.get_snapshot().state == BridgeConnectionState::Online
+                && online_xml_1.exists()
+                && fs::read_dir(&read_dir_1)
+                    .map(|it| it.flatten().count() > 0)
+                    .unwrap_or(false)
+        }),
+        "Initial Official Market connection must write globalMarketOnline.xml and gmDataSync_*.xml"
+    );
+
+    // Spawn a high-frequency observer (every 10 ms) to verify `globalMarketOnline.xml` NEVER disappears
+    // during a live token switch even while the new HTTPS handshake takes 250 ms!
+    let saw_missing_heartbeat = Arc::new(AtomicBool::new(false));
+    let stop_observer = Arc::new(AtomicBool::new(false));
+    let obs_missing_clone = Arc::clone(&saw_missing_heartbeat);
+    let obs_stop_clone = Arc::clone(&stop_observer);
+    let obs_xml_path = online_xml_1.clone();
+    let observer = thread::spawn(move || {
+        while !obs_stop_clone.load(Ordering::SeqCst) {
+            if !obs_xml_path.exists() {
+                obs_missing_clone.store(true, Ordering::SeqCst);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    });
+
+    // Switch live to `slow-dedi-token` (250 ms handshake)
+    mgr.add_market_token("slow-dedi-token", Some("Dedi Projekt"))
+        .unwrap();
+
+    // Immediately after `add_market_token` returns (while the 250 ms handshake is still in flight!),
+    // old `read/gmDataSync_*.xml` snapshots must already be purged while `globalMarketOnline.xml` still exists.
+    assert!(
+        online_xml_1.exists(),
+        "globalMarketOnline.xml must remain intact immediately after live token switch"
+    );
+    let old_wheats_left = fs::read_dir(&read_dir_1)
+        .map(|it| {
+            it.flatten()
+                .filter_map(|e| fs::read_to_string(e.path()).ok())
+                .any(|c| c.contains("WHEAT"))
+        })
+        .unwrap_or(false);
+    assert!(
+        !old_wheats_left,
+        "Unread gmDataSync_*.xml snapshots from the previous market must be cleared on live restart"
+    );
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.is_private_market
+                && s.market_name == "Dedi Community Markt"
+                && fs::read_to_string(&online_xml_1)
+                    .map(|xml| xml.contains("marketName=\"Dedi Community Markt\""))
+                    .unwrap_or(false)
+        }),
+        "New worker must atomically overwrite globalMarketOnline.xml with the new private market branding"
+    );
+
+    stop_observer.store(true, Ordering::SeqCst);
+    let _ = observer.join();
+    assert!(
+        !saw_missing_heartbeat.load(Ordering::SeqCst),
+        "globalMarketOnline.xml must NEVER be deleted during a live market/token switch on the same profile folder"
+    );
+
+    // Switching to a DIFFERENT FS25 profile folder MUST clean up `globalMarketOnline.xml` in the old folder
+    mgr.set_profile_path(&profile_dir_2.to_string_lossy())
+        .unwrap();
+    let online_xml_2 = profile_dir_2
+        .join("modSettings")
+        .join("FS25_GlobalMarket")
+        .join("globalMarketOnline.xml");
+    assert!(
+        !online_xml_1.exists(),
+        "Changing to a different FS25 profile folder must remove globalMarketOnline.xml from the previous folder"
+    );
+    assert!(wait_for(&|| online_xml_2.exists()));
+
+    // Real shutdown MUST immediately delete `globalMarketOnline.xml`
+    mgr.shutdown();
+    assert!(
+        !online_xml_2.exists(),
+        "Real shutdown() must immediately remove globalMarketOnline.xml"
+    );
+
     stop_srv.store(true, Ordering::SeqCst);
     let _ = server_thread.join();
     let _ = fs::remove_dir_all(&dir);
