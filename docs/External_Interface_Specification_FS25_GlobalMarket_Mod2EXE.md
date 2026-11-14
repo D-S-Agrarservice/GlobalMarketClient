@@ -1,147 +1,185 @@
-# GlobalMarket – Externe Schnittstellen-Spezifikation & Datenverkehr: Lua <-> Client XML-Bridge
+# GlobalMarket – Externe Schnittstellen-Spezifikation & Datenverkehr: Lua <-> Rust Client XML-Bridge
 
-> [!NOTE]
-> **Implementierungs-Hinweis (`GlobalMarketClient`):** Diese Spezifikation definiert das verbindliche XML-Austauschprotokoll zwischen dem Lua-Mod (`FS25_GlobalMarket` / künftige Editionen) und dem offiziellen Cross-Platform-Client **`GlobalMarketClient`** (**Rust + Tauri v2** für Windows, macOS & Linux). Ältere C#-Codebeispiele in diesem Dokument stammen aus der ursprünglichen Entwurfsphase und dienen nur noch als historische Schema-Referenz.
+Dieses Dokument ist die verbindliche technische Spezifikation für den Datenverkehr zwischen dem FS25 Lua-Mod (`FS25_GlobalMarket` bzw. zukünftigen `FS<YY>_GlobalMarket`-Editionen) und der offiziellen plattformübergreifenden Desktop-Applikation **`GlobalMarketClient`** (Repository `FS25_GlobalMarketExe`, implementiert in **Rust + Tauri v2** für Windows, macOS & Linux / Steam Deck) inklusive Online-Backend (`gm.bydora.de`).
 
-Dieses Dokument ist die verbindliche technische Spezifikation für den Datenverkehr zwischen dem Lua-Mod (`FS25_GlobalMarket`) und der externen Desktop-Applikation (`GlobalMarketClient`) inkl. Online-Backend. Da die GIANTS Engine (Lua-Sandbox) keine direkten HTTP-, TCP- oder WebSocket-Verbindungen nach außen zulässt, erfolgt die gesamte Kommunikation asynchron über XML-Dateien im lokalen ModSettings-Ordner des Spielers.
+Da die Lua-Sandbox der GIANTS Engine aus Sicherheitsgründen keine direkten ausgehenden HTTP-, TCP- oder WebSocket-Verbindungen zulässt, erfolgt die gesamte Kommunikation zwischen Spiel und Desktop-Client asynchron und atomar über XML- und `.dds`-Dateien im lokalen `modSettings`-Ordner des Spielers.
 
 ---
 
 ## 1. Verzeichnisstruktur & Datei-I/O-Regeln
 
 ### 1.1 Gemeinsames Austausch-Verzeichnis (`modSettings/FS25_GlobalMarket/`)
-Sämtliche Dateien der Schnittstelle liegen gebündelt in einem einzigen Ordner innerhalb des FS25-Benutzerprofils:
+Sämtliche Dateien der Schnittstelle liegen gebündelt in einem einzigen Ordner innerhalb des Benutzerprofils des Landwirtschafts-Simulators (`src-tauri/src/bridge/paths.rs`):
 
-* **Windows (Standard & OneDrive):**
+* **Windows (Standard & OneDrive `Documents` / `Dokumente`):**
   `%USERPROFILE%\Documents\My Games\FarmingSimulator2025\modSettings\FS25_GlobalMarket\`
-  ```csharp
-  string fs25ProfileDir = Path.Combine(
-      Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-      "My Games", "FarmingSimulator2025"
-  );
-  string gmBridgeDir = Path.Combine(fs25ProfileDir, "modSettings", "FS25_GlobalMarket");
-  ```
-* **macOS (Steam):**
+  *(sowie vorrangig `%OneDriveConsumer%` und `%OneDrive%`, falls OneDrive-Ordnersicherung aktiv ist)*
+* **macOS (Steam / GIANTS Standalone):**
   `~/Library/Application Support/FarmingSimulator2025/modSettings/FS25_GlobalMarket/`
-* **macOS (App Store):**
+* **macOS (Mac App Store Sandbox-Container):**
   `~/Library/Containers/com.giants-software.farmingsim25/Data/Library/Application Support/FarmingSimulator2025/modSettings/FS25_GlobalMarket/`
+* **Linux / SteamOS / Steam Deck (Steam Proton):**
+  `<SteamLibrary>/steamapps/compatdata/2300320/pfx/drive_c/users/steamuser/Documents/My Games/FarmingSimulator2025/modSettings/FS25_GlobalMarket/`
+  *(inklusive Auswertung sekundärer Steam-Bibliotheken über `steamapps/libraryfolders.vdf`)*
+
+```rust
+// Auszug aus src-tauri/src/bridge/paths.rs (Multi-OS & Multi-Edition Pfadauflösung)
+pub struct BridgePaths {
+    pub game_edition: String,           // z. B. "FS25" (oder zukünftig "FS28")
+    pub profile_dir: PathBuf,           // .../FarmingSimulator2025 (oder eigener -profile Ordner)
+    pub bridge_root: PathBuf,           // .../modSettings/FS25_GlobalMarket
+    pub online_xml_file: PathBuf,       // .../modSettings/FS25_GlobalMarket/globalMarketOnline.xml
+    pub server_whitelist_file: PathBuf, // .../modSettings/FS25_GlobalMarket/server_whitelist.xml
+    pub read_dir: PathBuf,              // .../modSettings/FS25_GlobalMarket/read
+    pub write_dir: PathBuf,             // .../modSettings/FS25_GlobalMarket/write
+    pub logos_dir: PathBuf,             // .../modSettings/FS25_GlobalMarket/logos
+    pub staging_dir: PathBuf,           // .../modSettings/FS25_GlobalMarket/.staging
+}
+```
 
 > [!IMPORTANT]
-> **Pflicht-Anforderung für die EXE (Manuelle Verzeichnisauswahl / Fallback):**
-> Viele Spieler nutzen verschobene Dokumenten-Ordner, OneDrive-Sonderpfade oder starten den LS25 mit eigenem `-profile`-Startparameter auf einem anderen Laufwerk.
-> Die EXE **muss** daher zwingend eine Funktion / Einstellung bieten, über die der Nutzer das `FarmingSimulator2025`-Profilverzeichnis (bzw. direkt den Ordner `modSettings\FS25_GlobalMarket`) **manuell per Ordner-Dialog auswählen** und dauerhaft in der EXE-Konfiguration speichern kann, falls die automatische Erkennung fehlschlägt!
+> **Manuelle Verzeichnisauswahl & `-profile`-Fallback (`resolve_bridge_paths`):**
+> Viele Spieler nutzen verschobene Dokumenten-Ordner, eigene Laufwerke oder starten den LS25 mit dem Startparameter `-profile <Pfad>`. Der `GlobalMarketClient` bietet daher in den Einstellungen eine manuelle Ordnerauswahl, die wahlweise den Profilordner (`FarmingSimulator2025` bzw. Ordner mit `gameSettings.xml`), den Unterordner `modSettings` oder direkt `modSettings/FS25_GlobalMarket` akzeptiert und dauerhaft in `settings.json` speichert.
 
-### 1.2 Übersicht aller Austausch-Dateien
+### 1.2 Übersicht aller Austausch-Dateien & Unterordner
 
-Alle Pfade verstehen sich relativ zu `...\FarmingSimulator2025\modSettings\FS25_GlobalMarket\`:
+Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_GlobalMarket/`:
 
 | Relativer Pfad | Richtung | Lebenszyklus & Zweck |
 | :--- | :--- | :--- |
-| `globalMarketOnline.xml` | **EXE -> Lua** | **Persistente Statusdatei** (Heartbeat, Backend-Verbindungsstatus, EXE-Version). Wird von Lua alle `2000 ms` gelesen (**nicht gelöscht!**). Beim regulären Beenden der EXE sollte die Datei von der EXE gelöscht oder `isConnected="false"` gesetzt werden. |
-| `server_whitelist.xml` | **Lua (Server) -> Lokal** | Statische Übersicht aller auf der geladenen Map erlaubten FillTypes (wird beim Map-Start im Singleplayer bzw. auf dem Host/Server erzeugt). |
-| `write/whitelist_<ts>.xml` | **Lua (Data-Host) -> EXE** | **Transferdatei:** Wird vom aktiven Data-Host-Client geschrieben, sobald er vom Server den Data-Host-Token erhält. **EXE liest & löscht diese Datei.** |
-| `read/gmDataSync_<ts>.xml` | **EXE -> Lua (Data-Host)** | **Transferdatei:** Eingehende globale Marktdaten (`action="marketData"`). Wird vom Data-Host alle `1000 ms` gepollt. **Lua liest & löscht diese Datei.** |
-| `write/transaction_<ts>_<id>.xml` | **Lua (Data-Host) -> EXE** | **Transferdatei:** Ausgehende Kauf-/Verkaufstransaktion (`action="transaction"`). **EXE liest & löscht diese Datei.** |
+| `globalMarketOnline.xml` | **Client -> Lua** | **Persistente Statusdatei** (Heartbeat, Backend-Verbindungsstatus, Client-Version, `minVersion` sowie 3-Stufen-Markt-Branding). Wird vom Rust-Client alle `3–5 s` atomar aktualisiert und von Lua alle `2000 ms` gelesen (**nicht von Lua gelöscht!**). Beim Stoppen der Bridge oder Beenden des Clients löscht der Client die Datei sofort (`remove_heartbeat_xml`). |
+| `logos/logo_<hash12>.dds` | **Client -> Lua** | **Gecachte Branding-Textur:** Vom Rust-Client aus `.webp`/`.png`/`.jpg`/`.dds` erzeugte GIANTS-konforme `512x256` `BC3/DXT5`-Textur inkl. 10 Mipmaps (`174.928 Bytes`), referenziert über `logoFile` in `globalMarketOnline.xml`. |
+| `.staging/stage_<pid>_<seq>.tmp` | **Client intern** | **Temporärer Staging-Ordner** außerhalb von `read/`, in dem der Rust-Client neue XML- und `.dds`-Dateien vollständig schreibt und flusht, bevor sie per `std::fs::rename` atomar ans Ziel verschoben werden. |
+| `server_whitelist.xml` | **Lua (Server) -> Lokal** | Statische Referenzliste aller auf der geladenen Map registrierten FillTypes (wird beim Map-Start im Singleplayer bzw. auf dem Host/Dedicated Server erzeugt). |
+| `write/whitelist_<date>_<seq>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="updateWhitelist"`):** Wird vom aktiven Data-Host geschrieben, sobald er vom Server den Data-Host-Token erhält oder im Client live den Markt wechselt. **Client liest & löscht diese Datei.** |
+| `read/gmDataSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="marketData"`):** Eingehende globale Marktdaten. Wird vom Data-Host alle `1000 ms` gepollt, chronologisch sortiert eingelesen und gelöscht. Der Rust-Client behält bei geschlossenem Spiel maximal die `3` neuesten Snapshots vor (`MAX_RETAINED_MARKET_SYNC_FILES = 3`) und räumt `read/` beim Beenden auf. |
+| `write/transaction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="transaction"`):** Ausgehende Kauf-/Verkaufstransaktion in ganzen Litern. **Client liest, überträgt idempotent ans Backend & löscht diese Datei.** |
 
-### 1.3 Verbindliche Datei-I/O-Regeln für C# & Lua
-1. **Atomares Schreiben (Schutz vor Halb-Lese-Zugriffen):**
-   Da Lua den Ordner `read/` alle `1000 ms` und `globalMarketOnline.xml` alle `2000 ms` pollt, darf die C#-EXE niemals langsam direkt in die Zieldatei streamen.
-   * **Best Practice in C#:** Datei erst vollständig als `.tmp`-Datei schreiben, Stream schließen und anschließend per `File.Move(tmpPath, xmlPath, overwrite: true)` atomar umbenennen.
+### 1.3 Verbindliche Datei-I/O-Regeln für Rust (`GlobalMarketClient`) & Lua
+1. **Atomares Schreiben über `.staging/` (Schutz vor Halb-Lese-Zugriffen & `getFiles`-Races):**
+   Da Lua den Ordner `read/` alle `1000 ms` per `getFiles()` scannt und `globalMarketOnline.xml` alle `2000 ms` liest, darf niemals direkt in Zieldateien gestreamt oder eine `.tmp`-Datei innerhalb von `read/` abgelegt werden.
+   * **Umsetzung in Rust (`atomic_write_utf8_no_bom`):** Datei vollständig in `.staging/stage_<pid>_<seq>.tmp` schreiben, per `file.sync_all()` auf den Datenträger flushen, Handle schließen und anschließend per `std::fs::rename(&tmp_path, target_path)` atomar ans Ziel verschieben (inkl. bis zu `5x 40 ms` Retry, falls die GIANTS Engine `globalMarketOnline.xml` unter Windows für wenige Millisekunden sperrt).
 2. **Encoding zwingend UTF-8 OHNE BOM:**
-   Der C++-XML-Parser der GIANTS Engine verweigert Dateien mit UTF-8 Byte Order Mark (`EF BB BF`). In C# daher immer `new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)` verwenden.
-3. **Wildcard-Routing im `write/`-Ordner:**
-   Die EXE überwacht im Ordner `modSettings/FS25_GlobalMarket/write/` alle `*.xml`-Dateien, wertet das Root-Element `<gmDataSync action="...">` aus (`updateWhitelist` vs. `transaction`) und löscht die Datei nach erfolgreicher Verarbeitung sofort (`File.Delete`).
+   Der C++-XML-Parser der GIANTS Engine verweigert Dateien mit UTF-8 Byte Order Mark (`0xEF 0xBB 0xBF`). Rust-Strings (`&str`) sind nativ UTF-8 ohne BOM; zusätzlich entfernt der Writer vor dem Schreiben jedes führende `\u{FEFF}` (`debug_assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]))`).
+3. **Invariante Zahlenformatierung & 32-Bit-Integer-Clamping:**
+   Fließkommazahlen werden sprachunabhängig mit Dezimalpunkt formatiert (`format!("{trend:.2}")`). Ganzzahlige Liter-Bestände (`fillLevel`, `greatDemandRemaining`) werden vor dem XML-Export auf `0..=i32::MAX` (`2_147_483_647`) begrenzt, da `XMLFile:getInt()` in der GIANTS Engine vorzeichenbehaftete 32-Bit-Integer liest.
+4. **Polymorphes Wildcard-Routing im `write/`-Ordner:**
+   Der Rust-Watcher (`notify`-Filesystem-Events + `1 s` Polling-Fallback) verarbeitet alle `*.xml`-Dateien in `write/`, wertet per `quick-xml` das Root-Attribut `<gmDataSync action="...">` aus (`updateWhitelist` vs. `transaction`, unbekannte Actions werden ignoriert) und löscht die Datei nach Übernahme sofort (`std::fs::remove_file`).
 
 ---
 
 ## 2. Rollenverteilung & Netzwerk-Topologie (SP / MP-Host / Dedicated Server)
 
-Die Desktop-Applikation (`FS25_GlobalMarketExe`) läuft **ausschließlich auf Spieler-PCs** (niemals auf einem Dedicated Server). Damit ein Dedicated Server trotzdem am Online-Markt teilnehmen kann, nutzt `FS25_GlobalMarket` ein **dynamisches Data-Host-Token-System**:
+Der Desktop-Client (`GlobalMarketClient`) läuft **ausschließlich auf Spieler-PCs** (niemals auf einem gemieteten Dedicated Server). Damit ein Dedicated Server dennoch vollumfänglich am Online-Markt teilnehmen kann, nutzt `FS25_GlobalMarket` ein **dynamisches Data-Host-Token-System**:
 
 * **Szenario A – Singleplayer & Lokal gehosteter Multiplayer (Listen-Server):**
-  Der Spieler-PC ist gleichzeitig `Server` und `Client` (`"LOCAL_HOST"`). Läuft auf diesem PC die `FS25_GlobalMarketExe`, übernimmt er direkt die Rolle des `Data-Host`.
+  Der Spieler-PC ist gleichzeitig `Server` und `Client` (`"LOCAL_HOST"`). Läuft auf diesem PC der `GlobalMarketClient` mit aktiver Backend-Verbindung, übernimmt er direkt die Rolle des `Data-Host`.
 * **Szenario B – Dedicated Server mit Spieler-Data-Host:**
-  Auf dem Dedicated Server selbst läuft keine EXE (`g_dedicatedServer ~= nil` überspringt jedes lokale Datei-Polling). Sobald sich ein MP-Client verbindet, auf dessen PC die `FS25_GlobalMarketExe` aktiv läuft und `isConnected="true"` meldet, weist der Dedicated Server diesem Client per `SyncMarketWhitelistEvent` den **Data-Host-Token** zu (`isDataHost = true`, **Grünes HUD-Icon**).
-  * **Standby / Failover:** Verbinden sich weitere Spieler mit laufender EXE, gehen diese automatisch in den **Standby-Modus** (**Oranges HUD-Icon**). Verlässt der aktive Data-Host das Spiel oder beendet seine EXE, vergibt der Server den Token nahtlos an den nächsten Standby-Client (oder schaltet zurück in den Offline-Modus, falls kein Spieler mehr eine EXE offen hat).
-  * **Mitspieler ohne eigene EXE:** Alle anderen Spieler auf dem Server sehen im Menü denselben synchronisierten Online-Markt und können normal kaufen und verkaufen. Der Dedicated Server prüft und bucht die Transaktion autoritativ und leitet den Export-Auftrag automatisch über das Netzwerk an den aktiven Data-Host-Client weiter, der die `write/transaction_<ts>_<id>.xml` für seine lokale EXE ausschreibt.
+  Auf dem Dedicated Server selbst läuft kein Desktop-Client (`g_dedicatedServer ~= nil` überspringt jedes lokale Datei-Polling). Sobald sich ein MP-Client verbindet, auf dessen PC der `GlobalMarketClient` aktiv läuft und `isConnected="true"` meldet, sendet dieser `ExeStatusEvent` an den Server. Der Dedicated Server weist diesem Client per `SyncMarketWhitelistEvent(serverWhitelist, true)` den **Data-Host-Token** zu (`isDataHost = true`, **Grünes HUD-Icon**).
+  * **Standby, Token-Entzug & Failover:** Verbinden sich weitere Spieler mit laufendem Client, bleiben diese im **Standby-Modus** (**Oranges HUD-Icon**). Wechselt die Data-Host-Rolle (z. B. Disconnect, Client-Beendigung oder Übernahme), entzieht der Server einem bisherigen Remote-Data-Host den Token explizit via `SyncMarketWhitelistEvent(nil, false)` und vergibt ihn nahtlos an den nächsten verfügbaren Standby-Client – oder stellt bei `0` verbleibenden Clients verlustfrei die gesicherten lokalen Offline-Bestände wieder her (`restoreOfflineMarketState`).
+  * **Live-Marktwechsel zur Laufzeit (Quick-Switch):** Wechselt der aktive Data-Host im `GlobalMarketClient` über den Schnell-Umschalter das Marktprofil (`marketName` / `isPrivateMarket`), meldet Lua die Änderung sofort per `ExeStatusEvent` an den Server (`updateActiveDataHostBranding`). Der Server aktualisiert den Markt-Header für alle Spieler und stößt automatisch einen erneuten Whitelist-Export (`write/whitelist_*.xml`) an, damit der neu gewählte Zielmarkt umgehend alle FillTypes der laufenden Map erhält.
+  * **Mitspieler ohne eigenen Client:** Alle anderen Spieler auf dem Server sehen denselben synchronisierten Online-Markt (inkl. Privatmarkt-Namen im Header und autoritativ vom Server berechneten Map-Spy-Preisen) und handeln regulär. Der Dedicated Server prüft und bucht jede Transaktion autoritativ und leitet den Export-Auftrag per `SellBuyMarketGlobalMarketEvent` (`ACTION_EXPORT_TX`) an den aktiven Data-Host weiter.
 
 ### Sequenzdiagramm: Kompletter Datenverkehr
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Backend as Cloud / Web-Backend
-    participant EXE as C# GlobalMarketExe (Spieler-PC)
+    participant Backend as GlobalMarketServer (HTTPS API)
+    participant Client as GlobalMarketClient (Rust / Tauri v2)
     participant FS as Dateisystem (modSettings/FS25_GlobalMarket)
     participant DH as MP-Client 1 (Data-Host)
     participant Srv as FS25 Server (Dedi / Host)
-    participant C2 as MP-Client 2 (Ohne EXE)
+    participant C2 as MP-Client 2 (Ohne App)
 
-    Note over EXE,FS: 1. Heartbeat & Token-Vergabe (alle 2000 ms)
-    EXE->>FS: Schreibt globalMarketOnline.xml (timestamp, isConnected, version)
-    DH->>FS: Liest globalMarketOnline.xml (Anti-Zombie Check <= 10s)
-    DH->>Srv: ExeStatusEvent(isExeRunning=true, hasBackendConnection=true)
-    Srv->>DH: SyncMarketWhitelistEvent(serverWhitelist) [Vergibt Data-Host Token]
+    Note over Client,FS: 1. Heartbeat, Branding & Token-Vergabe
+    Client->>FS: Schreibt logos/logo_<hash>.dds & globalMarketOnline.xml (atomar via .staging/)
+    DH->>FS: Liest globalMarketOnline.xml alle 2000 ms (Anti-Zombie Check <= 10s)
+    DH->>Srv: ExeStatusEvent(isRunning=true, isConnected=true, marketName, isPrivate)
+    Srv->>DH: SyncMarketWhitelistEvent(serverWhitelist, isAssigned=true)
     Note over DH: HUD-Icon wird GRÜN (isDataHost = true)
-    DH->>FS: Schreibt write/whitelist_<ts>.xml (action="updateWhitelist")
-    FS->>EXE: Liest & löscht whitelist_<ts>.xml
-    EXE->>Backend: Registriert verfügbare Map-FillTypes
+    DH->>FS: Schreibt write/whitelist_<date>_<seq>.xml (action="updateWhitelist")
+    FS->>Client: Liest & löscht whitelist_*.xml
+    Client->>Backend: POST /v1/whitelist (Registriert Map-FillTypes)
 
-    Note over Backend,C2: 2. Eingehender Markt-Sync (alle 1000 ms)
-    Backend->>EXE: Globale Bestände, Trends & Great-Demand-Flags
-    EXE->>FS: Schreibt read/gmDataSync_<ts>.xml (action="marketData")
-    DH->>FS: Pollt read/, liest & löscht gmDataSync_<ts>.xml
-    DH->>Srv: MarketDataSyncEvent(marketData)
-    Note over Srv: Map-Spy Preisberechnung (normalPrice * trend) & GD-Prüfung
-    Srv->>C2: Broadcast MarketDataSyncEvent(marketData)
-    Srv->>DH: Broadcast / Bestätigung (HUD-Icon pulsiert 2s)
+    Note over Backend,C2: 2. Eingehender Markt-Sync (ETag / Delta -> XML)
+    Backend->>Client: GET /v1/market (Bestände, Trends, Great-Demand & Status)
+    Client->>FS: Schreibt read/gmDataSync_<ts>_<seq>.xml (atomar via .staging/)
+    DH->>FS: Pollt read/ alle 1000 ms, liest & löscht gmDataSync_*.xml
+    DH->>Srv: MarketDataSyncEvent(marketData, marketName, isPrivate)
+    Note over Srv: Map-Spy Preisberechnung (normalPrice * trend) & Offline-Snapshot
+    Srv->>C2: Broadcast MarketDataSyncEvent.newFromServerState()
+    Srv->>DH: Broadcast autoritativer Preise & Hybrid-Status (HUD-Icon pulsiert 2s)
 
     Note over Backend,C2: 3. Kauf-/Verkaufstransaktion (inkl. 15s globaler Sperre)
-    C2->>Srv: SellBuyOfflineMarketEvent (BUY / SELL)
-    Note over Srv: Prüft 15s-Cooldown, Bestand, Kapazität & Hofgeld -> Bucht & setzt 15s-Lock
-    Srv->>C2: Broadcast SynchOfflineMarketEvent (Bestands-/Preis-Update)
+    C2->>Srv: SellBuyOfflineMarketEvent / SellBuyMarketGlobalMarketEvent (BUY / SELL)
+    Note over Srv: Prüft 15s-Cooldown, Bestand, Lagerplatz & Hofgeld -> Bucht & setzt 15s-Lock
+    Srv->>C2: Broadcast Bestands-/Preis-Update
     Srv->>DH: SellBuyMarketGlobalMarketEvent (ACTION_EXPORT_TX)
-    DH->>FS: Schreibt write/transaction_<ts>_<id>.xml (action="transaction")
-    FS->>EXE: Liest & löscht transaction_<ts>_<id>.xml
-    EXE->>Backend: Meldet Mengenänderung (Delta in Litern) an Backend
+    DH->>FS: Schreibt write/transaction_<date>_<id>.xml (action="transaction")
+    FS->>Client: Liest & löscht transaction_*.xml (mit Retry-Queue pending_tx.json)
+    Client->>Backend: POST /v1/transactions (Idempotente transaction_id + Liter-Delta)
 ```
 
 ---
 
 ## 3. Verbindliche XML-Schemata (Datei-Formate)
 
-### 3.1 Heartbeat & Versions-Check (`globalMarketOnline.xml`)
+### 3.1 Heartbeat, Versions-Check & 3-Stufen-Branding (`globalMarketOnline.xml` & `logos/*.dds`)
 * **Pfad:** `modSettings/FS25_GlobalMarket/globalMarketOnline.xml`
-* **Schreiber:** `FS25_GlobalMarketExe` (Intervall: alle **3 bis 5 Sekunden** aktualisieren).
-* **Leser:** `GlobalMarketSync.lua` (Intervall: alle `2000 ms`, Datei wird **nicht** gelöscht).
-* **XML-Struktur:**
+* **Schreiber:** `GlobalMarketClient` (`src-tauri/src/bridge/xml.rs`, Intervall: alle **3 bis 5 Sekunden** sowie sofort bei Status- oder Profilwechsel).
+* **Leser:** `GlobalMarketSync.lua` & `GlobalMarketBranding.lua` (Intervall: alle `2000 ms`, Datei wird von Lua **nicht** gelöscht).
+* **XML-Struktur (Standard / Tier 0 – Offizieller Markt):**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
-  <globalMarketOnline timestamp="1729512000" isConnected="true">
-      <version>1.0.0.0</version>
-      <minVersion>1.0.0.0</minVersion>
+  <globalMarketOnline timestamp="1729512000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
+      <version>1.0.0</version>
+      <minVersion>1.0.0</minVersion>
   </globalMarketOnline>
   ```
-* **Attribute & Knoten:**
-  * `globalMarketOnline#timestamp` (`int`, Pflicht): Aktueller UTC Unix-Timestamp in Sekunden (`DateTimeOffset.UtcNow.ToUnixTimeSeconds()`).
-    * **Anti-Zombie-Regel:** Ist `math.abs(os.time() - timestamp) > 10`, stuft Lua die EXE sofort als beendet/abgestürzt ein (`isExeRunningLocal = false`).
-    * **Sauberer Shutdown:** Beim regulären Schließen der EXE sollte die Datei gelöscht oder `timestamp="0"` gesetzt werden, damit das Spiel ohne 10s-Wartezeit sofort in den Offline-Modus wechselt.
-  * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob die EXE eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot** und der Markt fällt auf die Offline-Simulation zurück.
-  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle 4-stellige Versionsnummer der laufenden EXE (`MAJOR.MINOR.PATCH.BUILD`).
-  * `globalMarketOnline.minVersion` (`string`, Pflicht): Vom Online-Backend beim Handshake/Heartbeat vorgegebene Mindestversion der EXE (`MAJOR.MINOR.PATCH.BUILD`).
-    * **Zweck (Remote Force-Update ohne Mod-Update):** Selbst wenn das Backend eine veraltete EXE ablehnt (`isConnected="false"`), muss die EXE die vom Backend gemeldete `minVersion` in die `globalMarketOnline.xml` eintragen. Ist dieser Wert höher als der im Lua-Mod hinterlegte Standardwert (`self.minExeVersion`), übernimmt Lua sofort die höhere `minVersion` vom Backend, blockiert die Online-Freigabe (`version < minVersion`) und blendet dem Spieler im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` (*„Bitte neue EXE herunterladen"*) ein!
+* **XML-Struktur (Beispiel Tier 3 – Eigener Privatmarkt mit Community-Logo):**
+  ```xml
+  <?xml version="1.0" encoding="utf-8" standalone="no"?>
+  <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="3" isPrivateMarket="true" marketName="WeekendFarmers" hasCustomLogo="true" logoFile="logos/logo_9f4b2c10e8a1.dds">
+      <version>1.0.0</version>
+      <minVersion>1.0.0</minVersion>
+  </globalMarketOnline>
+  ```
+* **Kern-Attribute & Knoten:**
+  * `globalMarketOnline#timestamp` (`int`, Pflicht): Aktueller UTC Unix-Timestamp in Sekunden (`SystemTime::now().duration_since(UNIX_EPOCH)`).
+    * **Anti-Zombie-Regel (FS25 Sandbox-konform):** Da `os.time()` in der FS25-Lua-Sandbox `nil` ist, prüft Lua bei jedem Status-Poll (`2000 ms`), ob sich `timestamp` gegenüber dem zuletzt gelesenen Wert weiterbewegt. Bleibt `timestamp` länger als `10000 ms` unverändert (`self.exeStaleMs > 10000`), stuft Lua den Client als beendet/abgestürzt ein (`isExeRunningLocal = false`). Existiert beim allerersten Poll bereits eine alte `globalMarketOnline.xml` (z. B. nach einem früheren PC-Absturz), wartet Lua zwingend auf den ersten Timestamp-Fortschritt, bevor der Client als aktiv gilt.
+    * **Sauberer Shutdown:** Beim Stoppen der Bridge oder regulären Schließen des `GlobalMarketClient` wird `globalMarketOnline.xml` sofort per `cleanup_bridge_runtime_files` gelöscht, sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt.
+  * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
+  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (SemVer `MAJOR.MINOR.PATCH` wie `1.0.0` oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt).
+  * `globalMarketOnline.minVersion` (`string`, Pflicht): Vom Online-Backend beim Handshake (`/v1/status`) vorgegebene Mindestversion des Clients.
+    * **Zweck (Remote Force-Update ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`isConnected="false"`), schreibt der Client die gemeldete `minVersion` in `globalMarketOnline.xml`. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod, übernimmt Lua sofort die höhere Untergrenze, blockiert die Online-Freigabe (`version < minVersion`) und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein.
+
+* **3-Stufen Online-Markt-Branding (`FS25_GlobalMarket v0.9.9.22+` & `GlobalMarketClient`):**
+  Über hinterlegte Markt-Schlüssel (`X-Market-Token`, lokal geschützt in `tokens.vault`) unterstützt die Bridge vier definierte Darstellungsstufen:
+
+  | `brandingTier` | Bedeutung | `isPrivateMarket` | `marketName` | `hasCustomLogo` / `logoFile` |
+  | :---: | :--- | :---: | :--- | :--- |
+  | **`0`** | Offizieller globaler Standard-Markt | `"false"` | *(nicht gesetzt)* | `"false"` |
+  | **`1`** | Offizieller globaler Markt + eigenes Community-Logo | `"false"` | *(nicht gesetzt – globaler Titel bleibt!)* | `"true"`, `logos/logo_<hash12>.dds` |
+  | **`2`** | Eigener isolierter Privatmarkt (ohne Logo) | `"true"` | `"<Marktname>"` (max. `48` UTF-8-Bytes) | `"false"` |
+  | **`3`** | Eigener isolierter Privatmarkt + eigenes Community-Logo | `"true"` | `"<Marktname>"` (max. `48` UTF-8-Bytes) | `"true"`, `logos/logo_<hash12>.dds` |
+
+  * **Sanitizing & MP-Sync (`marketName`):** Steuerzeichen und Mehrfach-Leerzeichen werden entfernt; in Rust wird `marketName` strikt an einer gültigen UTF-8-Codepoint-Grenze auf maximal `48` Bytes gekürzt (`MAX_MARKET_NAME_BYTES = 48`), damit `string.sub(clean, 1, 48)` in Lua niemals Mehrbyte-Umlaute zerschneidet. Der Name des aktiven Data-Host-Marktes wird über den Server an alle MP-Clients synchronisiert.
+  * **Pure-Rust `.dds`-Logo-Pipeline (`src-tauri/src/bridge/dds.rs`):** Da die GIANTS Engine für UI-Overlays zwingend Power-of-Two `.dds`-Texturen mit vorberechneten Mipmaps verlangt, konvertiert der `GlobalMarketClient` vom Backend geladene `.webp`-, `.png`-, `.jpg`- oder `.dds`-Logos (max. `8 MiB`, striktes HTTPS-Origin-Pinning auf den API-Host) komplett in Rust ohne externe Zusatzprogramme:
+    * Ziel-Canvas: `512 x 256` Pixel (`2:1`, transparent `[0, 0, 0, 0]`).
+    * Skalierung & Ausrichtung: Proportionale premultiplied-alpha `Lanczos3`-Skalierung ohne Verzerrung, **unten links** verankert (`x = 0`, `y = 256 - scaled_height`), sodass sowohl breite Banner als auch quadratische Wappen im In-Game-Header (`240x120`) bündig über dem Markttitel sitzen.
+    * Kodierung & Cache: Vollständige 10-stufige Mipmap-Kette (`512x256` bis `1x1`) im `BC3` / `DXT5`-Format (`174.928 Bytes`), deterministisch gecacht unter `logos/logo_<12char_sha256>.dds`. Auf Standby-MP-Clients wird ein lokales Logo nur eingeblendet, wenn ihr Client mit demselben Markt wie der aktive Data-Host verbunden ist.
 
 ---
 
-### 3.2 Whitelist, Map-Discovery & Backend-Moderations-Workflow (`write/whitelist_<timestamp>.xml` & `server_whitelist.xml`)
-* **Pfad 1 (Primärer Trigger für die EXE im Ordner `write/`):**
-  `modSettings/FS25_GlobalMarket/write/whitelist_<timestamp>.xml`
+### 3.2 Whitelist, Map-Discovery & Backend-Moderations-Workflow (`write/whitelist_<date>_<seq>.xml` & `server_whitelist.xml`)
+* **Pfad 1 (Primärer Trigger für den Client im Ordner `write/`):**
+  `modSettings/FS25_GlobalMarket/write/whitelist_<YYYYMMDD_HHMMSS>_<counter>.xml`
 * **Pfad 2 (Statisches Backup direkt im ModSettings-Ordner, nur auf Server/SP):**
   `modSettings/FS25_GlobalMarket/server_whitelist.xml`
 * **Hintergrund & Zweck (Dynamische FillType-Erkennung mit Moderations-Schranke):**
-  Anders als in früheren LS-Versionen (mit starrer FillType-Liste) erkennt `FS25_GlobalMarket` beim Spielstart dynamisch **alle** auf der Map und durch aktive Mods registrierten FillTypes.
-  * Damit einerseits neue sinnvolle Mod-Güter (wie `SPELT` / Dinkel, `RYE` / Roggen, `LUPROSIL`, `LAVENDER` usw.) ohne Code-Update ins Online-Backend aufgenommen werden können, andererseits aber verhindert wird, dass Spieler unpassende oder absurde Spaß-FillTypes in das weltweite Online-Netzwerk einspeisen, schickt das Spiel beim Verbinden alle lokal gefundenen FillTypes samt Herkunfts- und Kategorie-Metadaten an die EXE / das Backend.
-* **XML-Struktur in `write/whitelist_<timestamp>.xml` (wird von der EXE gelesen & gelöscht):**
+  Anders als in früheren LS-Versionen erkennt `FS25_GlobalMarket` beim Spielstart dynamisch **alle** auf der Map und durch aktive Mods registrierten FillTypes. Damit sinnvolle Mod-Güter (wie `SPELT` / Dinkel, `RYE` / Roggen, `LUPROSIL`, `LAVENDER`) ohne Client- oder Mod-Update ins Online-Backend aufgenommen werden können, ohne dass ungeprüfte Spaß-FillTypes den globalen Markt fluten, übermittelt der aktive Data-Host alle lokal registrierten FillTypes samt Herkunfts- und Kategorie-Metadaten an den Client bzw. das Backend.
+* **XML-Struktur in `write/whitelist_<date>_<seq>.xml` (wird vom Client gelesen & gelöscht):**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <gmDataSync action="updateWhitelist" lang="de">
@@ -161,26 +199,25 @@ sequenceDiagram
   </gmServerWhitelist>
   ```
 * **Attribute im Detail:**
-  * `lang` (`string` am Root-Knoten, z. B. `"de"`, `"en"`, `"fr"`, `"es"`, `"pl"`): Aktuelle Spielsprache des Servers/Data-Hosts (`g_languageShort`). Damit weiß das Backend, zu welcher Sprache das `title`-Attribut gehört, und kann über verschiedene Spieler hinweg automatisch mehrsprachige Anzeigenamen in der Datenbank sammeln.
-  * `name` (`string`): Interner GIANTS FillType-Identifier (immer Großbuchstaben, Primärschlüssel zwischen Spiel und Backend).
+  * `lang` (`string` am Root-Knoten, z. B. `"de"`, `"en"`, `"fr"`, `"es"`, `"pl"`): Aktuelle Spielsprache des Data-Hosts (`g_languageShort`). Damit kann das Backend lokalisierte Anzeigenamen mehrsprachig zuordnen.
+  * `name` (`string`): Interner GIANTS FillType-Identifier (Großbuchstaben, Primärschlüssel zwischen Spiel, Client und Backend).
   * `title` (`string`): Lokalisierter Anzeigename in der unter `lang` angegebenen Sprache.
-  * `category` (`string`): Klassifizierte Produktgruppe im Markt (`"GRAINS"`, `"ROOT_VEG"`, `"GREENS_SPECIAL"`, `"BALES_SILAGE"`, `"LIQUIDS"`, `"INPUTS_FERT"`, `"PRODUCTS_PALLETS"`). Hilft dem Backend bei der automatischen Einordnung und Vergabe von Standard-Marktkapazitäten nach einer Freigabe.
+  * `category` (`string`): Klassifizierte Produktgruppe (`"GRAINS"`, `"ROOT_VEG"`, `"GREENS_SPECIAL"`, `"BALES_SILAGE"`, `"LIQUIDS"`, `"INPUTS_FERT"`, `"PRODUCTS_PALLETS"`).
   * `type` (`string`): Primäre Gebindeform (`"BULK"` = Schüttgut/Flüssigkeit, `"BALE"` = Ballen, `"PALLET"` = Palette/BigBag).
   * `basePrice` (`float`): Unmodifizierter Basispreis pro Liter aus der FillType-Definition (`fillTypeDesc.pricePerLiter`).
-  * `source` (`string`): `"BASEGAME"` bei originalen GIANTS-FillTypes oder der exakte Mod-Ordnername (z. B. `"FS25_CCM_Production_Pack"`), aus dem der FillType stammt.
+  * `source` (`string`): `"BASEGAME"` bei originalen GIANTS-FillTypes oder der exakte Mod-Ordnername (z. B. `"FS25_CCM_Production_Pack"`).
 
-* **Empfohlener Backend-Moderations-Ablauf (3-Status-Modell im Backend):**
-  Beim Empfang der `updateWhitelist`-Daten gleicht das Backend jeden `name` mit seiner Datenbank ab:
-  1. **`APPROVED` (Freigegeben):** FillType ist im globalen Online-Markt aktiv $\rightarrow$ Backend liefert Bestände (`fillLevel`) und `trend` im `marketData`-Sync aus.
-  2. **`PENDING` (Neu / Prüfung ausstehend):** Das Backend kennt diesen FillType noch nicht $\rightarrow$ Das Backend legt ihn automatisch mit den gelieferten Metadaten (`name`, `title`, `lang`, `category`, `type`, `basePrice`, `source`) in einer **Moderations-Liste (Pending Queue)** für die Backend-Crew an (z. B. Admin-Webpanel oder Discord-Webhook).
-  3. **`REJECTED` (Abgelehnt / Gesperrt):** Die Backend-Crew hat diesen FillType als ungeeignet für den weltweiten Markt abgelehnt $\rightarrow$ Er bleibt dauerhaft für den globalen Online-Handel gesperrt und erzeugt keine erneuten Moderations-Meldungen.
+* **3-Status-Moderationsmodell im Backend:**
+  1. **`APPROVED` (Freigegeben):** FillType ist im Online-Markt aktiv $\rightarrow$ Backend liefert Bestände (`fillLevel`) und `trend` im `marketData`-Sync aus.
+  2. **`PENDING` (bzw. `NEED_REVIEW` – Prüfung ausstehend):** Unbekannter FillType wird im Backend automatisch in die Moderations-Warteschlange aufgenommen.
+  3. **`REJECTED` (Abgelehnt / Gesperrt):** Dauerhaft für den Online-Handel ausgeschlossen; bleibt im Spiel rein lokal handelbar.
 
 ---
 
-### 3.3 Eingehender Market-Data-Sync & Hybrid-Modus (`read/gmDataSync_<timestamp>.xml`)
-* **Pfad:** `modSettings/FS25_GlobalMarket/read/gmDataSync_<timestamp>.xml`
-* **Schreiber:** `FS25_GlobalMarketExe` (immer dann, wenn neue Bestands-/Trenddaten vom Backend eintreffen oder nach einer verarbeiteten Transaktion).
-* **Leser:** `GlobalMarketSync.lua` (wird alle `1000 ms` vom Data-Host eingelesen und sofort gelöscht).
+### 3.3 Eingehender Market-Data-Sync & Hybrid-Modus (`read/gmDataSync_<ts>[_<seq>].xml`)
+* **Pfad:** `modSettings/FS25_GlobalMarket/read/gmDataSync_<timestamp>_<seq>.xml`
+* **Schreiber:** `GlobalMarketClient` (bei jedem geänderten Marktstand vom Backend – `ETag` / `304 Not Modified`-optimiert – sowie unmittelbar nach einem Marktwechsel oder einer bestätigten Transaktion).
+* **Leser:** `GlobalMarketSync.lua` (wird alle `1000 ms` vom Data-Host sortiert eingelesen und sofort gelöscht).
 * **XML-Struktur:**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
@@ -194,41 +231,36 @@ sequenceDiagram
   </gmDataSync>
   ```
 * **Attribute pro `<fillType>`:**
-  * `fillType` (`string`, Pflicht): Interner GIANTS FillType-Name (z. B. `"WHEAT"`). Unbekannte FillTypes, die auf der aktuellen Map nicht existieren, werden von Lua sicher ignoriert.
-  * `status` (`string`, Optional, Default `"APPROVED"`): Moderationsstatus des FillTypes im Backend:
-    * `"APPROVED"` (oder Attribut weggelassen): Offiziell im Online-Markt freigegeben. Nutzt Online-Bestand (`fillLevel`), Online-`trend` und exportiert Käufe/Verkäufe als `transaction_*.xml` an die EXE.
-    * `"PENDING"`: Dem Backend gemeldet, wartet noch auf Freigabe durch die Backend-Crew. *(Hinweis: Auch jeder lokale Map-FillType, der im `marketData`-Paket gar nicht auftaucht, wird von Lua automatisch als `"PENDING"` behandelt).*
-    * `"REJECTED"`: Vom Backend für den Online-Handel abgelehnt.
-  * `fillLevel` (`int`, Pflicht bei `APPROVED`): Aktueller globaler Marktbestand in **Litern** (`>= 0`). Begrenzt im Spiel die maximal kaufbare Menge.
-  * `trend` (`float`, Optional, empfohlen bei `APPROVED`): Vom Backend berechneter Preis-Multiplikator relativ zum Normalpreis (`1.00 = 100%`).
-    * **Wertebereich & Bedeutung im Spiel:**
-      * `0.70` = Markt komplett gesättigt / voll (Minimalpreis `-30%`)
-      * `< 0.95` = **Roter Pfeil nach unten** (Preis fällt, mehr als `-5%` unter Normalpreis)
-      * `0.95 .. 1.05` = Neutraler Preisbereich (kein Pfeil)
-      * `1.00` = Exakter lokaler Karten-Durchschnittspreis (`normalPrice`)
-      * `> 1.05` = **Grüner Pfeil nach oben** (Preis steigt, mehr als `+5%` über Normalpreis)
-      * `1.30+` = Markt leer / extrem knapp (Maximalpreis `+30%` oder mehr bei Großer Nachfrage)
-    * *Fallback:* Wird `trend` weggelassen oder `<= 0` übergeben, berechnet Lua den Trendfaktor lokal aus `fillLevel / GlobalMarket.MARKET_CAPACITY` zwischen `0.70` und `1.30`.
-  * `greatDemand` (`bool`, Optional, Default `"false"`): Im Online-Modus ist das Backend **alleinig autoritativ** für Große Nachfragen (Lua löst online keine lokalen Knappheits-Nachfragen von selbst aus). Wenn `"true"`, markiert Lua dieses Produkt sofort als **Große Nachfrage** (blauer Pfeil in der Marktliste + einmalige HUD-Benachrichtigung an alle Spieler auf dem Server). Das Backend kann Große Nachfragen somit zu beliebigen Uhrzeiten starten und nach Ablauf eines Server-Timers (z. B. 2 Stunden) oder nach Erreichen eines globalen Liefervolumens (z. B. `200.000 L` über eingehende `SELL`-Transaktionen) durch Setzen von `greatDemand="false"` wieder beenden.
-  * `greatDemandBonus` (`float`, Optional, z. B. `"0.25"` für `+25%`): Optionaler Zusatz-Bonus, den Lua während einer aktiven Online-Großen-Nachfrage (`greatDemand="true"`) auf den `trend`-Faktor addiert. (Wird weder `trend` noch `greatDemandBonus` mitgeliefert, wendet Lua bei `greatDemand="true"` automatisch `+0.25` auf den Sättigungspreis an).
-  * `greatDemandRemaining` (`int`, Optional, z. B. `"200000"`): Optionales verbleibendes globales Nachfrage-Volumen in Litern für spätere UI-/Tooltip-Anzeigen.
+  * `fillType` (`string`, Pflicht): Interner GIANTS FillType-Name (z. B. `"WHEAT"`). Unbekannte FillTypes, die auf der aktuellen Map nicht existieren, werden von Lua ignoriert.
+  * `status` (`string`, Optional, Default `"APPROVED"`): Moderationsstatus im Backend (`"APPROVED"`, `"PENDING"` / `"NEED_REVIEW"`, `"REJECTED"`). Jeder lokale Map-FillType, der im `marketData`-Paket fehlt, wird von Lua automatisch als `"PENDING"` behandelt.
+  * `fillLevel` (`int`, Pflicht bei `APPROVED`): Aktueller globaler Marktbestand in **Litern** (`0..=2_147_483_647`). Begrenzt im Spiel die maximal kaufbare Menge.
+  * `trend` (`float`, Pflicht/Empfohlen bei `APPROVED`): Vom Backend berechneter Preis-Multiplikator relativ zum lokalen Karten-Normalpreis (`1.00 = 100%`):
+    * `0.70` = Markt gesättigt / voll (`-30%`)
+    * `< 0.95` = **Roter Pfeil nach unten** (mehr als `-5%` unter Normalpreis)
+    * `0.95 .. 1.05` = Neutraler Preisbereich (kein Pfeil)
+    * `> 1.05` = **Grüner Pfeil nach oben** (mehr als `+5%` über Normalpreis)
+    * `1.30+` = Markt knapp / leer (`+30%` oder mehr bei Großer Nachfrage)
+  * `greatDemand` (`bool`, Optional, Default `"false"`): Im Online-Modus ist das Backend **alleinig autoritativ** für Große Nachfragen. Bei `"true"` markiert Lua das Gut als Große Nachfrage (blauer Pfeil + einmalige HUD-Benachrichtigung an alle Spieler); zusätzlich kann der `GlobalMarketClient` eine Desktop-Benachrichtigung auslösen.
+  * `greatDemandBonus` (`float`, Optional, z. B. `"0.25"` für `+25%`): Zusatz-Bonus während aktiver Online-Großer-Nachfrage.
+  * `greatDemandRemaining` (`int`, Optional, z. B. `"200000"`): Verbleibendes globales Nachfrage-Volumen in Litern.
 
 > [!TIP]
 > **In-Game Hybrid-Modus für `PENDING` & `REJECTED` FillTypes:**
-> FillTypes einer Mod-Map, die im Backend noch auf `"PENDING"` (Prüfung ausstehend) oder `"REJECTED"` (abgelehnt) stehen, gehen für den Spieler nicht verloren: Sie werden im Markt-UI für den Spieler entsprechend gekennzeichnet (z. B. *„Prüfung ausstehend / Offline"* bzw. *„Nur Offline"*), laufen im Hintergrund lokal über die Offline-Simulation der Karte weiter und **erzeugen beim Kauf/Verkauf niemals eine `transaction_*.xml` an die EXE**. Sobald die Backend-Crew einen `"PENDING"`-FillType auf `"APPROVED"` schaltet, wechselt er beim nächsten `marketData`-Sync im Spiel nahtlos in den echten Online-Handel!
+> FillTypes einer Mod-Map mit Status `"PENDING"` oder `"REJECTED"` bleiben im Spiel über die lokale Offline-Simulation handelbar, lösen **keinen** 15s-Online-Cooldown aus und **erzeugen niemals eine `transaction_*.xml` an den Client**. Sobald ein `"PENDING"`-Gut im Backend auf `"APPROVED"` geschaltet wird, wechselt es beim nächsten Sync nahtlos in den Online-Handel (während der vorherige Offline-Bestand im Hintergrund für spätere Offline-Phasen gesichert bleibt).
 
 > [!NOTE]
 > **Anti-Arbitrage & Map-Spy Architektur:**
-> Das Backend bzw. die EXE sendet **niemals** fixe Euro-Preise! Da jede FS25-Map, jeder Schwierigkeitsgrad (*Einfach / Normal / Schwer*) und jede Jahreszeit eigene Preisniveaus hat, ermittelt der FS25-Server über den **Map Spy** (`getMapBasePricePerLiter`) den echten lokalen Durchschnittspreis aller Verkaufsstationen der Karte (`normalPrice` pro 1.000 L) und multipliziert diesen mit dem `trend`-Faktor der EXE (`price = normalPrice * trend`).
+> Weder Backend noch Client senden jemals fixe Euro-Preise! Der FS25-Server ermittelt über den **Map Spy** (`getMapBasePricePerLiter`) den echten lokalen Durchschnittspreis der geladenen Karte unter Berücksichtigung von Schwierigkeitsgrad und Saison (`normalPrice`) und multipliziert diesen mit dem `trend`-Faktor (`price = normalPrice * trend`). Im Multiplayer überträgt `MarketDataSyncEvent.newFromServerState` diese autoritativen Serverpreise direkt an alle verbundenen Clients.
 
 ---
 
-### 3.4 Ausgehender Transaktions-Export & 15s-Sperre (`write/transaction_<timestamp>_<counter>.xml`)
-* **Pfad:** `modSettings/FS25_GlobalMarket/write/transaction_<timestamp>_<counter>.xml` (z. B. `transaction_1729512015_1.xml`)
-* **Schreiber:** `GlobalMarketSync.lua` (`GlobalMarket:exportTransaction`), ausgelöst nach jeder vom FS25-Server autoritativ geprüften und gebuchten Kauf-/Verkaufstransaktion.
-* **Globale 15-Sekunden-Transaktionssperre (`transactionCooldown = 15s`):**
-  Sobald im Online-Modus irgendein Spieler auf dem Server eine Kauf- oder Verkaufstransaktion ausführt, sperrt der FS25-Server für **15 Sekunden** serverweit alle weiteren Online-Transaktionen für sämtliche Spieler, damit die EXE das Transaktions-Delta an das Backend melden und den neuen Marktbestand zurücksynchronisieren kann.
-* **Leser:** `FS25_GlobalMarketExe` (liest die Datei, sendet das Mengen-Delta an das Backend und löscht die Datei).
+### 3.4 Ausgehender Transaktions-Export, Idempotenz & 15s-Sperre (`write/transaction_<date>_<counter>.xml`)
+* **Pfad:** `modSettings/FS25_GlobalMarket/write/transaction_<YYYYMMDD_HHMMSS>_<counter>.xml` (z. B. `transaction_20261114_031500_1.xml`)
+* **Schreiber:** `GlobalMarketSync.lua` (`GlobalMarket:exportTransaction`), ausgelöst nach jeder vom FS25-Server autoritativ geprüften und gebuchten Online-Transaktion eines `APPROVED`-Gutes.
+* **Globale 15-Sekunden-Transaktionssperre (`transactionCooldown = 15000 ms` via `g_time`):**
+  Nach jeder Online-Transaktion sperrt der FS25-Server für **15 Sekunden** serverweit weitere Online-Käufe/-Verkäufe (`APPROVED`), damit Client und Backend das Mengen-Delta verarbeiten und den aktualisierten Marktbestand zurückspiegeln können.
+* **Leser & Idempotenz (`GlobalMarketClient`):**
+  Der Rust-Client liest die Datei, bildet aus seiner stabilen `client_id` und dem Dateistamm eine weltweit eindeutige `transaction_id` (`<clientId16>_<stem>`), überträgt das Delta an `POST /v1/transactions` und löscht die XML-Datei. Schlägt der Netzwerk-Request temporär fehl, landet der Auftrag verlustfrei in einer lokalen Retry-Queue (`pending_tx.json` mit exponentiellem Backoff), ohne durch die idempotente `transaction_id` jemals doppelt verbucht zu werden.
 * **XML-Struktur:**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
@@ -238,159 +270,169 @@ sequenceDiagram
   ```
 * **Attribute von `<entry>`:**
   * `fillType` (`string`, Pflicht): Interner GIANTS FillType-Name (z. B. `"WHEAT"`).
-  * `amount` (`int`, Pflicht): Gehandelte Menge in **ganzen Litern** (`> 0`).
-    * *Wichtig:* Auch wenn der Spieler im Spiel Stückgut (Paletten, BigBags oder Ballen) kauft oder verkauft, rechnet Lua die Stückzahl vor dem Export automatisch in das exakte **Liter-Volumen** um! Das Backend arbeitet für den Rohstoffmarkt also durchgängig in **Litern**.
+  * `amount` (`int`, Pflicht): Gehandelte Menge in **ganzen Litern** (`> 0`). Stückgüter (Paletten, BigBags, Ballen) werden von Lua vor dem Export exakt in ihr Liter-Volumen umgerechnet.
   * `type` (`string`, Pflicht):
-    * `"BUY"` = Spieler hat Ware vom Globalen Markt gekauft $\rightarrow$ **Backend muss den globalen Bestand um `amount` Liter verringern.**
-    * `"SELL"` = Spieler hat Ware an den Globalen Markt verkauft $\rightarrow$ **Backend muss den globalen Bestand um `amount` Liter erhöhen.**
+    * `"BUY"` = Spieler kauft Ware vom Markt $\rightarrow$ **Backend verringert den Bestand um `amount` Liter.**
+    * `"SELL"` = Spieler verkauft Ware an den Markt $\rightarrow$ **Backend erhöht den Bestand um `amount` Liter.**
 
 ---
 
 ## 4. HUD-Status-Icon im Spiel (`GameInfoDisplay`)
 
-Links neben der oberen rechten HUD-Leiste zeigt der Mod den aktuellen Verbindungsstatus der EXE farbcodiert an:
+Links neben der oberen rechten HUD-Leiste zeigt der Mod den aktuellen Verbindungsstatus des `GlobalMarketClient` farbcodiert an (sichtbar schaltbar in den Mod-Einstellungen):
 
 | Farbe | RGB-Wert | Bedeutung |
 | :--- | :--- | :--- |
-| **Grün** | `0.3, 0.8, 0.0` | Lokale EXE läuft (`timestamp` aktuell), `isConnected="true"` und dieser Client ist aktiver **Data-Host**. |
-| **Orange** | `1.0, 0.5, 0.0` | Lokale EXE läuft und `isConnected="true"`, aber ein anderer Spieler hält aktuell den Data-Host-Token (**Standby / Failover**). |
-| **Rot** | `1.0, 0.0, 0.0` | Lokale EXE läuft, meldet aber `isConnected="false"` (keine Verbindung zum Backend-Server). |
-| **Grau** | `0.5, 0.5, 0.5` | Keine lokale EXE aktiv (`Offline-Modus` oder regulärer MP-Client ohne eigene EXE). |
+| **Grün** | `0.3, 0.8, 0.0` | Lokaler `GlobalMarketClient` läuft (`timestamp` aktuell), `isConnected="true"` und dieser Spieler-Client hält aktiv den **Data-Host-Token**. |
+| **Orange** | `1.0, 0.5, 0.0` | Lokaler `GlobalMarketClient` läuft und `isConnected="true"`, aber ein anderer Spieler hält aktuell den Data-Host-Token (**Standby / Failover bereit**). |
+| **Rot** | `1.0, 0.0, 0.0` | Lokaler `GlobalMarketClient` läuft, meldet aber `isConnected="false"` (keine Verbindung zum Backend-Server). |
+| **Grau** | `0.5, 0.5, 0.5` | Kein lokaler `GlobalMarketClient` aktiv (`Offline-Modus` oder regulärer MP-Client ohne eigene Begleit-App). |
 
-* **Pulsieren:** Bei jedem verarbeiteten `gmDataSync_<timestamp>.xml`-Paket pulsiert das HUD-Icon für `2 Sekunden`.
+* **Pulsieren:** Bei jedem verarbeiteten `gmDataSync_*.xml`-Paket pulsiert das HUD-Icon für `2 Sekunden` (sofern `isIconPulseActive` in den Einstellungen aktiviert ist).
 
 ---
 
 ## 5. Konsolen-Befehle zum Testen der Schnittstelle im Spiel
 
-Solange die `FS25_GlobalMarketExe` und das Backend noch in der Entwicklung sind, ist das Datei-Polling in `GlobalMarket.lua` standardmäßig deaktiviert (`GlobalMarket.ENABLE_ONLINE_SYNC = false`).
+Das Datei-Polling in `GlobalMarket.lua` ist standardmäßig aktiv (`GlobalMarket.ENABLE_ONLINE_SYNC = true`) und startet automatisch auf Spieler-Clients/Hosts, sobald die Mission vollständig gestartet ist (`g_currentMission.isMissionStarted == true`).
 
-Zum Testen der EXE-Kommunikation stehen in der FS25-Entwicklerkonsole (`^` / `~`) folgende Befehle bereit:
-1. **`gmToggleOnlineSync`** (bzw. `gmToggleOnlineSync true` / `gmToggleOnlineSync false`):
-   Schaltet die Online-Synchronisation zur Laufzeit scharf bzw. wieder ab, ohne das Spiel neu starten zu müssen.
+Bei aktiviertem **GM-Debug-Modus** (`GlobalMarketSettings.current.isDebugActive == true` in den In-Game-Einstellungen) stehen in der FS25-Entwicklerkonsole (`^` / `~`) folgende Diagnose-Befehle bereit:
+1. **`gmToggleOnlineSync [true|false]`**:
+   Schaltet die Online-Synchronisation zur Laufzeit an bzw. aus (erfordert Server-/Admin-Berechtigung; beim Ausschalten wird der gesicherte Offline-Marktbestand sofort wiederhergestellt).
 2. **`gmTestStatus <0|1|2|3>`**:
-   Simuliert die 4 Zustände des HUD-Icons (`0 = Grau/Aus`, `1 = Orange/Standby`, `2 = Grün/Data-Host`, `3 = Rot/Backend getrennt`).
-3. **`gmExportData`**:
-   Exportiert sämtliche FillTypes, Paletten, BigBags und Ballen der aktuell geladenen Map inkl. Kapazitäten und Basispreisen als Referenz-XML in den `modSettings/FS25_GlobalMarket/`-Ordner.
+   Simuliert lokal die 4 Zustände des HUD-Icons (`0 = Grau/Aus`, `1 = Orange/Standby`, `2 = Grün/Data-Host`, `3 = Rot/Backend getrennt`).
+3. **`gmTestBranding <0|off | 1 [logoFile] | 2 [marketName] | 3 [marketName] [logoFile]>`**:
+   Testet die 3 Online-Branding-Stufen inkl. `.dds`-Logo-Reload live im geöffneten Markt-Menü ohne Backend-Roundtrip.
+4. **`gmExportData`**:
+   Exportiert sämtliche FillTypes, Paletten, BigBags und Ballen der geladenen Map inkl. Kapazitäten und Basispreisen als Referenz-XML in `modSettings/FS25_GlobalMarket/`.
 
 ---
 
-## 6. Empfohlene C#-Datenklassen (`System.Xml.Serialization`)
+## 6. Rust-Referenzimplementierung (`GlobalMarketClient`)
 
-Für die direkte XML-Serialisierung und -Deserialisierung in C# können folgende Klassen verwendet werden:
+Die produktive Implementierung der XML-Bridge befindet sich im Repository `FS25_GlobalMarketExe` unter `src-tauri/src/` und nutzt `quick-xml` (Streaming-Reader & Escaping ohne DOM-Overhead) sowie `serde`.
 
-### 6.1 Heartbeat (`globalMarketOnline.xml`)
-```csharp
-using System.Xml.Serialization;
+### 6.1 Domain- & Bridge-Strukturen (`api/types.rs` & `bridge/xml.rs`)
+```rust
+use serde::{Deserialize, Serialize};
 
-[XmlRoot("globalMarketOnline")]
-public class GlobalMarketOnline
-{
-    [XmlAttribute("isConnected")]
-    public bool IsConnected { get; set; } = true;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum FillTypeStatus {
+    #[default]
+    Approved,
+    Pending,
+    Rejected,
+}
 
-    [XmlAttribute("timestamp")]
-    public long Timestamp { get; set; } // Current UTC Unix Timestamp (Seconds)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum TransactionType {
+    Buy,
+    Sell,
+}
 
-    [XmlElement("version")]
-    public string Version { get; set; } = "1.0.0.0";
+/// 3-tier market branding metadata written onto <globalMarketOnline ...>
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatBranding {
+    pub branding_tier: u8,         // 0 = Standard, 1 = Logo, 2 = Private, 3 = Private + Logo
+    pub is_private_market: bool,
+    pub market_name: Option<String>, // Sanitized, <= 48 UTF-8 bytes
+    pub has_custom_logo: bool,
+    pub logo_file: Option<String>, // e.g. "logos/logo_9f4b2c10e8a1.dds"
+}
 
-    [XmlElement("minVersion")]
-    public string MinVersion { get; set; } = "1.0.0.0"; // Provided by Backend
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhitelistItemDto {
+    pub name: String,
+    pub title: String,
+    pub category: String,
+    pub item_type: String,
+    pub base_price: f32,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketItemDto {
+    pub fill_type: String,
+    pub title: Option<String>,
+    pub fill_level: i64,
+    pub trend: f32,
+    pub great_demand: bool,
+    pub great_demand_bonus: f32,
+    pub great_demand_remaining: i64,
+    pub status: FillTypeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionRequest {
+    pub tx_id: String,
+    pub fill_type: String,
+    pub amount: i64, // Volume in whole liters (> 0)
+    pub tx_type: TransactionType,
+}
+
+#[derive(Debug, Clone)]
+pub enum IncomingPacket {
+    UpdateWhitelist { lang: String, items: Vec<WhitelistItemDto> },
+    Transactions(Vec<TransactionRequest>),
+    IgnoredUnknownAction(String),
 }
 ```
 
-### 6.2 Datensynchronisation (`gmDataSync` für `read/` und `write/`)
-```csharp
-using System.Collections.Generic;
-using System.Xml.Serialization;
+### 6.2 Atomares UTF-8-Schreiben ohne BOM (`bridge/xml.rs`)
+```rust
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
-[XmlRoot("gmDataSync")]
-public class GmDataSync
-{
-    [XmlAttribute("action")]
-    public string Action { get; set; } // "updateWhitelist" | "marketData" | "transaction"
+fn atomic_write_utf8_no_bom(
+    staging_dir: &Path,
+    target_path: &Path,
+    xml_content: &str,
+) -> Result<(), String> {
+    fs::create_dir_all(staging_dir).map_err(|e| e.to_string())?;
+    let tmp_path = staging_dir.join(format!("stage_{}.tmp", std::process::id()));
 
-    [XmlAttribute("lang")]
-    public string Lang { get; set; } // e.g. "de", "en" (used in action="updateWhitelist")
+    // Guarantee pure UTF-8 without BOM (0xEF 0xBB 0xBF)
+    let bytes = xml_content.trim_start_matches('\u{FEFF}').as_bytes();
+    debug_assert!(!bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
 
-    // 1. action="updateWhitelist" (write/whitelist_<ts>.xml)
-    [XmlArray("whitelist")]
-    [XmlArrayItem("item")]
-    public List<WhitelistItem> Whitelist { get; set; }
+    {
+        let mut file = File::create(&tmp_path).map_err(|e| e.to_string())?;
+        file.write_all(bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
 
-    // 2. action="marketData" (read/gmDataSync_<ts>.xml)
-    [XmlArray("fillTypes")]
-    [XmlArrayItem("fillType")]
-    public List<MarketItem> FillTypes { get; set; }
-
-    // 3. action="transaction" (write/transaction_<ts>_<id>.xml)
-    [XmlElement("entry")]
-    public List<TransactionItem> Transactions { get; set; }
-}
-
-public class WhitelistItem
-{
-    [XmlAttribute("name")]
-    public string Name { get; set; }
-
-    [XmlAttribute("title")]
-    public string Title { get; set; }
-
-    [XmlAttribute("category")]
-    public string Category { get; set; } // e.g. "GRAINS", "LIQUIDS", "BALES_SILAGE", "PRODUCTS_PALLETS"
-
-    [XmlAttribute("type")]
-    public string Type { get; set; } // "BULK" | "BALE" | "PALLET"
-
-    [XmlAttribute("basePrice")]
-    public float BasePrice { get; set; }
-
-    [XmlAttribute("source")]
-    public string Source { get; set; } // "BASEGAME" or Mod Name
-}
-
-public class MarketItem
-{
-    [XmlAttribute("fillType")]
-    public string FillType { get; set; }
-
-    [XmlAttribute("fillLevel")]
-    public long FillLevel { get; set; }
-
-    [XmlAttribute("trend")]
-    public float Trend { get; set; } = 1.0f;
-
-    [XmlAttribute("greatDemand")]
-    public bool GreatDemand { get; set; } = false;
-
-    [XmlAttribute("greatDemandBonus")]
-    public float GreatDemandBonus { get; set; } = 0.0f;
-
-    [XmlAttribute("greatDemandRemaining")]
-    public long GreatDemandRemaining { get; set; } = 0;
-
-    [XmlAttribute("status")]
-    public string Status { get; set; } = "APPROVED"; // "APPROVED" | "PENDING" | "REJECTED"
-}
-
-public class TransactionItem
-{
-    [XmlAttribute("fillType")]
-    public string FillType { get; set; }
-
-    [XmlAttribute("amount")]
-    public long Amount { get; set; } // Volume in Liters
-
-    [XmlAttribute("type")]
-    public string Type { get; set; } // "BUY" | "SELL"
+    // Atomic rename with brief retry in case GIANTS Engine holds a short read handle on Windows
+    for attempt in 0..5 {
+        match fs::rename(&tmp_path, target_path) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt < 4 => thread::sleep(Duration::from_millis(40)),
+            Err(e) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(format!("Atomic rename failed: {e}"));
+            }
+        }
+    }
+    Ok(())
 }
 ```
+
+### 6.3 Token-Tresor & Write-Only-Sicherheit (`config/vault.rs`)
+Markt-Schlüssel (`X-Market-Token`) für Tier-1 bis Tier-3 werden **niemals** in die XML-Austauschdateien oder im Klartext in `settings.json` geschrieben:
+* **OS-geschützte Ablage (`tokens.vault`):** Unter Windows verschlüsselt der Client gespeicherte Markt-Profile automatisch über die native **Windows Data Protection API (`CryptProtectData` / `CryptUnprotectData`)** an das aktuelle Windows-Benutzerkonto gebunden (`CRYPTPROTECT_UI_FORBIDDEN = 0x01`, komplett ohne UAC-Abfragen und ohne eingebettete App-Secrets). Unter Linux/macOS greift eine atomare Ablage mit strikten `0600`-Dateirechten.
+* **Write-Only IPC:** Das TypeScript/WebView-Frontend erhält über Tauri-IPC ausschließlich nicht-sensible Profil-Metadaten (`id`, `label`, `marketName`, `brandingTier`, `maskedHint`), niemals jedoch gespeicherte Token-Strings im Klartext.
 
 ---
 
 ## 7. Ausblick: Erweiterbarkeit über `<gmDataSync action="...">`
 
-Der XML-Parser in `GlobalMarketSync.lua` und der Datei-Monitor in der `FS25_GlobalMarketExe` werten das Root-Attribut `<gmDataSync action="...">` polymorph aus. Unbekannte `action`-Werte sollten in C# kommentarlos übersprungen werden.
+Der XML-Parser in `GlobalMarketSync.lua` und der Streaming-Parser in `src-tauri/src/bridge/xml.rs` werten das Root-Attribut `<gmDataSync action="...">` polymorph aus. Unbekannte `action`-Werte werden im Rust-Client über `IncomingPacket::IgnoredUnknownAction` kommentarlos übersprungen und sauber aus `write/` aufgeräumt.
 
-Dadurch kann dieselbe `read/`- und `write/`-Ordnerstruktur in zukünftigen Ausbaustufen für weitere geplante Handelsbereiche (wie einen späteren **Viehhandel** oder **Gebrauchtmaschinen-Markt**) genutzt werden, ohne den Dateitransport-Mechanismus ändern zu müssen. Die genauen XML-Parameter dieser zukünftigen Erweiterungen werden separat spezifiziert, sobald deren In-Game-Architektur ausgearbeitet wird.
+Dadurch kann dieselbe `read/`- und `write/`-Ordnerstruktur in zukünftigen Ausbaustufen für weitere geplante Handelsbereiche (wie **Viehhandel (`animalData`)**, **Gebrauchtmaschinen (`usedVehicles`)** oder **Lieferverträge (`contractData`)**) genutzt werden, ohne den atomaren Dateitransport-Mechanismus ändern zu müssen.
