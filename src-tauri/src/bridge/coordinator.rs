@@ -1759,7 +1759,6 @@ fn run_bridge_worker(
                     let lang = wl_req.lang.clone();
                     match backend.sync_whitelist(wl_req) {
                         Ok(state) => {
-                            let _ = fs::remove_file(&xml_path);
                             apply_and_write_market_state(
                                 &paths,
                                 &state.items,
@@ -1789,6 +1788,7 @@ fn run_bridge_worker(
                                     "Whitelist ({lang}, {total} map items) synced -> {approved} approved, {pending} pending, {rejected} offline-only."
                                 ),
                             );
+                            let _ = fs::remove_file(&xml_path);
                             last_market_poll = Instant::now();
                         }
                         Err(err) => {
@@ -1858,7 +1858,6 @@ fn run_bridge_worker(
                     }
 
                     if all_ok {
-                        let _ = fs::remove_file(&xml_path);
                         if let Some(items) = latest_state {
                             apply_and_write_market_state(
                                 &paths,
@@ -1874,6 +1873,7 @@ fn run_bridge_worker(
                             );
                             last_market_poll = Instant::now();
                         }
+                        let _ = fs::remove_file(&xml_path);
                     } else {
                         break;
                     }

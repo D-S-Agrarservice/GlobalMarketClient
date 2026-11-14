@@ -55,13 +55,21 @@ jobs:
 
           # Publishing a Draft Release in the GitHub Web UI creates the Git tag and triggers
           # a tag `push` event. Skip rebuilding if a release with uploaded assets already exists.
+          RELEASES_JSON=$(gh api "repos/${{ github.repository }}/releases?per_page=30")
           if [ "$EVENT_NAME" = "push" ]; then
-            EXISTING_WITH_ASSETS=$(gh api "repos/${{ github.repository }}/releases?per_page=20" | \
+            EXISTING_WITH_ASSETS=$(printf '%s' "$RELEASES_JSON" | \
               jq --arg tag "$TAG" '[.[] | select(.tag_name == $tag and (.assets | length) > 0)] | length')
             if [ "${EXISTING_WITH_ASSETS:-0}" -gt 0 ]; then
               echo "Release for tag '$TAG' already exists with uploaded assets — skipping duplicate build."
               echo "should_build=false" >> "$GITHUB_OUTPUT"
               exit 0
+            fi
+          else
+            ALREADY_PUBLISHED=$(printf '%s' "$RELEASES_JSON" | \
+              jq --arg tag "$TAG" '[.[] | select(.tag_name == $tag and .draft == false)] | length')
+            if [ "${ALREADY_PUBLISHED:-0}" -gt 0 ]; then
+              echo "::error::Published release for tag '$TAG' already exists and is immutable on GitHub. Please choose a new tag version (e.g. v0.9.10-beta or v1.0.0)."
+              exit 1
             fi
           fi
 
