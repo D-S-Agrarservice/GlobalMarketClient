@@ -15,7 +15,7 @@ use crate::api::types::{
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::MAX_LOGO_RAW_BYTES;
 use crate::bridge::xml::sanitize_market_name;
-use reqwest::header::{ETAG, IF_NONE_MATCH};
+use reqwest::header::{ETAG, IF_NONE_MATCH, RETRY_AFTER};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::error::Error as StdError;
@@ -317,16 +317,25 @@ async fn map_error_response(resp: reqwest::Response, treat_4xx_as_validation: bo
     if status == StatusCode::UNAUTHORIZED
         || status == StatusCode::FORBIDDEN
         || status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::BAD_REQUEST
     {
+        let retry_after_hdr = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
         if let Ok(body_bytes) = resp.bytes().await {
             if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                if let Some(max_slots) = parse_slot_limit_from_json(&json_val) {
-                    return ApiError::SlotLimitReached { max_slots };
+                if let Some(classified) = parse_classified_auth_error(&json_val, retry_after_hdr) {
+                    return classified;
                 }
             }
         }
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             return ApiError::Unauthorized;
+        }
+        if treat_4xx_as_validation && status.is_client_error() {
+            return ApiError::Validation(format!("HTTP {status}"));
         }
         return ApiError::Network(format!("HTTP {status}"));
     }
@@ -677,10 +686,11 @@ pub fn derive_handshake_branding(
     }
 }
 
-fn is_official_market_name(name: &str) -> bool {
+pub fn is_official_market_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("Global Market")
+        || trimmed.eq_ignore_ascii_case("Global Market Official")
         || trimmed.eq_ignore_ascii_case("Official Global Market")
 }
 
@@ -725,10 +735,14 @@ fn clean_version_opt(raw: Option<String>) -> Option<String> {
     })
 }
 
-/// Extracts `max_slots` when the backend responds with `TOKEN_SLOT_LIMIT_REACHED`
-/// (supports FastAPI `{"detail": {"code": "TOKEN_SLOT_LIMIT_REACHED", "max_slots": 16}}`,
-/// top-level `{"code": "TOKEN_SLOT_LIMIT_REACHED", "max_slots": 32}`, or string `"TOKEN_SLOT_LIMIT_REACHED:16"`).
-fn parse_slot_limit_from_json(root: &serde_json::Value) -> Option<u32> {
+/// Classifies structured 403/429 key-slot & client-binding error codes from the FastAPI backend:
+/// - `TOKEN_SLOT_LIMIT_REACHED` (`max_slots`) -> [`ApiError::SlotLimitReached`]
+/// - `CLIENT_IP_LOCKED` (`retry_after` or `Retry-After` header) -> [`ApiError::ClientIpLocked`]
+/// - `CLIENT_ID_REQUIRED` -> [`ApiError::ClientIdRequired`]
+fn parse_classified_auth_error(
+    root: &serde_json::Value,
+    retry_after_hdr: Option<u64>,
+) -> Option<ApiError> {
     for candidate in [root.get("detail"), Some(root)].into_iter().flatten() {
         match candidate {
             serde_json::Value::Object(obj) => {
@@ -746,7 +760,21 @@ fn parse_slot_limit_from_json(root: &serde_json::Value) -> Option<u32> {
                         .and_then(|v| v.as_u64())
                         .map(|n| n.clamp(1, 10_000) as u32)
                         .unwrap_or(16);
-                    return Some(slots);
+                    return Some(ApiError::SlotLimitReached { max_slots: slots });
+                }
+                if code.eq_ignore_ascii_case("CLIENT_IP_LOCKED") {
+                    let secs = obj
+                        .get("retry_after")
+                        .and_then(|v| v.as_u64())
+                        .or(retry_after_hdr)
+                        .unwrap_or(3600)
+                        .clamp(1, 86_400);
+                    return Some(ApiError::ClientIpLocked {
+                        retry_after_sec: secs,
+                    });
+                }
+                if code.eq_ignore_ascii_case("CLIENT_ID_REQUIRED") {
+                    return Some(ApiError::ClientIdRequired);
                 }
             }
             serde_json::Value::String(s) => {
@@ -762,7 +790,24 @@ fn parse_slot_limit_from_json(root: &serde_json::Value) -> Option<u32> {
                         .ok()
                         .map(|n| n.clamp(1, 10_000))
                         .unwrap_or(16);
-                    return Some(parsed_num);
+                    return Some(ApiError::SlotLimitReached {
+                        max_slots: parsed_num,
+                    });
+                }
+                if let Some(rest) = upper.strip_prefix("CLIENT_IP_LOCKED") {
+                    let parsed_secs = rest
+                        .trim_start_matches([':', '=', ' '])
+                        .parse::<u64>()
+                        .ok()
+                        .or(retry_after_hdr)
+                        .unwrap_or(3600)
+                        .clamp(1, 86_400);
+                    return Some(ApiError::ClientIpLocked {
+                        retry_after_sec: parsed_secs,
+                    });
+                }
+                if upper == "CLIENT_ID_REQUIRED" {
+                    return Some(ApiError::ClientIdRequired);
                 }
             }
             _ => {}

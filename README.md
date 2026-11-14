@@ -58,7 +58,7 @@ flowchart LR
 
 ### Lokale Entwicklung & Build aus dem Quellcode
 
-Voraussetzungen: **Rust** (`stable` über `rustup`) und **Node.js** (`>= 20`) sowie die plattformspezifischen [Tauri-v2-Systemabhängigkeiten](https://v2.tauri.app/start/prerequisites/).
+Voraussetzungen: **Rust** (`stable` über `rustup`) und **Node.js** (`>= 24`) sowie die plattformspezifischen [Tauri-v2-Systemabhängigkeiten](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 # Frontend-Abhängigkeiten installieren
@@ -124,7 +124,7 @@ Because the GIANTS Engine Lua sandbox blocks direct outbound network sockets fro
 
 ### Building from Source
 
-Prerequisites: **Rust** (`stable` via `rustup`), **Node.js** (`>= 20`), and the standard [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+Prerequisites: **Rust** (`stable` via `rustup`), **Node.js** (`>= 24`), and the standard [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
 ```bash
 npm install

@@ -198,5 +198,7 @@
   "mockBtnOptVerOn": "Testuj akt. opcjonalną",
   "mockBtnOptVerOff": "Wyłącz akt. opcjonalną",
   "logMockLatestVersion": "Symulacja: Opcjonalna aktualizacja ustawiona na v{latestVersion}.",
-  "logMockLatestVersionReset": "Symulacja: Wyłączono powiadomienie o opcjonalnej aktualizacji."
+  "logMockLatestVersionReset": "Symulacja: Wyłączono powiadomienie o opcjonalnej aktualizacji.",
+  "logClientIpLocked": "Blokada sieciowa aktywna: ta instalacja była używana z innej sieci w ciągu ostatniej godziny. Automatyczna próba za ok. {minutes} min.",
+  "logClientIdRequired": "Połączenie odrzucone: brakujący lub nieprawidłowy identyfikator klienta (X-Client-Id)."
 }

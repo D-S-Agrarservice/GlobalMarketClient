@@ -198,5 +198,7 @@
   "mockBtnOptVerOn": "Tester màj facultative",
   "mockBtnOptVerOff": "Masquer màj facultative",
   "logMockLatestVersion": "Simulation : Mise à jour facultative définie sur v{latestVersion}.",
-  "logMockLatestVersionReset": "Simulation : Mise à jour facultative effacée."
+  "logMockLatestVersionReset": "Simulation : Mise à jour facultative effacée.",
+  "logClientIpLocked": "Verrouillage réseau actif : cette installation a été utilisée depuis un autre réseau au cours de la dernière heure. Nouvelle tentative automatique dans env. {minutes} min.",
+  "logClientIdRequired": "Connexion refusée : identifiant client manquant ou invalide (X-Client-Id)."
 }

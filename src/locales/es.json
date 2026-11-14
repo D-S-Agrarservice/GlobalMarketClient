@@ -198,5 +198,7 @@
   "mockBtnOptVerOn": "Probar act. opcional",
   "mockBtnOptVerOff": "Quitar act. opcional",
   "logMockLatestVersion": "Simulación: Actualización opcional establecida en v{latestVersion}.",
-  "logMockLatestVersionReset": "Simulación: Actualización opcional desactivada."
+  "logMockLatestVersionReset": "Simulación: Actualización opcional desactivada.",
+  "logClientIpLocked": "Bloqueo de red activo: esta instalación se usó desde otra red en la última hora. Reintento automático en aprox. {minutes} min.",
+  "logClientIdRequired": "Conexión rechazada: identificador de cliente ausente o no válido (X-Client-Id)."
 }

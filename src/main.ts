@@ -315,25 +315,26 @@ function getBrandTitle(): string {
   return edition ? `${edition} GlobalMarket` : "GlobalMarket";
 }
 
+function isOfficialMarketLabel(raw: string): boolean {
+  const lower = raw.trim().toLowerCase();
+  return (
+    !lower ||
+    lower === "global market" ||
+    lower === "global market official" ||
+    lower === "official global market" ||
+    lower === "local simulation (mock)"
+  );
+}
+
 function getDisplayMarketName(isMock: boolean): string {
   const raw = state.snapshot.marketName?.trim() ?? "";
   if (isMock) {
-    if (
-      state.snapshot.isPrivateMarket &&
-      raw &&
-      raw !== "Local Simulation (Mock)" &&
-      raw !== "Global Market"
-    ) {
+    if (state.snapshot.isPrivateMarket && !isOfficialMarketLabel(raw)) {
       return raw;
     }
     return t("marketNameMock");
   }
-  if (
-    !state.snapshot.isPrivateMarket ||
-    !raw ||
-    raw === "Global Market" ||
-    raw === "Local Simulation (Mock)"
-  ) {
+  if (!state.snapshot.isPrivateMarket || isOfficialMarketLabel(raw)) {
     return t("officialMarketName");
   }
   return raw;

@@ -19,6 +19,10 @@ pub enum ApiError {
     Unauthorized,
     #[error("Key slot limit reached (max. {max_slots} active client slots)")]
     SlotLimitReached { max_slots: u32 },
+    #[error("Client ID bound to another network IP (retry in {retry_after_sec}s)")]
+    ClientIpLocked { retry_after_sec: u64 },
+    #[error("Missing or invalid X-Client-Id header for market key")]
+    ClientIdRequired,
     #[error("Internal error: {0}")]
     Internal(String),
 }

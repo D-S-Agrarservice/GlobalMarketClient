@@ -382,13 +382,24 @@ fn end_to_end_bridge_processes_whitelist_transaction_and_cleans_up_on_shutdown()
     )
     .unwrap();
 
-    for _ in 0..40 {
+    for _ in 0..100 {
         let remaining_xmls: usize = fs::read_dir(&write_dir)
             .unwrap()
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "xml"))
             .count();
-        if remaining_xmls == 0 {
+        let has_read_xml = fs::read_dir(&read_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .any(|e| e.path().extension().is_some_and(|ext| ext == "xml"))
+            })
+            .unwrap_or(false);
+        let booked_logged = manager
+            .get_logs()
+            .iter()
+            .any(|l| l.key.as_deref() == Some("logTransactionBooked"));
+        if remaining_xmls == 0 && has_read_xml && booked_logged {
             break;
         }
         thread::sleep(Duration::from_millis(50));
@@ -572,9 +583,9 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
     let served_clone = Arc::clone(&served_requests);
 
     let server_thread = thread::spawn(move || {
-        // Serve up to 8 sequential HTTP requests on 127.0.0.1 with a bounded deadline
+        // Serve up to 11 sequential HTTP requests on 127.0.0.1 with a bounded deadline
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        for step in 0..8 {
+        for step in 0..11 {
             let mut stream = loop {
                 match listener.accept() {
                     Ok((s, _)) => break s,
@@ -733,6 +744,36 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
                         json
                     )
                 }
+                // 8: GET /api/v1/meta/status -> 403 CLIENT_IP_LOCKED (JSON retry_after + Retry-After header)
+                8 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    let json = r#"{"detail":{"code":"CLIENT_IP_LOCKED","retry_after":2400}}"#;
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nRetry-After: 2400\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                // 9: GET /api/v1/meta/status -> 403 CLIENT_IP_LOCKED (header-only Retry-After fallback)
+                9 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    let json = r#"{"detail":{"code":"CLIENT_IP_LOCKED"}}"#;
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nRetry-After: 180\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                // 10: GET /api/v1/meta/status -> 403 CLIENT_ID_REQUIRED
+                10 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    let json = r#"{"detail":{"code":"CLIENT_ID_REQUIRED"}}"#;
+                    format!(
+                        "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
                 _ => unreachable!(),
             };
 
@@ -822,8 +863,28 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
         ApiError::SlotLimitReached { max_slots: 32 }
     ));
 
+    // Step 8, 9 & 10: Key-slot IP binding (`CLIENT_IP_LOCKED`) & client ID validation (`CLIENT_ID_REQUIRED`)
+    let ip_locked_err = client.check_status().unwrap_err();
+    assert!(matches!(
+        ip_locked_err,
+        ApiError::ClientIpLocked {
+            retry_after_sec: 2400
+        }
+    ));
+
+    let ip_locked_hdr_err = client.check_status().unwrap_err();
+    assert!(matches!(
+        ip_locked_hdr_err,
+        ApiError::ClientIpLocked {
+            retry_after_sec: 180
+        }
+    ));
+
+    let cid_req_err = client.check_status().unwrap_err();
+    assert!(matches!(cid_req_err, ApiError::ClientIdRequired));
+
     server_thread.join().unwrap();
-    assert_eq!(served_requests.load(Ordering::SeqCst), 8);
+    assert_eq!(served_requests.load(Ordering::SeqCst), 11);
 }
 
 #[test]
@@ -1240,6 +1301,23 @@ fn heartbeat_xml_3_tier_branding_and_lua_sanitization_rules_work() {
             "Global Market".to_string(),
             Some("https://img.gm.bydora.de/a.webp".to_string())
         )
+    );
+    assert_eq!(
+        derive_handshake_branding(
+            true,
+            "Global Market Official",
+            Some("https://img.gm.bydora.de/a.webp".to_string()),
+            None,
+            None,
+            None
+        ),
+        (
+            1,
+            false,
+            "Global Market".to_string(),
+            Some("https://img.gm.bydora.de/a.webp".to_string())
+        ),
+        "Server PUBLIC_MARKET_NAME ('Global Market Official') with a logo-only key must resolve to Tier 1 Official Market"
     );
     assert_eq!(
         derive_handshake_branding(true, "LSMT Markt", None, None, None, None),
@@ -1797,5 +1875,171 @@ fn os_token_vault_dpapi_migration_and_write_only_security_work() {
     );
 
     mgr.shutdown();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn client_ip_locked_pauses_polling_and_unlocks_immediately_on_market_switch() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let locked_hits = Arc::new(AtomicUsize::new(0));
+    let public_hits = Arc::new(AtomicUsize::new(0));
+    let stop_srv = Arc::new(AtomicBool::new(false));
+
+    let locked_hits_srv = Arc::clone(&locked_hits);
+    let public_hits_srv = Arc::clone(&public_hits);
+    let stop_srv_clone = Arc::clone(&stop_srv);
+
+    let server_thread = thread::spawn(move || {
+        while !stop_srv_clone.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut req_line = String::new();
+                    if reader.read_line(&mut req_line).is_err() || req_line.is_empty() {
+                        continue;
+                    }
+                    let mut token_hdr: Option<String> = None;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty()
+                        {
+                            break;
+                        }
+                        if let Some((k, v)) = line.split_once(':') {
+                            if k.trim().eq_ignore_ascii_case("x-market-token") {
+                                token_hdr = Some(v.trim().to_string());
+                            }
+                        }
+                    }
+                    drop(reader);
+
+                    if req_line.starts_with("GET /api/v1/meta/status ") {
+                        if token_hdr.as_deref() == Some("locked-ip-token") {
+                            locked_hits_srv.fetch_add(1, Ordering::SeqCst);
+                            let json = r#"{"detail":{"code":"CLIENT_IP_LOCKED","retry_after":120}}"#;
+                            let resp = format!(
+                                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nRetry-After: 120\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        } else {
+                            public_hits_srv.fetch_add(1, Ordering::SeqCst);
+                            let json = r#"{"status":"online","version":"2.4.0","min_exe_version":"0.9.9","market_name":"Global Market Official"}"#;
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                json.len(),
+                                json
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        }
+                    } else if req_line.starts_with("GET /api/v1/market/state ") {
+                        let json = r#"{"updated_at":1763058000,"items":[]}"#;
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                    let _ = stream.flush();
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let dir = env::temp_dir().join(format!("fs25_gm_ip_lock_pause_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let profile_dir = dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let cfg_file = dir.join("settings.json");
+    let init_cfg = AppConfig {
+        fs25_profile_path: Some(dir.join("unconfigured_profile").to_string_lossy().into_owned()),
+        ..AppConfig::default()
+    };
+    init_cfg.save_to_file(&cfg_file).unwrap();
+
+    let mgr = BridgeManager::new(cfg_file, None);
+    let dummy_ext = digest_access_key("UNIT-TEST-SUPPORT-ONLY");
+    let dummy_dev = digest_access_key("UNIT-TEST-DEVELOPER-ONLY");
+    mgr.unlock_access_tier_with_digests(
+        "UNIT-TEST-DEVELOPER-ONLY",
+        dummy_ext,
+        dummy_dev,
+        Duration::from_secs(1800),
+    )
+    .unwrap();
+
+    let mut cfg = mgr.get_config();
+    cfg.backend_mode = BackendMode::Live;
+    cfg.backend_url = format!("http://{addr}");
+    cfg.fs25_profile_path = Some(profile_dir.to_string_lossy().into_owned());
+    mgr.update_config(cfg).unwrap();
+
+    mgr.add_market_token("locked-ip-token", Some("Gesperrtes Netz"))
+        .unwrap();
+
+    let wait_for = |pred: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if pred() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+        false
+    };
+
+    assert!(
+        wait_for(&|| {
+            mgr.get_logs()
+                .iter()
+                .any(|l| l.key.as_deref() == Some("logClientIpLocked"))
+        }),
+        "Worker must emit logClientIpLocked (not logTokenInvalid) on HTTP 403 CLIENT_IP_LOCKED"
+    );
+    assert!(!mgr
+        .get_logs()
+        .iter()
+        .any(|l| l.key.as_deref() == Some("logTokenInvalid")));
+
+    // Wait across multiple 500 ms worker ticks -> polling MUST remain paused (exactly 1 hit)!
+    let hits_after_lock = locked_hits.load(Ordering::SeqCst);
+    assert_eq!(hits_after_lock, 1);
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(
+        locked_hits.load(Ordering::SeqCst),
+        1,
+        "Worker must pause polling during retry_after instead of retrying every tick"
+    );
+
+    // Switching back to the Official Market (`None`) must immediately clear the hold and connect
+    mgr.select_active_market_token(None).unwrap();
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.branding_tier == 0
+                && !s.is_private_market
+                && s.market_name == "Global Market"
+        }),
+        "Switching to Official Market must immediately clear IP-lock hold and normalize 'Global Market Official' to 'Global Market'"
+    );
+    assert!(public_hits.load(Ordering::SeqCst) >= 1);
+
+    mgr.shutdown();
+    stop_srv.store(true, Ordering::SeqCst);
+    let _ = server_thread.join();
     let _ = fs::remove_dir_all(&dir);
 }

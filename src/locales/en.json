@@ -198,5 +198,7 @@
   "mockBtnOptVerOn": "Test Optional Update",
   "mockBtnOptVerOff": "Clear Optional Update",
   "logMockLatestVersion": "Simulation: Optional update recommendation set to v{latestVersion}.",
-  "logMockLatestVersionReset": "Simulation: Optional update recommendation cleared."
+  "logMockLatestVersionReset": "Simulation: Optional update recommendation cleared.",
+  "logClientIpLocked": "Network lock active: This installation was used from another network within the last hour. Automatic retry in ~{minutes} min.",
+  "logClientIdRequired": "Connection rejected: Missing or invalid client identifier (X-Client-Id)."
 }

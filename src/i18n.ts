@@ -327,6 +327,18 @@ export function formatLogEntryMessage(entry: LogEntry): string {
   if (vars.tier) {
     vars.tier = formatAccessTierName(vars.tier);
   }
+  if (vars.market) {
+    const mLower = vars.market.trim().toLowerCase();
+    if (
+      mLower === "global market" ||
+      mLower === "global market official" ||
+      mLower === "official global market"
+    ) {
+      vars.market = t("officialMarketName");
+    } else if (mLower === "local simulation (mock)") {
+      vars.market = t("marketNameMock");
+    }
+  }
 
   return t(entry.key as TranslationKey, vars);
 }

@@ -198,5 +198,7 @@
   "mockBtnOptVerOn": "Optionales Update testen",
   "mockBtnOptVerOff": "Optionales Update aus",
   "logMockLatestVersion": "Simulation: Optionale Update-Empfehlung auf v{latestVersion} gesetzt.",
-  "logMockLatestVersionReset": "Simulation: Optionale Update-Empfehlung aufgehoben."
+  "logMockLatestVersionReset": "Simulation: Optionale Update-Empfehlung aufgehoben.",
+  "logClientIpLocked": "Netzwerk-Sperre aktiv: Diese Installation wurde in der letzten Stunde aus einem anderen Netzwerk verwendet. Automatischer Neuversuch in ca. {minutes} Min.",
+  "logClientIdRequired": "Verbindung abgelehnt: Ungültige oder fehlende Client-Kennung (X-Client-Id)."
 }

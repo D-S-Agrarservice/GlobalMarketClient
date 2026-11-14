@@ -1317,6 +1317,7 @@ fn run_bridge_worker(
     let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
     let mut last_market_poll = Instant::now() - Duration::from_secs(60);
     let mut last_status_check = Instant::now() - Duration::from_secs(60);
+    let mut retry_hold_until: Option<Instant> = None;
 
     let mut last_synced_items: Vec<MarketItemDto> = Vec::new();
     let mut known_titles: HashMap<String, String> = HashMap::new();
@@ -1373,9 +1374,20 @@ fn run_bridge_worker(
             });
         }
 
-        // 1. Handshake / Backend reachability & minVersion check (every 10s, or immediately on ForceSyncNow / offline)
-        let status_refresh_due =
-            force_sync || !is_connected || last_status_check.elapsed() >= Duration::from_secs(10);
+        if force_sync {
+            retry_hold_until = None;
+        }
+
+        // 1. Handshake / Backend reachability & minVersion check (every 10s when online, 5s when offline, or paused during CLIENT_IP_LOCKED)
+        let hold_active = retry_hold_until.is_some_and(|until| Instant::now() < until);
+        let status_refresh_due = if hold_active {
+            false
+        } else {
+            retry_hold_until = None;
+            force_sync
+                || (!is_connected && last_status_check.elapsed() >= Duration::from_secs(5))
+                || last_status_check.elapsed() >= Duration::from_secs(10)
+        };
 
         if status_refresh_due {
             last_status_check = Instant::now();
@@ -1385,6 +1397,7 @@ fn run_bridge_worker(
             }
             match status_res {
                 Ok(hs) => {
+                    retry_hold_until = None;
                     let next_min_version = hs.min_exe_version.clone();
                     let next_latest_version = hs
                         .latest_exe_version
@@ -1558,6 +1571,12 @@ fn run_bridge_worker(
                     }
                 }
                 Err(err) => {
+                    if let ApiError::ClientIpLocked { retry_after_sec } = &err {
+                        retry_hold_until = Some(
+                            Instant::now()
+                                + Duration::from_secs((*retry_after_sec).clamp(1, 86_400)),
+                        );
+                    }
                     let was_online = is_connected;
                     is_connected = false;
                     active_branding = HeartbeatBranding::default();
@@ -1707,7 +1726,13 @@ fn run_bridge_worker(
                             last_market_poll = Instant::now();
                         }
                         Err(err) => {
-                            handle_backend_io_error(&err, &mut is_connected, &shared, &app_handle);
+                            handle_backend_io_error(
+                                &err,
+                                &mut is_connected,
+                                &mut retry_hold_until,
+                                &shared,
+                                &app_handle,
+                            );
                             break;
                         }
                     }
@@ -1757,6 +1782,7 @@ fn run_bridge_worker(
                                 handle_backend_io_error(
                                     &err,
                                     &mut is_connected,
+                                    &mut retry_hold_until,
                                     &shared,
                                     &app_handle,
                                 );
@@ -1843,7 +1869,13 @@ fn run_bridge_worker(
                     );
                 }
                 Err(err) => {
-                    handle_backend_io_error(&err, &mut is_connected, &shared, &app_handle);
+                    handle_backend_io_error(
+                        &err,
+                        &mut is_connected,
+                        &mut retry_hold_until,
+                        &shared,
+                        &app_handle,
+                    );
                 }
             }
         }
@@ -2099,6 +2131,33 @@ fn emit_classified_backend_error(
                 ),
             );
         }
+        ApiError::ClientIpLocked { retry_after_sec } => {
+            let minutes = retry_after_sec.div_ceil(60).max(1);
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logClientIpLocked",
+                [
+                    ("minutes", minutes.to_string()),
+                    ("seconds", retry_after_sec.to_string()),
+                ],
+                format!(
+                    "Network lock active: This installation was used from another network within the last hour. Automatic retry in ~{minutes} min."
+                ),
+            );
+        }
+        ApiError::ClientIdRequired => {
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logClientIdRequired",
+                [],
+                "Connection rejected: Missing or invalid client identifier (X-Client-Id)."
+                    .to_string(),
+            );
+        }
         ApiError::Unauthorized => {
             push_i18n_log_shared(
                 shared,
@@ -2106,7 +2165,7 @@ fn emit_classified_backend_error(
                 LogLevel::Error,
                 "logTokenInvalid",
                 [],
-                "Community/Logo key is invalid or revoked (HTTP 401/403) – please check Settings."
+                "Community/Logo key is invalid or revoked (HTTP 401) – please check Settings."
                     .to_string(),
             );
         }
@@ -2127,10 +2186,15 @@ fn emit_classified_backend_error(
 fn handle_backend_io_error(
     err: &ApiError,
     is_connected: &mut bool,
+    retry_hold_until: &mut Option<Instant>,
     shared: &Arc<Mutex<SharedState>>,
     app_handle: &Option<AppHandle>,
 ) {
     *is_connected = false;
+    if let ApiError::ClientIpLocked { retry_after_sec } = err {
+        *retry_hold_until =
+            Some(Instant::now() + Duration::from_secs((*retry_after_sec).clamp(1, 86_400)));
+    }
     let msg = err.to_string();
     emit_classified_backend_error(err, LogLevel::Error, shared, app_handle);
     emit_snapshot_update(shared, app_handle, |snap| {
