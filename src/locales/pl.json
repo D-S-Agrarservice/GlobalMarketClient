@@ -189,5 +189,14 @@
   "logTokenRemoved": "Usunięto zapisany klucz rynku ({hint}).",
   "toastTokenAdded": "Klucz zapisany i aktywowany.",
   "toastTokenRemoved": "Klucz usunięty.",
-  "toastMarketSwitched": "Zmieniono rynek."
+  "toastMarketSwitched": "Zmieniono rynek.",
+  "betaBadge": "BETA",
+  "optionalUpdateTitle": "Dostępna opcjonalna aktualizacja: v{version}",
+  "optionalUpdateDesc": "Zalecana jest wersja v{version} (zainstalowana: v{currentVersion}). Handel online działa normalnie — możesz zaktualizować w dogodnej chwili.",
+  "optionalUpdateDismissTitle": "Ukryj powiadomienie w tej sesji",
+  "logOptionalUpdateAvailable": "Dostępna opcjonalna aktualizacja: v{latestVersion} (zainstalowana: v{currentVersion}) – handel online działa normalnie.",
+  "mockBtnOptVerOn": "Testuj akt. opcjonalną",
+  "mockBtnOptVerOff": "Wyłącz akt. opcjonalną",
+  "logMockLatestVersion": "Symulacja: Opcjonalna aktualizacja ustawiona na v{latestVersion}.",
+  "logMockLatestVersionReset": "Symulacja: Wyłączono powiadomienie o opcjonalnej aktualizacji."
 }

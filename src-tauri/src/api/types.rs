@@ -112,6 +112,9 @@ pub struct TransactionRequest {
 pub struct ServerHandshake {
     pub online: bool,
     pub min_exe_version: String,
+    /// Optional recommended ("nice-to-have") client version announced by the backend without blocking online trading.
+    #[serde(default)]
+    pub latest_exe_version: Option<String>,
     pub poll_interval_sec: u64,
     pub market_name: String,
     pub api_version: String,

@@ -61,6 +61,8 @@ interface UiState {
   mockToolsExpanded: boolean;
   mockSimulatedOffline: boolean;
   mockLockedMinVersion: boolean;
+  mockOptionalUpdate: boolean;
+  dismissedOptionalVersion: string | null;
   copiedDiagFeedback: boolean;
   toastMessage: string | null;
   checkingForUpdate: boolean;
@@ -71,8 +73,9 @@ interface UiState {
 
 const state: UiState = {
   info: {
-    appVersion: "1.0.0",
-    protocolVersion: "1.0.0",
+    appVersion: "0.9.9",
+    protocolVersion: "0.9.9",
+    isBeta: true,
     platform: "desktop",
   },
   config: {
@@ -102,8 +105,9 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "1.0.0",
-    minExeVersion: "1.0.0",
+    exeVersion: "0.9.9",
+    minExeVersion: "0.9.9",
+    latestExeVersion: null,
     approvedCount: 0,
     pendingCount: 0,
     rejectedCount: 0,
@@ -123,6 +127,8 @@ const state: UiState = {
   mockToolsExpanded: true,
   mockSimulatedOffline: false,
   mockLockedMinVersion: false,
+  mockOptionalUpdate: false,
+  dismissedOptionalVersion: null,
   copiedDiagFeedback: false,
   toastMessage: null,
   checkingForUpdate: false,
@@ -458,8 +464,36 @@ function getSafeHeaderLogoUrl(): string {
   return dsaLogoUrl;
 }
 
+function parseVersionParts(raw: string): number[] {
+  return raw
+    .split(/[^0-9]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((num) => Number.isFinite(num));
+}
+
+function isSemverSufficient(currentVersion: string, requiredVersion: string): boolean {
+  const cur = parseVersionParts(currentVersion);
+  const req = parseVersionParts(requiredVersion);
+  if (cur.length === 0) return false;
+  for (let i = 0; i < 4; i += 1) {
+    const c = cur[i] ?? 0;
+    const r = req[i] ?? 0;
+    if (c > r) return true;
+    if (c < r) return false;
+  }
+  return true;
+}
+
+function getServerRecommendedUpdate(): string | null {
+  const latest = state.snapshot.latestExeVersion?.trim();
+  if (!latest) return null;
+  return isSemverSufficient(state.snapshot.exeVersion, latest) ? null : latest;
+}
+
 function syncDocumentTitle(): void {
-  document.title = `${getBrandTitle()} – D-S-Agrarservice`;
+  const suffix = state.info.isBeta ? " (Beta)" : "";
+  document.title = `${getBrandTitle()} – D-S-Agrarservice${suffix}`;
 }
 
 function applySnapshot(snap: BridgeSnapshot): void {
@@ -639,12 +673,23 @@ function renderDashboardHtml(): string {
       `<option value="${opt.code}" ${opt.code === currentLang ? "selected" : ""} class="bg-[#252528] text-zinc-100">🌐 ${escapeHtml(opt.nativeName)} (${opt.shortLabel})</option>`,
   ).join("");
 
+  const betaBadgeHtml = state.info.isBeta
+    ? `<span class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-amber-500/15 text-amber-300 border border-amber-500/40">${escapeHtml(t("betaBadge"))}</span>`
+    : "";
+
   const tierBadgeHtml =
     tier === "developer"
       ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/35 hover:border-purple-400 transition cursor-pointer">${escapeHtml(t("tierBadgeDeveloper"))}</button>`
       : tier === "extended"
         ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/35 hover:border-cyan-400 transition cursor-pointer">${escapeHtml(t("tierBadgeExtended"))}</button>`
         : "";
+
+  const serverRecommendedVersion = getServerRecommendedUpdate();
+  const activeOptionalVersion = state.availableUpdateVersion ?? serverRecommendedVersion;
+  const showOptionalBanner =
+    Boolean(activeOptionalVersion) &&
+    (state.updateInstallingState !== "idle" ||
+      state.dismissedOptionalVersion !== activeOptionalVersion);
 
   const updateBtnLabel =
     state.updateInstallingState === "downloading"
@@ -719,33 +764,70 @@ function renderDashboardHtml(): string {
         ${updateProgressBarHtml}
       </div>
     `
-      : state.availableUpdateVersion
+      : showOptionalBanner && activeOptionalVersion
         ? `
       <div class="rounded-lg border border-[#ff9600]/45 bg-[#ff9600]/10 px-3.5 py-2.5 text-xs">
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
             <p class="font-semibold text-[#ff9600]">
               ⬆ ${escapeHtml(
-                t("updateAvailableTitle", { version: state.availableUpdateVersion }),
+                state.availableUpdateVersion
+                  ? t("updateAvailableTitle", { version: activeOptionalVersion })
+                  : t("optionalUpdateTitle", { version: activeOptionalVersion }),
               )}
             </p>
             <p class="text-zinc-300 mt-0.5">
               ${escapeHtml(
-                t("updateAvailableDesc", {
-                  version: state.availableUpdateVersion,
-                  currentVersion: state.info.appVersion,
-                }),
+                state.availableUpdateVersion
+                  ? t("updateAvailableDesc", {
+                      version: activeOptionalVersion,
+                      currentVersion: state.info.appVersion,
+                    })
+                  : t("optionalUpdateDesc", {
+                      version: activeOptionalVersion,
+                      currentVersion: state.snapshot.exeVersion,
+                    }),
               )}
             </p>
           </div>
-          <button
-            id="btn-install-update"
-            type="button"
-            ${state.updateInstallingState !== "idle" ? "disabled" : ""}
-            class="shrink-0 rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] disabled:opacity-70 transition cursor-pointer"
-          >
-            ⬇ <span id="update-btn-label">${escapeHtml(updateBtnLabel)}</span>
-          </button>
+          <div class="flex items-center gap-2 shrink-0">
+            ${
+              state.availableUpdateVersion
+                ? `
+            <button
+              id="btn-install-update"
+              type="button"
+              ${state.updateInstallingState !== "idle" ? "disabled" : ""}
+              class="rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] disabled:opacity-70 transition cursor-pointer"
+            >
+              ⬇ <span id="update-btn-label">${escapeHtml(updateBtnLabel)}</span>
+            </button>
+            `
+                : `
+            <button
+              id="btn-open-releases"
+              type="button"
+              class="rounded-md bg-[#ff9600] px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-[#ffa726] transition cursor-pointer"
+            >
+              ${escapeHtml(t("outdatedAction"))} ↗
+            </button>
+            `
+            }
+            ${
+              state.updateInstallingState === "idle"
+                ? `
+            <button
+              id="btn-dismiss-optional-update"
+              type="button"
+              title="${escapeHtml(t("optionalUpdateDismissTitle"))}"
+              class="rounded px-1.5 py-1 text-zinc-400 hover:text-zinc-100 transition cursor-pointer"
+            >
+              ✕
+            </button>
+            `
+                : ""
+            }
+          </div>
         </div>
         ${updateProgressBarHtml}
       </div>
@@ -884,7 +966,7 @@ function renderDashboardHtml(): string {
                 🧪 ${escapeHtml(t("devSwitchMock"))}
               </button>
             </div>
-            <span class="text-[10px] font-mono uppercase tracking-wider text-zinc-400">v${escapeHtml(state.snapshot.exeVersion)}</span>
+            <span class="text-[10px] font-mono uppercase tracking-wider text-zinc-400">v${escapeHtml(state.snapshot.exeVersion)}${state.info.isBeta ? " BETA" : ""}</span>
           </div>
         </div>
         ${
@@ -927,6 +1009,17 @@ function renderDashboardHtml(): string {
               }"
             >
               ⬆ ${escapeHtml(state.mockLockedMinVersion ? t("mockBtnMinVerOff") : t("mockBtnMinVerOn"))}
+            </button>
+            <button
+              id="btn-mock-optver"
+              type="button"
+              class="rounded border px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
+                state.mockOptionalUpdate
+                  ? "bg-[#ff9600] text-zinc-950 border-amber-300 font-semibold"
+                  : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
+              }"
+            >
+              🔔 ${escapeHtml(state.mockOptionalUpdate ? t("mockBtnOptVerOff") : t("mockBtnOptVerOn"))}
             </button>
             <select
               id="sel-mock-tier"
@@ -1040,11 +1133,12 @@ function renderDashboardHtml(): string {
           }">
             ${escapeHtml(isMock ? t("modeMockBadge") : t("modeLiveBadge"))}
           </span>
+          ${betaBadgeHtml}
           ${tierBadgeHtml}
         </div>
         <p class="text-xs text-zinc-300 truncate">${escapeHtml(t("appSubtitle"))}</p>
         <p class="text-[11px] text-zinc-500 truncate">
-          D-S-Agrarservice &bull; <span data-secret-trigger="true" class="font-mono select-none">v${escapeHtml(state.info.protocolVersion)}</span>
+          D-S-Agrarservice &bull; <span data-secret-trigger="true" class="font-mono select-none">v${escapeHtml(state.info.protocolVersion)}${state.info.isBeta ? " Beta" : ""}</span>
         </p>
       </div>
 
@@ -1777,7 +1871,7 @@ function renderCreditsModalHtml(): string {
 
           <div class="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-zinc-800">
             <span class="font-mono text-[11px] text-zinc-500">
-              ${escapeHtml(getBrandTitle())} v${escapeHtml(state.info.appVersion)} (${escapeHtml(state.info.platform)})
+              ${escapeHtml(getBrandTitle())} v${escapeHtml(state.info.appVersion)}${state.info.isBeta ? " Beta" : ""} (${escapeHtml(state.info.platform)})
             </span>
             <div class="flex items-center gap-2 ml-auto">
               <button
@@ -2241,6 +2335,17 @@ function bindDashboardEvents(): void {
     .querySelector<HTMLButtonElement>("#btn-open-releases")
     ?.addEventListener("click", () => void openExternalUrl(GITHUB_RELEASES_URL));
 
+  document
+    .querySelector<HTMLButtonElement>("#btn-dismiss-optional-update")
+    ?.addEventListener("click", () => {
+      const target =
+        state.availableUpdateVersion ?? getServerRecommendedUpdate();
+      if (target) {
+        state.dismissedOptionalVersion = target;
+        renderDashboardOnly();
+      }
+    });
+
   const switchDevEnvironment = async (
     nextMode: BackendMode,
     nextUrl?: string,
@@ -2336,10 +2441,28 @@ function bindDashboardEvents(): void {
     .querySelector<HTMLButtonElement>("#btn-mock-minver")
     ?.addEventListener("click", async () => {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
-      const targetVer = state.mockLockedMinVersion ? "9.9.9" : "1.0.0";
+      const targetVer = state.mockLockedMinVersion
+        ? "9.9.9"
+        : state.info.protocolVersion || "0.9.9";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
+  document
+    .querySelector<HTMLButtonElement>("#btn-mock-optver")
+    ?.addEventListener("click", async () => {
+      state.mockOptionalUpdate = !state.mockOptionalUpdate;
+      if (state.mockOptionalUpdate) {
+        state.dismissedOptionalVersion = null;
+      }
+      const targetOpt = state.mockOptionalUpdate ? "0.9.10" : null;
+      renderDashboardOnly();
+      try {
+        await invoke("mock_set_latest_version", { latestVersion: targetOpt });
       } catch (err) {
         showToast(String(err));
       }
@@ -2747,6 +2870,7 @@ async function bootstrap(): Promise<void> {
   try {
     await listen<BridgeSnapshot>("bridge://status", (event) => {
       const wasOutdated = state.snapshot.state === "outdated";
+      const prevOptionalVer = getServerRecommendedUpdate();
       const prevTier = getEffectiveTier();
       const prevSig = JSON.stringify({
         ...state.snapshot,
@@ -2757,6 +2881,7 @@ async function bootstrap(): Promise<void> {
           prevTier === "user" ? null : state.snapshot.lastSyncUnix,
       });
       applySnapshot(event.payload);
+      const nextOptionalVer = getServerRecommendedUpdate();
       if (prevTier !== event.payload.accessTier && state.activeModal === "settings") {
         renderModalOnly();
       }
@@ -2768,7 +2893,11 @@ async function bootstrap(): Promise<void> {
         lastSyncUnix:
           nextTier === "user" ? null : state.snapshot.lastSyncUnix,
       });
-      if (!wasOutdated && event.payload.state === "outdated" && !state.availableUpdateVersion) {
+      if (
+        ((!wasOutdated && event.payload.state === "outdated") ||
+          (nextOptionalVer !== null && nextOptionalVer !== prevOptionalVer)) &&
+        !state.availableUpdateVersion
+      ) {
         void checkForAppUpdates(false);
       }
       if (prevSig !== nextSig) {

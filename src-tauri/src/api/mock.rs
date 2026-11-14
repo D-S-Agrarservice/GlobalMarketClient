@@ -23,6 +23,7 @@ const FALLBACK_MOCK_LOGO_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png
 struct MockState {
     simulate_offline: bool,
     simulated_min_version: String,
+    simulated_latest_version: Option<String>,
     simulated_branding_tier: u8,
     simulated_private_market_name: String,
     simulated_logo_url: Option<String>,
@@ -64,7 +65,8 @@ impl Default for MockState {
 
         Self {
             simulate_offline: false,
-            simulated_min_version: "1.0.0".to_string(),
+            simulated_min_version: "0.9.9".to_string(),
+            simulated_latest_version: None,
             simulated_branding_tier: 0,
             simulated_private_market_name: DEFAULT_MOCK_PRIVATE_MARKET_NAME.to_string(),
             simulated_logo_url: None,
@@ -103,6 +105,15 @@ impl LocalMockBackend {
     pub fn set_simulated_min_version(&self, min_version: String) {
         if let Ok(mut guard) = self.state.lock() {
             guard.simulated_min_version = min_version;
+        }
+    }
+
+    /// Override optional `latestVersion` ("nice-to-have" update announcement without blocking trading).
+    pub fn set_simulated_latest_version(&self, latest_version: Option<String>) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.simulated_latest_version = latest_version
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
         }
     }
 
@@ -246,6 +257,7 @@ impl BackendService for LocalMockBackend {
         Ok(ServerHandshake {
             online: true,
             min_exe_version: guard.simulated_min_version.clone(),
+            latest_exe_version: guard.simulated_latest_version.clone(),
             poll_interval_sec: 5,
             market_name,
             api_version: "2.0.0-mock".to_string(),

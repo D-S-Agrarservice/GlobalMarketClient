@@ -189,5 +189,14 @@
   "logTokenRemoved": "Clé enregistrée supprimée ({hint}).",
   "toastTokenAdded": "Clé enregistrée et activée.",
   "toastTokenRemoved": "Clé supprimée.",
-  "toastMarketSwitched": "Marché changé."
+  "toastMarketSwitched": "Marché changé.",
+  "betaBadge": "BÊTA",
+  "optionalUpdateTitle": "Mise à jour facultative disponible : v{version}",
+  "optionalUpdateDesc": "La version v{version} est recommandée (installée : v{currentVersion}). Le marché en ligne reste actif — mettez à jour quand vous le souhaitez.",
+  "optionalUpdateDismissTitle": "Masquer cet avis pour cette session",
+  "logOptionalUpdateAvailable": "Mise à jour facultative disponible : v{latestVersion} (installée : v{currentVersion}) – le marché en ligne continue normalement.",
+  "mockBtnOptVerOn": "Tester màj facultative",
+  "mockBtnOptVerOff": "Masquer màj facultative",
+  "logMockLatestVersion": "Simulation : Mise à jour facultative définie sur v{latestVersion}.",
+  "logMockLatestVersionReset": "Simulation : Mise à jour facultative effacée."
 }

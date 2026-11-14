@@ -211,13 +211,17 @@ pub fn build_diagnostic_report_with_secrets(
     };
 
     let brand = crate::tray::format_brand_title(snapshot.game_edition.as_deref());
+    let app_ver_label = if crate::IS_BETA_BUILD {
+        format!("{}-beta", env!("CARGO_PKG_VERSION"))
+    } else {
+        env!("CARGO_PKG_VERSION").to_string()
+    };
     let mut report = String::with_capacity(2048);
     report.push_str(&format!(
         "**{brand} – Diagnostic Report (D-S-Agrarservice)**\n```yaml\n"
     ));
     report.push_str(&format!(
-        "app_version: \"{} (protocol {})\"\n",
-        env!("CARGO_PKG_VERSION"),
+        "app_version: \"{app_ver_label} (protocol {})\"\n",
         snapshot.exe_version
     ));
     report.push_str(&format!(
@@ -251,9 +255,10 @@ pub fn build_diagnostic_report_with_secrets(
     report.push_str(&format!("market_token: \"{token_state}\"\n"));
     report.push_str(&format!("client_slot_prefix: \"{slot_prefix}\"\n"));
     report.push_str(&format!(
-        "connection_state: \"{} (min_exe_version={})\"\n",
+        "connection_state: \"{} (min_exe_version={}, latest_exe_version={})\"\n",
         format_state(snapshot.state),
-        snapshot.min_exe_version
+        snapshot.min_exe_version,
+        snapshot.latest_exe_version.as_deref().unwrap_or("none")
     ));
     report.push_str(&format!("fs_profile_dir: \"{profile_masked}\"\n"));
     report.push_str(&format!("bridge_dir: \"{bridge_masked}\"\n"));

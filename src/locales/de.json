@@ -189,5 +189,14 @@
   "logTokenRemoved": "Gespeicherter Schlüssel entfernt ({hint}).",
   "toastTokenAdded": "Schlüssel gespeichert und aktiviert.",
   "toastTokenRemoved": "Schlüssel entfernt.",
-  "toastMarketSwitched": "Markt gewechselt."
+  "toastMarketSwitched": "Markt gewechselt.",
+  "betaBadge": "BETA",
+  "optionalUpdateTitle": "Optionales Update verfügbar: v{version}",
+  "optionalUpdateDesc": "Version v{version} wird empfohlen (installiert: v{currentVersion}). Der Online-Handel läuft ohne Einschränkung weiter – du kannst jederzeit in Ruhe aktualisieren.",
+  "optionalUpdateDismissTitle": "Hinweis für diese Sitzung ausblenden",
+  "logOptionalUpdateAvailable": "Optionales App-Update verfügbar: v{latestVersion} (installiert: v{currentVersion}) – Online-Handel läuft normal weiter.",
+  "mockBtnOptVerOn": "Optionales Update testen",
+  "mockBtnOptVerOff": "Optionales Update aus",
+  "logMockLatestVersion": "Simulation: Optionale Update-Empfehlung auf v{latestVersion} gesetzt.",
+  "logMockLatestVersionReset": "Simulation: Optionale Update-Empfehlung aufgehoben."
 }

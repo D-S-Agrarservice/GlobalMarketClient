@@ -189,5 +189,14 @@
   "logTokenRemoved": "Removed saved market key ({hint}).",
   "toastTokenAdded": "Key saved and activated.",
   "toastTokenRemoved": "Key removed.",
-  "toastMarketSwitched": "Market switched."
+  "toastMarketSwitched": "Market switched.",
+  "betaBadge": "BETA",
+  "optionalUpdateTitle": "Optional Update Available: v{version}",
+  "optionalUpdateDesc": "Version v{version} is recommended (installed: v{currentVersion}). Online trading continues normally — update whenever convenient.",
+  "optionalUpdateDismissTitle": "Dismiss notice for this session",
+  "logOptionalUpdateAvailable": "Optional app update available: v{latestVersion} (installed: v{currentVersion}) – online trading continues normally.",
+  "mockBtnOptVerOn": "Test Optional Update",
+  "mockBtnOptVerOff": "Clear Optional Update",
+  "logMockLatestVersion": "Simulation: Optional update recommendation set to v{latestVersion}.",
+  "logMockLatestVersionReset": "Simulation: Optional update recommendation cleared."
 }

@@ -154,6 +154,13 @@ struct WireMetaStatus {
     online: bool,
     #[serde(default = "default_min_ver")]
     min_exe_version: String,
+    #[serde(
+        default,
+        alias = "recommended_exe_version",
+        alias = "recommended_version",
+        alias = "latest_version"
+    )]
+    latest_exe_version: Option<String>,
     #[serde(default = "default_poll")]
     poll_interval_sec: u64,
     #[serde(default = "default_market_name")]
@@ -174,7 +181,7 @@ fn default_true() -> bool {
     true
 }
 fn default_min_ver() -> String {
-    "1.0.0".to_string()
+    "0.9.9".to_string()
 }
 fn default_poll() -> u64 {
     10
@@ -399,6 +406,7 @@ impl BackendService for FastApiBackend {
             Ok(ServerHandshake {
                 online: parsed.online,
                 min_exe_version: parsed.min_exe_version,
+                latest_exe_version: clean_version_opt(parsed.latest_exe_version),
                 poll_interval_sec: parsed.poll_interval_sec.max(2),
                 market_name,
                 api_version: parsed.api_version,
@@ -701,6 +709,20 @@ fn clean_client_id(raw: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+fn clean_version_opt(raw: Option<String>) -> Option<String> {
+    raw.and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty()
+            || trimmed.len() > 32
+            || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 /// Extracts `max_slots` when the backend responds with `TOKEN_SLOT_LIMIT_REACHED`

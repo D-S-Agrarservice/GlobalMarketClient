@@ -133,26 +133,29 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
-      <version>1.0.0</version>
-      <minVersion>1.0.0</minVersion>
+      <version>0.9.9</version>
+      <minVersion>0.9.9</minVersion>
   </globalMarketOnline>
   ```
-* **XML-Struktur (Beispiel Tier 3 – Eigener Privatmarkt mit Community-Logo):**
+* **XML-Struktur (Beispiel Tier 3 – Eigener Privatmarkt mit Community-Logo & optionaler Update-Empfehlung):**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="3" isPrivateMarket="true" marketName="WeekendFarmers" hasCustomLogo="true" logoFile="logos/logo_9f4b2c10e8a1.dds">
-      <version>1.0.0</version>
-      <minVersion>1.0.0</minVersion>
+      <version>0.9.9</version>
+      <minVersion>0.9.9</minVersion>
+      <latestVersion>1.0.0</latestVersion>
   </globalMarketOnline>
   ```
-* **Kern-Attribute & Knoten:**
+* **Kern-Attribute & Knoten (Zweistufiges Versions- & Update-System):**
   * `globalMarketOnline#timestamp` (`int`, Pflicht): Aktueller UTC Unix-Timestamp in Sekunden (`SystemTime::now().duration_since(UNIX_EPOCH)`).
     * **Anti-Zombie-Regel (FS25 Sandbox-konform):** Da `os.time()` in der FS25-Lua-Sandbox `nil` ist, prüft Lua bei jedem Status-Poll (`2000 ms`), ob sich `timestamp` gegenüber dem zuletzt gelesenen Wert weiterbewegt. Bleibt `timestamp` länger als `10000 ms` unverändert (`self.exeStaleMs > 10000`), stuft Lua den Client als beendet/abgestürzt ein (`isExeRunningLocal = false`). Existiert beim allerersten Poll bereits eine alte `globalMarketOnline.xml` (z. B. nach einem früheren PC-Absturz), wartet Lua zwingend auf den ersten Timestamp-Fortschritt, bevor der Client als aktiv gilt.
     * **Sauberer Shutdown:** Beim Stoppen der Bridge oder regulären Schließen des `GlobalMarketClient` wird `globalMarketOnline.xml` sofort per `cleanup_bridge_runtime_files` gelöscht, sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt.
   * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
-  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (SemVer `MAJOR.MINOR.PATCH` wie `1.0.0` oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt).
-  * `globalMarketOnline.minVersion` (`string`, Pflicht): Vom Online-Backend beim Handshake (`/v1/status`) vorgegebene Mindestversion des Clients.
-    * **Zweck (Remote Force-Update ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`isConnected="false"`), schreibt der Client die gemeldete `minVersion` in `globalMarketOnline.xml`. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod, übernimmt Lua sofort die höhere Untergrenze, blockiert die Online-Freigabe (`version < minVersion`) und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein.
+  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.9` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
+  * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
+    * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.9`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod, übernimmt Lua sofort die höhere Untergrenze, blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein.
+  * `globalMarketOnline.latestVersion` (`string`, Optional – **Stufe 2: Optional / Empfohlenes „Nice-to-have“-Update**): Wird vom Client genau dann geschrieben, wenn das Backend im Handshake (`/api/v1/meta/status`) zusätzlich `latest_exe_version` (bzw. Alias `recommended_exe_version`) ausliefert.
+    * **Zweck (Unterbrechungsfreie Update-Ankündigung):** Gilt `version >= minVersion`, aber `version < latestVersion`, bleibt `isConnected="true"` vollständig aktiv (kein Handelsabbruch!). Der `GlobalMarketClient` blendet ein dezentes, wegklickbares gelbes Empfehlungs-Banner ein (inkl. automatischem Check auf ein signiertes 1-Klick-Update) und reicht `<latestVersion>` an `globalMarketOnline.xml` durch, sodass auch der Lua-Mod im Spiel optional einen sanften Update-Hinweis anzeigen kann.
 
 * **3-Stufen Online-Markt-Branding (`FS25_GlobalMarket v0.9.9.22+` & `GlobalMarketClient`):**
   Über hinterlegte Markt-Schlüssel (`X-Market-Token`, lokal geschützt in `tokens.vault`) unterstützt die Bridge vier definierte Darstellungsstufen:

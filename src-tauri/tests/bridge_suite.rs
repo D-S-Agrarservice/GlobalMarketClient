@@ -21,8 +21,9 @@ use globalmarket_client_lib::bridge::l10n::localize_fill_type;
 use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
-    sanitize_market_name, write_heartbeat_xml, write_market_data_xml, HeartbeatBranding,
-    IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
+    sanitize_market_name, write_heartbeat_xml, write_heartbeat_xml_with_latest,
+    write_market_data_xml, HeartbeatBranding, IncomingPacket, MAX_MARKET_NAME_BYTES,
+    MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
@@ -67,6 +68,22 @@ fn writes_heartbeat_and_market_xml_strictly_without_utf8_bom() {
     assert!(!online_str.contains("logoFile="));
     assert!(online_str.contains("<version>1.0.0.0</version>"));
     assert!(online_str.contains("<minVersion>1.0.0.0</minVersion>"));
+    assert!(!online_str.contains("<latestVersion>"));
+
+    write_heartbeat_xml_with_latest(
+        &staging,
+        &online_file,
+        true,
+        "0.9.9",
+        "0.9.9",
+        Some("0.9.10"),
+        None,
+    )
+    .unwrap();
+    let online_with_latest = fs::read_to_string(&online_file).unwrap();
+    assert!(online_with_latest.contains("<version>0.9.9</version>"));
+    assert!(online_with_latest.contains("<minVersion>0.9.9</minVersion>"));
+    assert!(online_with_latest.contains("<latestVersion>0.9.10</latestVersion>"));
 
     let written = write_market_data_xml(
         &staging,
@@ -185,7 +202,11 @@ fn parses_whitelist_transactions_and_ignores_unknown_future_actions() {
 
 #[test]
 fn version_comparison_matches_lua_semantics() {
-    // 3-part standard SemVer and 4-part legacy compatibility
+    // 3-part standard SemVer, 0.9.9 Beta lock, and 4-part legacy compatibility
+    assert!(is_version_sufficient("0.9.9", "0.9.9"));
+    assert!(is_version_sufficient("0.9.10", "0.9.9"));
+    assert!(!is_version_sufficient("0.9.9", "1.0.0"));
+    assert!(is_version_sufficient("1.0.0", "0.9.9"));
     assert!(is_version_sufficient("1.0.0", "1.0.0"));
     assert!(is_version_sufficient("1.0.0", "1.0.0.0"));
     assert!(is_version_sufficient("1.0.0.0", "1.0.0"));
@@ -440,8 +461,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "1.0.0".to_string(),
-        min_exe_version: "1.0.0".to_string(),
+        exe_version: "0.9.9".to_string(),
+        min_exe_version: "0.9.9".to_string(),
+        latest_exe_version: Some("0.9.10".to_string()),
         approved_count: 10,
         pending_count: 2,
         rejected_count: 0,
@@ -479,6 +501,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
+    assert!(report.contains("app_version: \"0.9.9-beta (protocol 0.9.9)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.10)\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
@@ -615,7 +639,7 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
                         get_header("x-client-id").as_deref(),
                         Some("c84f92a17b0e3d41")
                     );
-                    let json = r#"{"online":true,"min_exe_version":"1.0.0","poll_interval_sec":10,"market_name":"DSA Community Market","api_version":"2.0.0","market_logo_url":"/assets/community-logo.png"}"#;
+                    let json = r#"{"online":true,"min_exe_version":"0.9.9","recommended_exe_version":"1.0.2","poll_interval_sec":10,"market_name":"DSA Community Market","api_version":"2.0.0","market_logo_url":"/assets/community-logo.png"}"#;
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                         json.len(),
@@ -730,7 +754,8 @@ fn fastapi_backend_honors_openapi_v2_etag_304_transactions_and_401() {
     // Step 0: Handshake
     let hs = client.check_status().unwrap();
     assert!(hs.online);
-    assert_eq!(hs.min_exe_version, "1.0.0");
+    assert_eq!(hs.min_exe_version, "0.9.9");
+    assert_eq!(hs.latest_exe_version.as_deref(), Some("1.0.2"));
     assert_eq!(hs.market_name, "DSA Community Market");
     assert_eq!(hs.api_version, "2.0.0");
     assert_eq!(
@@ -1369,12 +1394,12 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.10\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
                             ),
-                            _ => "{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"1.0.0\",\"branding_tier\":0,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":false}".to_string(),
+                            _ => "{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":0,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":false}".to_string(),
                         };
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -1520,6 +1545,14 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
+    assert!(xml_a.contains("<version>0.9.9</version>"));
+    assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
+    assert!(xml_a.contains("<latestVersion>0.9.10</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.10"));
+    assert!(mgr
+        .get_logs()
+        .iter()
+        .any(|l| l.key.as_deref() == Some("logOptionalUpdateAvailable")));
 
     // 2. Add & switch to Token B (Tier 1: Official Market + Custom WebP Logo, NO marketName)
     mgr.add_market_token("token-bravo-tier1", Some("Unser Wappen"))
@@ -1557,6 +1590,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(!xml_b.contains("marketName="));
     assert!(xml_b.contains("hasCustomLogo=\"true\""));
     assert!(xml_b.contains(&format!("logoFile=\"{expected_rel_b}\"")));
+    assert!(!xml_b.contains("<latestVersion>"));
 
     // 3. Switch back to Token A via 1-click profile ID -> MUST reuse cached logos/logo_<hashA>.dds WITHOUT re-downloading!
     mgr.select_active_market_token(Some(id_a.clone())).unwrap();

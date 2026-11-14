@@ -16,8 +16,8 @@ use crate::bridge::l10n::localize_fill_type;
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, is_version_sufficient, parse_incoming_write_xml,
-    prune_market_data_xmls, write_heartbeat_xml, write_market_data_xml, HeartbeatBranding,
-    IncomingPacket,
+    prune_market_data_xmls, write_heartbeat_xml_with_latest, write_market_data_xml,
+    HeartbeatBranding, IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -112,6 +112,7 @@ pub struct BridgeSnapshot {
     pub bridge_path: Option<String>,
     pub exe_version: String,
     pub min_exe_version: String,
+    pub latest_exe_version: Option<String>,
     pub approved_count: usize,
     pub pending_count: usize,
     pub rejected_count: usize,
@@ -230,7 +231,8 @@ impl BridgeManager {
             profile_path: config.fs25_profile_path.clone(),
             bridge_path: None,
             exe_version: PROTOCOL_EXE_VERSION.to_string(),
-            min_exe_version: "1.0.0".to_string(),
+            min_exe_version: "0.9.9".to_string(),
+            latest_exe_version: None,
             approved_count: 0,
             pending_count: 0,
             rejected_count: 0,
@@ -856,6 +858,36 @@ impl BridgeManager {
         self.nudge_signal(WorkerSignal::ForceSyncNow);
     }
 
+    pub fn mock_set_latest_version(&self, latest_version: Option<String>) {
+        if self.get_config().access_tier != AccessTier::Developer {
+            return;
+        }
+        let cleaned = latest_version
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        self.mock_backend
+            .set_simulated_latest_version(cleaned.clone());
+        match cleaned {
+            Some(ver) => {
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logMockLatestVersion",
+                    [("latestVersion", ver.clone())],
+                    format!("Simulation: Optional update version set to v{ver}."),
+                );
+            }
+            None => {
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logMockLatestVersionReset",
+                    [],
+                    "Simulation: Optional update announcement cleared.".to_string(),
+                );
+            }
+        }
+        self.nudge_signal(WorkerSignal::ForceSyncNow);
+    }
+
     /// Loads (or clears when `None`) a local `.png` / `.webp` / `.jpg` / `.dds` image as a simulated
     /// Community Market logo in Developer Mock mode.
     pub fn mock_set_community_logo(
@@ -1276,7 +1308,9 @@ fn run_bridge_worker(
     }
 
     let mut poll_interval = Duration::from_secs(10);
-    let mut min_version = "1.0.0".to_string();
+    let mut min_version = "0.9.9".to_string();
+    let mut latest_version: Option<String> = None;
+    let mut announced_optional_version: Option<String> = None;
     let mut is_connected = false;
     let mut version_ok = true;
 
@@ -1351,7 +1385,17 @@ fn run_bridge_worker(
             }
             match status_res {
                 Ok(hs) => {
-                    min_version = hs.min_exe_version.clone();
+                    let next_min_version = hs.min_exe_version.clone();
+                    let next_latest_version = hs
+                        .latest_exe_version
+                        .clone()
+                        .map(|v| v.trim().to_string())
+                        .filter(|v| !v.is_empty());
+                    let changed_versions = min_version != next_min_version
+                        || latest_version != next_latest_version;
+
+                    min_version = next_min_version;
+                    latest_version = next_latest_version;
                     poll_interval = Duration::from_secs(hs.poll_interval_sec.clamp(2, 120));
                     version_ok = is_version_sufficient(PROTOCOL_EXE_VERSION, &min_version);
                     let next_connected = hs.online && version_ok;
@@ -1403,6 +1447,33 @@ fn run_bridge_worker(
                                 "Market temporarily offline.".to_string(),
                             ),
                             _ => {}
+                        }
+                    }
+
+                    if next_connected {
+                        if let Some(ref lat) = latest_version {
+                            if !is_version_sufficient(PROTOCOL_EXE_VERSION, lat) {
+                                if announced_optional_version.as_deref() != Some(lat.as_str()) {
+                                    announced_optional_version = Some(lat.clone());
+                                    push_i18n_log_shared(
+                                        &shared,
+                                        &app_handle,
+                                        LogLevel::Info,
+                                        "logOptionalUpdateAvailable",
+                                        [
+                                            ("latestVersion", lat.clone()),
+                                            ("currentVersion", PROTOCOL_EXE_VERSION.to_string()),
+                                        ],
+                                        format!(
+                                            "Optional app update available: v{lat} (installed: v{PROTOCOL_EXE_VERSION}) – online trading continues normally."
+                                        ),
+                                    );
+                                }
+                            } else {
+                                announced_optional_version = None;
+                            }
+                        } else {
+                            announced_optional_version = None;
                         }
                     }
 
@@ -1472,6 +1543,7 @@ fn run_bridge_worker(
                         snap.market_logo_file = next_branding.logo_file.clone();
                         snap.api_version = Some(hs.api_version);
                         snap.min_exe_version = min_version.clone();
+                        snap.latest_exe_version = latest_version.clone();
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = if !version_ok {
@@ -1481,7 +1553,7 @@ fn run_bridge_worker(
                         };
                     });
 
-                    if changed_conn || changed_branding {
+                    if changed_conn || changed_branding || changed_versions {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
                 }
@@ -1537,12 +1609,13 @@ fn run_bridge_worker(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             last_heartbeat = Instant::now();
             let hb_connected = is_connected && version_ok;
-            match write_heartbeat_xml(
+            match write_heartbeat_xml_with_latest(
                 &paths.staging_dir,
                 &paths.online_xml_file,
                 hb_connected,
                 PROTOCOL_EXE_VERSION,
                 &min_version,
+                latest_version.as_deref(),
                 hb_connected.then_some(&active_branding),
             ) {
                 Ok(()) if hb_connected => {

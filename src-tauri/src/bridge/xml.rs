@@ -177,14 +177,41 @@ pub fn write_heartbeat_xml(
     min_version: &str,
     branding: Option<&HeartbeatBranding>,
 ) -> Result<(), String> {
+    write_heartbeat_xml_with_latest(
+        staging_dir,
+        online_xml_path,
+        is_connected,
+        exe_version,
+        min_version,
+        None,
+        branding,
+    )
+}
+
+/// Atomically writes `globalMarketOnline.xml` including an optional non-blocking `<latestVersion>`
+/// ("nice-to-have" server update announcement alongside mandatory `<minVersion>`).
+pub fn write_heartbeat_xml_with_latest(
+    staging_dir: &Path,
+    online_xml_path: &Path,
+    is_connected: bool,
+    exe_version: &str,
+    min_version: &str,
+    latest_version: Option<&str>,
+    branding: Option<&HeartbeatBranding>,
+) -> Result<(), String> {
     let timestamp = now_unix_secs();
     let connected_str = if is_connected { "true" } else { "false" };
     let ver_escaped = escape(exe_version);
     let min_escaped = escape(if min_version.trim().is_empty() {
-        "1.0.0"
+        "0.9.9"
     } else {
-        min_version
+        min_version.trim()
     });
+    let latest_line = latest_version
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("    <latestVersion>{}</latestVersion>\n", escape(v)))
+        .unwrap_or_default();
 
     let effective = if is_connected {
         branding.map(HeartbeatBranding::normalized).unwrap_or_default()
@@ -229,7 +256,7 @@ pub fn write_heartbeat_xml(
 <globalMarketOnline {root_attrs}>\n\
     <version>{ver_escaped}</version>\n\
     <minVersion>{min_escaped}</minVersion>\n\
-</globalMarketOnline>\n"
+{latest_line}</globalMarketOnline>\n"
     );
 
     atomic_write_utf8_no_bom(staging_dir, online_xml_path, &xml)

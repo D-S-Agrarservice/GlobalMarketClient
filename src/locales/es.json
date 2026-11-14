@@ -189,5 +189,14 @@
   "logTokenRemoved": "Clave guardada eliminada ({hint}).",
   "toastTokenAdded": "Clave guardada y activada.",
   "toastTokenRemoved": "Clave eliminada.",
-  "toastMarketSwitched": "Mercado cambiado."
+  "toastMarketSwitched": "Mercado cambiado.",
+  "betaBadge": "BETA",
+  "optionalUpdateTitle": "Actualización opcional disponible: v{version}",
+  "optionalUpdateDesc": "Se recomienda la versión v{version} (instalada: v{currentVersion}). El comercio en línea sigue activo con normalidad — actualiza cuando quieras.",
+  "optionalUpdateDismissTitle": "Ocultar aviso durante esta sesión",
+  "logOptionalUpdateAvailable": "Actualización opcional disponible: v{latestVersion} (instalada: v{currentVersion}) – el comercio en línea continúa con normalidad.",
+  "mockBtnOptVerOn": "Probar act. opcional",
+  "mockBtnOptVerOff": "Quitar act. opcional",
+  "logMockLatestVersion": "Simulación: Actualización opcional establecida en v{latestVersion}.",
+  "logMockLatestVersionReset": "Simulación: Actualización opcional desactivada."
 }

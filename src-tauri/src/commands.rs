@@ -10,6 +10,7 @@ use tauri::{AppHandle, State};
 pub struct AppInfo {
     pub app_version: &'static str,
     pub protocol_version: &'static str,
+    pub is_beta: bool,
     pub platform: &'static str,
 }
 
@@ -18,6 +19,7 @@ pub fn get_app_info() -> AppInfo {
     AppInfo {
         app_version: env!("CARGO_PKG_VERSION"),
         protocol_version: crate::PROTOCOL_EXE_VERSION,
+        is_beta: crate::IS_BETA_BUILD,
         platform: std::env::consts::OS,
     }
 }
@@ -146,6 +148,11 @@ pub fn mock_set_offline(offline: bool, bridge: State<'_, BridgeManager>) {
 #[tauri::command]
 pub fn mock_set_min_version(min_version: String, bridge: State<'_, BridgeManager>) {
     bridge.mock_set_min_version(min_version);
+}
+
+#[tauri::command]
+pub fn mock_set_latest_version(latest_version: Option<String>, bridge: State<'_, BridgeManager>) {
+    bridge.mock_set_latest_version(latest_version);
 }
 
 #[tauri::command]

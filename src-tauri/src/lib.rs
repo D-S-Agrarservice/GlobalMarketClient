@@ -12,6 +12,10 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// Standard 3-part SemVer protocol version (`MAJOR.MINOR.PATCH`) reported in `globalMarketOnline.xml`.
 pub const PROTOCOL_EXE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Flags pre-release Beta builds (`0.9.x`) across UI badges, window titles, and diagnostic reports
+/// while keeping `Cargo.toml` / `tauri.conf.json` strictly numeric (`0.9.9`) for Windows MSI/NSIS & Lua SemVer parsing.
+pub const IS_BETA_BUILD: bool = true;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -87,6 +91,7 @@ pub fn run() {
             commands::mock_approve_pending,
             commands::mock_set_offline,
             commands::mock_set_min_version,
+            commands::mock_set_latest_version,
             commands::mock_set_community_logo,
             commands::mock_set_branding_tier,
         ])

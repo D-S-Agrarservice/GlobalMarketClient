@@ -46,7 +46,11 @@ pub fn format_brand_title(game_edition: Option<&str>) -> String {
 }
 
 fn format_window_and_tray_title(game_edition: Option<&str>) -> String {
-    format!("{} – D-S-Agrarservice", format_brand_title(game_edition))
+    if crate::IS_BETA_BUILD {
+        format!("{} – D-S-Agrarservice (Beta)", format_brand_title(game_edition))
+    } else {
+        format!("{} – D-S-Agrarservice", format_brand_title(game_edition))
+    }
 }
 
 fn tray_labels(lang: &str) -> TrayLabels {

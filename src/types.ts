@@ -16,6 +16,7 @@ export type LogLevel = "info" | "success" | "warn" | "error";
 export interface AppInfo {
   appVersion: string;
   protocolVersion: string;
+  isBeta: boolean;
   platform: string;
 }
 
@@ -61,6 +62,7 @@ export interface BridgeSnapshot {
   bridgePath: string | null;
   exeVersion: string;
   minExeVersion: string;
+  latestExeVersion: string | null;
   approvedCount: number;
   pendingCount: number;
   rejectedCount: number;
