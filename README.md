@@ -73,7 +73,14 @@ flowchart LR
    - **macOS (Apple Silicon & Intel Universal):** `GlobalMarketClient_x.x.x_universal.dmg`
    - **Linux / Steam Deck (x64):** `.AppImage` / `.deb` / `.rpm`
 2. Launch **`GlobalMarketClient`** before or while playing — your Farming Simulator profile folder is detected automatically *(or pick your `FarmingSimulator2025` folder once via **Select folder…**)*.
-3. Once the status indicator turns **Green (`Online & Connected`)**, your in-game GlobalMarket automatically switches to live online trading. Closing the window (`✕`) minimizes the client quietly to the system tray; use **Quit** to exit completely.
+3. Once the status indicator turns **Green (`Online & Connected`)**, your in-game GlobalMarket automatically switches to live online trading. You can pause or resume the online connection anytime via the **Connect / Disconnect** switch in the top-right header or system tray (and configure automatic vs. manual startup connection in **Settings**). Closing the window (`✕`) minimizes the client quietly to the system tray; use **Quit** to exit completely.
+
+#### First-Time Launch Notes (Windows SmartScreen & macOS Gatekeeper)
+
+Because `GlobalMarketClient` is a free community modding tool without paid commercial Microsoft Authenticode or Apple Store / Developer ID code-signing certificates, your operating system will show a one-time prompt on first install/launch. All official installers are built transparently and reproducibly directly from this public source repository via [GitHub Actions](https://github.com/D-S-Agrarservice/GlobalMarketClient/actions).
+
+* **Windows 10 / 11 (Microsoft Defender SmartScreen):** When running `GlobalMarketClient_x.x.x_x64-setup.exe`, Windows may display *"Windows protected your PC"* (*Unknown publisher*). Click **More info** → **Run anyway** to start the user-space installer.
+* **macOS (Gatekeeper / Privacy & Security):** Because no Apple App Store / Developer ID certificate is attached, macOS blocks the first launch after dragging `GlobalMarketClient.app` to `Applications`. Attempt to open the app once and close the prompt with **Done** / **Cancel** *(do **not** click Move to Trash)*, then open **System Settings → Privacy & Security**, scroll down to the **Security** section, and explicitly allow the app via **Open Anyway**. Subsequent launches start normally.
 
 ---
 

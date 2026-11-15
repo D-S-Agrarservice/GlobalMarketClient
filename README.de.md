@@ -73,7 +73,14 @@ flowchart LR
    - **macOS (Apple Silicon & Intel Universal):** `GlobalMarketClient_x.x.x_universal.dmg`
    - **Linux / Steam Deck (x64):** `.AppImage` / `.deb` / `.rpm`
 2. Starte **`GlobalMarketClient`** vor oder während des Spiels – dein Landwirtschafts-Simulator-Profilordner wird im Normalfall automatisch erkannt *(andernfalls einmalig über **Ordner wählen…** deinen `FarmingSimulator2025`-Profilordner auswählen)*.
-3. Sobald die Status-Ampel auf **Grün (`Online & Verbunden`)** springt, wechselt dein Markt im Spiel von selbst in den Live-Online-Handel. Ein Klick auf **`✕`** minimiert das Fenster platzsparend in den System-Tray; über **Beenden** schließt du die App komplett.
+3. Sobald die Status-Ampel auf **Grün (`Online & Verbunden`)** springt, wechselt dein Markt im Spiel von selbst in den Live-Online-Handel. Über den Schalter **Verbinden / Trennen** oben rechts oder im System-Tray lässt sich die Online-Verbindung jederzeit pausieren (in den **Einstellungen** ist zudem wählbar, ob der Client beim Start automatisch verbindet oder getrennt startet). Ein Klick auf **`✕`** minimiert das Fenster platzsparend in den System-Tray; über **Beenden** schließt du die App komplett.
+
+#### Hinweise zum ersten Start (Windows SmartScreen & macOS Gatekeeper)
+
+Da der `GlobalMarketClient` ein kostenloses Community-Projekt ohne kostenpflichtige kommerzielle Microsoft-Authenticode- bzw. Apple-AppStore-/Developer-Zertifikate ist, erscheint beim allerersten Start eine einmalige Sicherheitsrückfrage des Betriebssystems. Sämtliche offiziellen Pakete werden transparent und öffentlich einsehbar direkt aus diesem Quellcode per [GitHub Actions](https://github.com/D-S-Agrarservice/GlobalMarketClient/actions) gebaut.
+
+* **Windows 10 / 11 (Microsoft Defender SmartScreen):** Erscheint beim Ausführen der `GlobalMarketClient_x.x.x_x64-setup.exe` das blaue Fenster *„Der Computer wurde durch Windows geschützt“* (*Unbekannter Herausgeber*), klicke auf **„Weitere Informationen“** und anschließend unten auf **„Trotzdem ausführen“**.
+* **macOS (Gatekeeper / Datenschutz & Sicherheit):** Da das kostenpflichtige Apple-AppStore-/Developer-Zertifikat fehlt, blockiert macOS den ersten Start nach dem Kopieren in den `Programme`-Ordner zunächst. Versuche `GlobalMarketClient` einmal zu öffnen, schließe die Meldung mit **„Fertig“** bzw. **„Abbrechen“** *(nicht in den Papierkorb legen!)* und lasse die App anschließend unter **Systemeinstellungen → Datenschutz & Sicherheit** unten im Bereich **Sicherheit** ausdrücklich über **„Trotzdem öffnen“** zu. Ab dem zweiten Start öffnet die App ohne Rückfrage.
 
 ---
 
