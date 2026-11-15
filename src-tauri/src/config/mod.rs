@@ -80,7 +80,7 @@ pub struct AppConfig {
     pub access_tier: AccessTier,
     /// Resolved FS25 profile directory (or custom parent folder containing `modSettings/FS25_GlobalMarket`).
     pub fs25_profile_path: Option<String>,
-    /// UI language code (`de`, `en`, `fr`, `es`, `pl`). Fallback is always `en`.
+    /// UI language code (`de`, `en`, `fr`, `es`, `pl`, `it`, `nl`, `cz`, `pt`, `hu`, `da`, `sv`, `ro`, `tr`, `ru`, `uk`). Fallback is always `en`.
     pub language: String,
     /// Minimize window to the system tray instead of quitting when clicking the window close button.
     pub minimize_to_tray: bool,
@@ -189,9 +189,35 @@ pub fn normalize_language(lang: &str) -> String {
     let lower = lang.trim().to_ascii_lowercase();
     let short = lower.split(['-', '_']).next().unwrap_or("en");
     match short {
-        "de" | "en" | "fr" | "es" | "pl" => short.to_string(),
+        "de" | "en" | "fr" | "es" | "pl" | "it" | "nl" | "cz" | "pt" | "hu" | "da" | "sv"
+        | "ro" | "tr" | "ru" | "uk" => short.to_string(),
+        "cs" => "cz".to_string(),
+        "br" => "pt".to_string(),
+        "dk" => "da".to_string(),
+        "se" => "sv".to_string(),
+        "ua" => "uk".to_string(),
         _ => "en".to_string(),
     }
+}
+
+/// Compares two language tags (such as FS25 `whitelist.lang` vs UI `config.language`),
+/// treating ISO/GIANTS equivalents (`cs`/`cz`, `br`/`pt`, `dk`/`da`, `se`/`sv`, `ua`/`uk`) as equal
+/// without collapsing unsupported languages (e.g. `jp`) to `en`.
+pub fn languages_equivalent(a: &str, b: &str) -> bool {
+    fn canonical(raw: &str) -> String {
+        let lower = raw.trim().to_ascii_lowercase();
+        let short = lower.split(['-', '_']).next().unwrap_or("");
+        match short {
+            "cs" => "cz".to_string(),
+            "br" => "pt".to_string(),
+            "dk" => "da".to_string(),
+            "se" => "sv".to_string(),
+            "ua" => "uk".to_string(),
+            other => other.to_string(),
+        }
+    }
+    let ca = canonical(a);
+    !ca.is_empty() && ca == canonical(b)
 }
 
 /// Verifies an access key against salted 10,000-round 128-bit digests so plaintext keys

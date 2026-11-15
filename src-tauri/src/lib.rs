@@ -13,7 +13,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 pub const PROTOCOL_EXE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Flags pre-release Beta builds (`0.9.x`) across UI badges, window titles, and diagnostic reports
-/// while keeping `Cargo.toml` / `tauri.conf.json` strictly numeric (`0.9.9`) for Windows MSI/NSIS & Lua SemVer parsing.
+/// while keeping `Cargo.toml` / `tauri.conf.json` strictly numeric (`0.9.10`) for Windows MSI/NSIS & Lua SemVer parsing.
 pub const IS_BETA_BUILD: bool = true;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

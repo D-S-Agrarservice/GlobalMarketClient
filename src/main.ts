@@ -17,6 +17,7 @@ import {
   getLocale,
   LANGUAGE_OPTIONS,
   localizeFillTypeCode,
+  normalizeLocale,
   setLocale,
   t,
 } from "./i18n";
@@ -73,8 +74,8 @@ interface UiState {
 
 const state: UiState = {
   info: {
-    appVersion: "0.9.9",
-    protocolVersion: "0.9.9",
+    appVersion: "0.9.10",
+    protocolVersion: "0.9.10",
     isBeta: true,
     platform: "desktop",
   },
@@ -105,7 +106,7 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "0.9.9",
+    exeVersion: "0.9.10",
     minExeVersion: "0.9.9",
     latestExeVersion: null,
     approvedCount: 0,
@@ -1827,15 +1828,39 @@ function renderCreditsModalHtml(): string {
             </div>
           </div>
 
-          <!-- Special Mention: kevink98 -->
+          <!-- Historic Roots & Pioneers: Susi & Wingi (FS15) + kevink98 (FS17/FS19) -->
           <div class="space-y-1.5">
             <h3 class="text-[11px] font-semibold uppercase tracking-wider text-[#ff9600]">
               ★ ${escapeHtml(t("creditsSpecialSection"))}
             </h3>
-            <div class="rounded-lg border border-[#ff9600]/40 bg-[#ff9600]/10 p-3.5">
-              <p class="font-bold text-sm text-amber-200">kevink98</p>
+            <div class="space-y-2">
+              <div class="rounded-lg border border-amber-500/25 bg-[#18181b] p-3">
+                <p class="font-bold text-xs text-amber-200">${escapeHtml(t("creditsPioneersFs15Title"))}</p>
+                <p class="text-zinc-300 mt-0.5 leading-relaxed">
+                  ${escapeHtml(t("creditsPioneersFs15"))}
+                </p>
+              </div>
+              <div class="rounded-lg border border-[#ff9600]/40 bg-[#ff9600]/10 p-3">
+                <p class="font-bold text-xs text-amber-200">${escapeHtml(t("creditsSpecialKevinkTitle"))}</p>
+                <p class="text-zinc-200 mt-0.5 leading-relaxed">
+                  ${escapeHtml(t("creditsSpecialKevink"))}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Ground-Up Redevelopment & AI Transparency -->
+          <div class="space-y-1.5">
+            <h3 class="text-[11px] font-semibold uppercase tracking-wider text-sky-300">
+              ⚡ ${escapeHtml(t("creditsAiSection"))}
+            </h3>
+            <div class="rounded-lg border border-sky-500/30 bg-sky-500/10 p-3">
+              <div class="flex items-center justify-between gap-2 flex-wrap">
+                <p class="font-bold text-xs text-sky-200">${escapeHtml(t("creditsAiTitle"))}</p>
+                <span class="rounded border border-sky-400/30 bg-zinc-900/70 px-1.5 py-0.2 font-mono text-[10px] text-sky-300">Rust + Tauri v2 + TypeScript</span>
+              </div>
               <p class="text-zinc-200 mt-1 leading-relaxed">
-                ${escapeHtml(t("creditsSpecialKevink"))}
+                ${escapeHtml(t("creditsAiBody"))}
               </p>
             </div>
           </div>
@@ -2077,11 +2102,7 @@ function renderActiveModalHtml(): string {
 }
 
 function normalizeLangForForm(lang: string): string {
-  const lower = lang.toLowerCase();
-  if (lower === "de" || lower === "en" || lower === "fr" || lower === "es" || lower === "pl") {
-    return lower;
-  }
-  return "en";
+  return normalizeLocale(lang);
 }
 
 function updateToastBanner(): void {
@@ -2444,7 +2465,7 @@ function bindDashboardEvents(): void {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
       const targetVer = state.mockLockedMinVersion
         ? "9.9.9"
-        : state.info.protocolVersion || "0.9.9";
+        : state.info.protocolVersion || "0.9.10";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
@@ -2460,7 +2481,7 @@ function bindDashboardEvents(): void {
       if (state.mockOptionalUpdate) {
         state.dismissedOptionalVersion = null;
       }
-      const targetOpt = state.mockOptionalUpdate ? "0.9.10" : null;
+      const targetOpt = state.mockOptionalUpdate ? "0.9.11" : null;
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });

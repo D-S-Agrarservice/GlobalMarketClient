@@ -29,9 +29,9 @@ use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
 };
 use globalmarket_client_lib::config::{
-    digest_access_key, qualify_transaction_id, verify_access_key, verify_access_key_with_digests,
-    AccessTier, AppConfig, BackendMode, DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL,
-    OFFICIAL_LOGO_CDN_URL,
+    digest_access_key, languages_equivalent, normalize_language, qualify_transaction_id,
+    verify_access_key, verify_access_key_with_digests, AccessTier, AppConfig, BackendMode,
+    DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL, OFFICIAL_LOGO_CDN_URL,
 };
 use image::codecs::webp::WebPEncoder;
 use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
@@ -472,9 +472,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "0.9.9".to_string(),
+        exe_version: "0.9.10".to_string(),
         min_exe_version: "0.9.9".to_string(),
-        latest_exe_version: Some("0.9.10".to_string()),
+        latest_exe_version: Some("0.9.11".to_string()),
         approved_count: 10,
         pending_count: 2,
         rejected_count: 0,
@@ -512,8 +512,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
-    assert!(report.contains("app_version: \"0.9.9-beta (protocol 0.9.9)\""));
-    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.10)\""));
+    assert!(report.contains("app_version: \"0.9.10-beta (protocol 0.9.10)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.11)\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
@@ -990,12 +990,41 @@ fn access_tier_keys_and_five_language_crop_localization_work() {
 
     let _ = fs::remove_dir_all(&dir);
 
-    // 5-language basegame & production fillType translation (sourced from official FS25 l10n)
+    // 16-language basegame & production fillType translation (sourced from official FS25 l10n)
     assert_eq!(localize_fill_type("WHEAT", "de"), Some("Weizen"));
     assert_eq!(localize_fill_type("WHEAT", "en"), Some("Wheat"));
     assert_eq!(localize_fill_type("WHEAT", "fr"), Some("Blé"));
     assert_eq!(localize_fill_type("WHEAT", "es"), Some("Trigo"));
     assert_eq!(localize_fill_type("WHEAT", "pl"), Some("Pszenica"));
+    assert_eq!(localize_fill_type("WHEAT", "it"), Some("Frumento"));
+    assert_eq!(localize_fill_type("WHEAT", "nl"), Some("Tarwe"));
+    assert_eq!(localize_fill_type("WHEAT", "cz"), Some("Pšenice"));
+    assert_eq!(localize_fill_type("WHEAT", "cs-CZ"), Some("Pšenice"));
+    assert_eq!(localize_fill_type("WHEAT", "pt"), Some("Trigo"));
+    assert_eq!(localize_fill_type("WHEAT", "br"), Some("Trigo"));
+    assert_eq!(localize_fill_type("WHEAT", "hu"), Some("Búza"));
+    assert_eq!(localize_fill_type("WHEAT", "da"), Some("Hvede"));
+    assert_eq!(localize_fill_type("WHEAT", "sv"), Some("Vete"));
+    assert_eq!(localize_fill_type("WHEAT", "ro"), Some("Grâu"));
+    assert_eq!(localize_fill_type("WHEAT", "tr"), Some("Buğday"));
+    assert_eq!(localize_fill_type("WHEAT", "ru"), Some("Пшеница"));
+    assert_eq!(localize_fill_type("WHEAT", "uk"), Some("Пшениця"));
+
+    // Language normalization & GIANTS/ISO code equivalence
+    for code in [
+        "de", "en", "fr", "es", "pl", "it", "nl", "cz", "pt", "hu", "da", "sv", "ro", "tr", "ru",
+        "uk",
+    ] {
+        assert_eq!(normalize_language(code), code);
+    }
+    assert_eq!(normalize_language("cs-CZ"), "cz");
+    assert_eq!(normalize_language("pt-BR"), "pt");
+    assert_eq!(normalize_language("br"), "pt");
+    assert_eq!(normalize_language("ua"), "uk");
+    assert_eq!(normalize_language("xx-UNKNOWN"), "en");
+    assert!(languages_equivalent("br", "pt"));
+    assert!(languages_equivalent("cs", "cz"));
+    assert!(!languages_equivalent("jp", "en"));
 
     assert_eq!(localize_fill_type("RAISINS", "de"), Some("Rosinen"));
     assert_eq!(localize_fill_type("RAISINS", "en"), Some("Raisins"));
@@ -1472,7 +1501,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.10\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.11\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
                                 "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
@@ -1623,10 +1652,10 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
-    assert!(xml_a.contains("<version>0.9.9</version>"));
+    assert!(xml_a.contains("<version>0.9.10</version>"));
     assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
-    assert!(xml_a.contains("<latestVersion>0.9.10</latestVersion>"));
-    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.10"));
+    assert!(xml_a.contains("<latestVersion>0.9.11</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.11"));
     assert!(mgr
         .get_logs()
         .iter()

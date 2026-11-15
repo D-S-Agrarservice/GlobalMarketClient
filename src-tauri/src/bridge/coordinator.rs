@@ -2119,7 +2119,7 @@ fn resolve_fill_type_code(
     active_lang: &str,
 ) -> String {
     let wl_matches_ui = whitelist_lang
-        .map(|wl| wl.eq_ignore_ascii_case(active_lang))
+        .map(|wl| crate::config::languages_equivalent(wl, active_lang))
         .unwrap_or(false);
 
     if wl_matches_ui {

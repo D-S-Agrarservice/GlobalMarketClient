@@ -71,6 +71,50 @@ fn tray_labels(lang: &str) -> TrayLabels {
             show_window: "Otwórz okno",
             quit_app: "Zakończ GlobalMarket",
         },
+        "it" => TrayLabels {
+            show_window: "Apri finestra",
+            quit_app: "Esci da GlobalMarket",
+        },
+        "nl" => TrayLabels {
+            show_window: "Venster openen",
+            quit_app: "GlobalMarket afsluiten",
+        },
+        "cz" | "cs" => TrayLabels {
+            show_window: "Otevřít okno",
+            quit_app: "Ukončit GlobalMarket",
+        },
+        "pt" | "br" => TrayLabels {
+            show_window: "Abrir janela",
+            quit_app: "Sair do GlobalMarket",
+        },
+        "hu" => TrayLabels {
+            show_window: "Ablak megnyitása",
+            quit_app: "Kilépés a GlobalMarketből",
+        },
+        "da" | "dk" => TrayLabels {
+            show_window: "Åbn vindue",
+            quit_app: "Afslut GlobalMarket",
+        },
+        "sv" | "se" => TrayLabels {
+            show_window: "Öppna fönster",
+            quit_app: "Avsluta GlobalMarket",
+        },
+        "ro" => TrayLabels {
+            show_window: "Deschide fereastra",
+            quit_app: "Ieșire din GlobalMarket",
+        },
+        "tr" => TrayLabels {
+            show_window: "Pencereyi Aç",
+            quit_app: "GlobalMarket'ten Çık",
+        },
+        "ru" => TrayLabels {
+            show_window: "Открыть окно",
+            quit_app: "Выйти из GlobalMarket",
+        },
+        "uk" | "ua" => TrayLabels {
+            show_window: "Відкрити вікно",
+            quit_app: "Вийти з GlobalMarket",
+        },
         _ => TrayLabels {
             show_window: "Open Window",
             quit_app: "Quit GlobalMarket",
@@ -214,6 +258,50 @@ pub fn send_great_demand_os_notification(
         "pl" => (
             format!("{brand} – Duży popyt!"),
             format!("{item_title}: Teraz +{bonus_percent}% premii za sprzedaż na rynku globalnym!"),
+        ),
+        "it" => (
+            format!("{brand} – Grande richiesta!"),
+            format!("{item_title}: Ora +{bonus_percent}% di bonus vendita sul mercato globale!"),
+        ),
+        "nl" => (
+            format!("{brand} – Grote vraag!"),
+            format!("{item_title}: Nu +{bonus_percent}% verkoopbonus op de wereldmarkt!"),
+        ),
+        "cz" | "cs" => (
+            format!("{brand} – Vysoká poptávka!"),
+            format!("{item_title}: Nyní +{bonus_percent}% prodejní bonus na globálním trhu!"),
+        ),
+        "pt" | "br" => (
+            format!("{brand} – Grande demanda!"),
+            format!("{item_title}: Agora +{bonus_percent}% de bônus de venda no mercado global!"),
+        ),
+        "hu" => (
+            format!("{brand} – Magas kereslet!"),
+            format!("{item_title}: Most +{bonus_percent}% eladási bónusz a globális piacon!"),
+        ),
+        "da" | "dk" => (
+            format!("{brand} – Stor efterspørgsel!"),
+            format!("{item_title}: Nu +{bonus_percent}% salgsbonus på det globale marked!"),
+        ),
+        "sv" | "se" => (
+            format!("{brand} – Stor efterfrågan!"),
+            format!("{item_title}: Nu +{bonus_percent}% säljbonus på den globala marknaden!"),
+        ),
+        "ro" => (
+            format!("{brand} – Cerere mare!"),
+            format!("{item_title}: Acum +{bonus_percent}% bonus de vânzare pe piața globală!"),
+        ),
+        "tr" => (
+            format!("{brand} – Yüksek Talep!"),
+            format!("{item_title}: Küresel pazarda şimdi +%{bonus_percent} satış bonusu!"),
+        ),
+        "ru" => (
+            format!("{brand} – Высокий спрос!"),
+            format!("{item_title}: Сейчас +{bonus_percent}% бонус к продаже на глобальном рынке!"),
+        ),
+        "uk" | "ua" => (
+            format!("{brand} – Високий попит!"),
+            format!("{item_title}: Зараз +{bonus_percent}% бонус до продажу на глобальному ринку!"),
         ),
         _ => (
             format!("{brand} – Great Demand!"),

@@ -1,4 +1,20 @@
-export type SupportedLocale = "de" | "en" | "fr" | "es" | "pl";
+export type SupportedLocale =
+  | "de"
+  | "en"
+  | "fr"
+  | "es"
+  | "pl"
+  | "it"
+  | "nl"
+  | "cz"
+  | "pt"
+  | "hu"
+  | "da"
+  | "sv"
+  | "ro"
+  | "tr"
+  | "ru"
+  | "uk";
 
 export type BackendMode = "mock" | "live";
 
