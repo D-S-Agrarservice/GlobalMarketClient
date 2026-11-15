@@ -17,7 +17,7 @@ use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, Bri
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, is_version_sufficient,
     parse_incoming_write_xml, prune_market_data_xmls, write_heartbeat_xml_with_latest,
-    write_market_data_xml, HeartbeatBranding, IncomingPacket,
+    write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -50,6 +50,7 @@ const STOP_RESTART_PRESERVE_HEARTBEAT: u8 = 2;
 #[serde(rename_all = "camelCase")]
 pub enum BridgeConnectionState {
     PathMissing,
+    Disconnected,
     Connecting,
     Online,
     BackendOffline,
@@ -99,6 +100,7 @@ pub struct HeartbeatTickPayload {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeSnapshot {
     pub state: BridgeConnectionState,
+    pub connection_enabled: bool,
     /// Dynamically detected Farming Simulator edition (e.g. `"FS25"`, `"FS28"`), or `None` before selection.
     pub game_edition: Option<String>,
     pub access_tier: AccessTier,
@@ -141,6 +143,7 @@ struct SharedState {
     config: AppConfig,
     config_file: PathBuf,
     token_vault: TokenVault,
+    connection_enabled: bool,
     snapshot: BridgeSnapshot,
     logs: VecDeque<LogEntry>,
     extended_expires_at: Option<Instant>,
@@ -200,6 +203,7 @@ impl BridgeManager {
             let _ = config.save_to_file(&config_file);
         }
 
+        let initial_connection_enabled = config.auto_connect_on_launch;
         let initial_raw_token = config
             .active_token_id
             .as_deref()
@@ -216,7 +220,12 @@ impl BridgeManager {
         let mock_backend = Arc::new(LocalMockBackend::new());
 
         let initial_snapshot = BridgeSnapshot {
-            state: BridgeConnectionState::PathMissing,
+            state: if initial_connection_enabled {
+                BridgeConnectionState::PathMissing
+            } else {
+                BridgeConnectionState::Disconnected
+            },
+            connection_enabled: initial_connection_enabled,
             game_edition: None,
             access_tier: config.access_tier,
             backend_mode: config.backend_mode,
@@ -256,6 +265,7 @@ impl BridgeManager {
                 config,
                 config_file,
                 token_vault,
+                connection_enabled: initial_connection_enabled,
                 snapshot: initial_snapshot,
                 logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
                 extended_expires_at: None,
@@ -269,6 +279,14 @@ impl BridgeManager {
         };
 
         mgr.restart_worker();
+        if !initial_connection_enabled {
+            mgr.push_i18n_log(
+                LogLevel::Info,
+                "logStartedDisconnected",
+                [],
+                "Started in disconnected mode – click 'Connect' in the top right to start market synchronization.".to_string(),
+            );
+        }
         mgr
     }
 
@@ -293,6 +311,60 @@ impl BridgeManager {
             .lock()
             .map(|s| s.config.clone())
             .unwrap_or_default()
+    }
+
+    pub fn is_connection_enabled(&self) -> bool {
+        self.shared
+            .lock()
+            .map(|g| g.connection_enabled)
+            .unwrap_or(true)
+    }
+
+    /// Manually connects (`enabled == true`) or disconnects (`enabled == false`) the bridge worker.
+    /// When disconnecting, stops HTTP polling immediately and removes `globalMarketOnline.xml` +
+    /// unread `read/gmDataSync_*.xml` files so FS25 cleanly transitions to local Offline mode.
+    pub fn set_connection_enabled(&self, enabled: bool) -> BridgeSnapshot {
+        let changed = {
+            let Ok(mut guard) = self.shared.lock() else {
+                return self.get_snapshot();
+            };
+            if guard.connection_enabled == enabled {
+                return guard.snapshot.clone();
+            }
+            guard.connection_enabled = enabled;
+            guard.snapshot.connection_enabled = enabled;
+            true
+        };
+
+        if changed {
+            if enabled {
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logConnectingByUser",
+                    [],
+                    "Manual connect requested – starting market synchronization...".to_string(),
+                );
+            } else {
+                self.push_i18n_log(
+                    LogLevel::Info,
+                    "logDisconnectedByUser",
+                    [],
+                    "Disconnected manually – market synchronization paused.".to_string(),
+                );
+            }
+            self.restart_worker();
+            if let Some(ref app) = self.app_handle {
+                let cfg = self.get_config();
+                let snap = self.get_snapshot();
+                crate::tray::update_tray_state(
+                    app,
+                    &cfg.language,
+                    snap.game_edition.as_deref(),
+                    snap.connection_enabled,
+                );
+            }
+        }
+        self.get_snapshot()
     }
 
     /// Sets and validates a manually chosen Farming Simulator folder, persists settings, and restarts the bridge worker.
@@ -1119,7 +1191,14 @@ impl BridgeManager {
     }
 
     fn restart_worker(&self) {
-        let (profile_opt, backend_mode, backend_url, access_tier, active_saved_profile) = {
+        let (
+            profile_opt,
+            backend_mode,
+            backend_url,
+            access_tier,
+            active_saved_profile,
+            connection_enabled,
+        ) = {
             let Ok(guard) = self.shared.lock() else {
                 return;
             };
@@ -1134,16 +1213,23 @@ impl BridgeManager {
                 guard.config.backend_url.clone(),
                 guard.config.access_tier,
                 active_prof,
+                guard.connection_enabled,
             )
         };
 
         let resolved_paths = profile_opt
             .as_deref()
             .map(|raw_profile| resolve_bridge_paths(Path::new(raw_profile)));
-        let preserve_root = resolved_paths
-            .as_ref()
-            .and_then(|res| res.as_ref().ok())
-            .map(|p| p.bridge_root.as_path());
+        // Preserve `globalMarketOnline.xml` only while connected and staying on the exact same bridge folder;
+        // disconnecting (`!connection_enabled`) always performs full cleanup so FS25 transitions cleanly to offline.
+        let preserve_root = if connection_enabled {
+            resolved_paths
+                .as_ref()
+                .and_then(|res| res.as_ref().ok())
+                .map(|p| p.bridge_root.as_path())
+        } else {
+            None
+        };
 
         self.stop_worker_for_restart(preserve_root);
 
@@ -1173,18 +1259,26 @@ impl BridgeManager {
         let Some(paths_res) = resolved_paths else {
             self.update_snapshot(|snap| {
                 snap.state = BridgeConnectionState::PathMissing;
+                snap.connection_enabled = connection_enabled;
                 snap.game_edition = None;
                 snap.access_tier = access_tier;
                 snap.backend_mode = backend_mode;
                 snap.backend_url = backend_url;
+                snap.api_version = None;
                 snap.market_name = default_market_name;
                 snap.branding_tier = 0;
                 snap.is_private_market = false;
                 snap.market_logo_url = None;
                 snap.market_logo_file = None;
                 snap.bridge_path = None;
+                snap.approved_count = 0;
+                snap.pending_count = 0;
+                snap.rejected_count = 0;
+                snap.active_great_demands.clear();
+                snap.active_great_demand_codes.clear();
                 snap.heartbeat_seq = 0;
                 snap.last_heartbeat_unix = None;
+                snap.last_sync_unix = None;
                 snap.last_error =
                     Some("No Farming Simulator profile folder found.".to_string());
             });
@@ -1205,18 +1299,26 @@ impl BridgeManager {
             Err(err) => {
                 self.update_snapshot(|snap| {
                     snap.state = BridgeConnectionState::PathMissing;
+                    snap.connection_enabled = connection_enabled;
                     snap.game_edition = None;
                     snap.access_tier = access_tier;
                     snap.backend_mode = backend_mode;
                     snap.backend_url = backend_url;
+                    snap.api_version = None;
                     snap.market_name = default_market_name;
                     snap.branding_tier = 0;
                     snap.is_private_market = false;
                     snap.market_logo_url = None;
                     snap.market_logo_file = None;
                     snap.bridge_path = None;
+                    snap.approved_count = 0;
+                    snap.pending_count = 0;
+                    snap.rejected_count = 0;
+                    snap.active_great_demands.clear();
+                    snap.active_great_demand_codes.clear();
                     snap.heartbeat_seq = 0;
                     snap.last_heartbeat_unix = None;
+                    snap.last_sync_unix = None;
                     snap.last_error = Some(err.clone());
                 });
                 if let Some(ref app) = self.app_handle {
@@ -1231,19 +1333,20 @@ impl BridgeManager {
             cleanup_bridge_runtime_files(&paths.online_xml_file, &paths.read_dir, &paths.staging_dir);
             self.update_snapshot(|snap| {
                 snap.state = BridgeConnectionState::PathMissing;
+                snap.connection_enabled = connection_enabled;
+                snap.api_version = None;
+                snap.approved_count = 0;
+                snap.pending_count = 0;
+                snap.rejected_count = 0;
+                snap.active_great_demands.clear();
+                snap.active_great_demand_codes.clear();
                 snap.heartbeat_seq = 0;
                 snap.last_heartbeat_unix = None;
+                snap.last_sync_unix = None;
                 snap.last_error = Some(err.clone());
             });
             push_raw_log_shared(&self.shared, &self.app_handle, LogLevel::Error, err);
             return;
-        }
-
-        // Clear any leftover `gmDataSync_*.xml` snapshots from previous sessions before starting fresh.
-        prune_market_data_xmls(&paths.read_dir, 0);
-
-        if let Ok(mut paths_guard) = self.active_paths.lock() {
-            *paths_guard = Some(paths.clone());
         }
 
         let detected_ed = paths.game_edition.clone();
@@ -1256,12 +1359,59 @@ impl BridgeManager {
         } else {
             None
         };
+
+        if !connection_enabled {
+            // Ensure any crash-leftover heartbeat or snapshot files are cleaned up immediately.
+            cleanup_bridge_runtime_files(&paths.online_xml_file, &paths.read_dir, &paths.staging_dir);
+            let (r_cnt, w_cnt) = count_bridge_queues(&paths);
+            self.update_snapshot(|snap| {
+                snap.state = BridgeConnectionState::Disconnected;
+                snap.connection_enabled = false;
+                snap.game_edition = Some(detected_ed.clone());
+                snap.access_tier = access_tier;
+                snap.backend_mode = backend_mode;
+                snap.backend_url = backend_url;
+                snap.api_version = None;
+                snap.market_name = default_market_name;
+                snap.branding_tier = default_mock_tier;
+                snap.is_private_market = matches!(default_mock_tier, 2 | 3);
+                snap.market_logo_url = default_mock_logo;
+                snap.market_logo_file = remembered_logo_dds;
+                snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
+                snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
+                snap.approved_count = 0;
+                snap.pending_count = 0;
+                snap.rejected_count = 0;
+                snap.read_queue_count = r_cnt;
+                snap.write_queue_count = w_cnt;
+                snap.active_great_demands.clear();
+                snap.active_great_demand_codes.clear();
+                snap.heartbeat_seq = 0;
+                snap.last_heartbeat_unix = None;
+                snap.last_sync_unix = None;
+                snap.last_error = None;
+            });
+            if let Some(ref app) = self.app_handle {
+                crate::tray::sync_window_and_tray_edition(app, Some(&detected_ed));
+            }
+            return;
+        }
+
+        // Clear any leftover `gmDataSync_*.xml` snapshots from previous sessions before starting fresh.
+        prune_market_data_xmls(&paths.read_dir, 0);
+
+        if let Ok(mut paths_guard) = self.active_paths.lock() {
+            *paths_guard = Some(paths.clone());
+        }
+
         self.update_snapshot(|snap| {
             snap.state = BridgeConnectionState::Connecting;
+            snap.connection_enabled = true;
             snap.game_edition = Some(detected_ed.clone());
             snap.access_tier = access_tier;
             snap.backend_mode = backend_mode;
             snap.backend_url = backend_url;
+            snap.api_version = None;
             snap.market_name = default_market_name;
             snap.branding_tier = default_mock_tier;
             snap.is_private_market = matches!(default_mock_tier, 2 | 3);
@@ -1269,8 +1419,14 @@ impl BridgeManager {
             snap.market_logo_file = remembered_logo_dds;
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
+            snap.approved_count = 0;
+            snap.pending_count = 0;
+            snap.rejected_count = 0;
+            snap.active_great_demands.clear();
+            snap.active_great_demand_codes.clear();
             snap.heartbeat_seq = 0;
             snap.last_heartbeat_unix = None;
+            snap.last_sync_unix = None;
             snap.last_error = None;
         });
         if let Some(ref app) = self.app_handle {
@@ -1393,6 +1549,7 @@ fn run_bridge_worker(
     let mut initialized_gd_baseline = false;
     let mut active_branding = HeartbeatBranding::default();
     let mut failed_logo_attempts: HashMap<String, Instant> = HashMap::new();
+    let mut pending_branding_sync = false;
 
     let bridge_display = paths.bridge_root.display().to_string();
     push_i18n_log_shared(
@@ -1633,6 +1790,9 @@ fn run_bridge_worker(
                         };
                     });
 
+                    if changed_branding && next_connected {
+                        pending_branding_sync = true;
+                    }
                     if changed_conn || changed_branding || changed_versions {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
@@ -1769,9 +1929,11 @@ fn run_bridge_worker(
                                 &mut last_synced_items,
                                 &mut known_great_demands,
                                 &mut initialized_gd_baseline,
+                                Some(&active_branding),
                                 &shared,
                                 &app_handle,
                             );
+                            pending_branding_sync = false;
                             let (approved, pending, rejected) = count_statuses(&state.items);
                             push_i18n_log_shared(
                                 &shared,
@@ -1869,9 +2031,11 @@ fn run_bridge_worker(
                                 &mut last_synced_items,
                                 &mut known_great_demands,
                                 &mut initialized_gd_baseline,
+                                Some(&active_branding),
                                 &shared,
                                 &app_handle,
                             );
+                            pending_branding_sync = false;
                             last_market_poll = Instant::now();
                         }
                         let _ = fs::remove_file(&xml_path);
@@ -1914,7 +2078,11 @@ fn run_bridge_worker(
         if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
-        if is_connected && (force_sync || last_market_poll.elapsed() >= poll_interval) {
+        if is_connected
+            && (force_sync
+                || (pending_branding_sync && !last_synced_items.is_empty())
+                || last_market_poll.elapsed() >= poll_interval)
+        {
             last_market_poll = Instant::now();
             let market_res = backend.fetch_market_state();
             if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
@@ -1925,15 +2093,17 @@ fn run_bridge_worker(
                     apply_and_write_market_state(
                         &paths,
                         &state.items,
-                        force_sync,
+                        force_sync || pending_branding_sync,
                         &known_titles,
                         whitelist_lang.as_deref(),
                         &mut last_synced_items,
                         &mut known_great_demands,
                         &mut initialized_gd_baseline,
+                        Some(&active_branding),
                         &shared,
                         &app_handle,
                     );
+                    pending_branding_sync = false;
                 }
                 Err(err) => {
                     handle_backend_io_error(
@@ -1967,6 +2137,7 @@ fn apply_and_write_market_state(
     last_synced_items: &mut Vec<MarketItemDto>,
     known_great_demands: &mut HashSet<String>,
     initialized_gd_baseline: &mut bool,
+    branding: Option<&HeartbeatBranding>,
     shared: &Arc<Mutex<SharedState>>,
     app_handle: &Option<AppHandle>,
 ) {
@@ -2040,7 +2211,8 @@ fn apply_and_write_market_state(
 
     let data_changed = force_write_xml || last_synced_items.as_slice() != items;
     if data_changed {
-        match write_market_data_xml(&paths.staging_dir, &paths.read_dir, items) {
+        match write_market_data_xml_with_branding(&paths.staging_dir, &paths.read_dir, items, branding)
+        {
             Ok(_) => {
                 *last_synced_items = items.to_vec();
             }

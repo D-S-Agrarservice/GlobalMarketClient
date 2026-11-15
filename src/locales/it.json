@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulazione: Aggiornamento facoltativo impostato a v{latestVersion}.",
   "logMockLatestVersionReset": "Simulazione: Avviso di aggiornamento facoltativo rimosso.",
   "logClientIpLocked": "Blocco di rete attivo: questa installazione è stata usata da un'altra rete nell'ultima ora. Nuovo tentativo automatico tra ~{minutes} min.",
-  "logClientIdRequired": "Connessione rifiutata: identificatore client mancante o non valido (X-Client-Id)."
+  "logClientIdRequired": "Connessione rifiutata: identificatore client mancante o non valido (X-Client-Id).",
+  "stateDisconnected": "Disconnesso",
+  "btnConnect": "Connetti",
+  "btnDisconnect": "Disconnetti",
+  "btnConnectTooltip": "Connetti al mercato selezionato",
+  "btnDisconnectTooltip": "Disconnetti e passa FS25 alla modalità offline locale",
+  "settingsStartupConnectLabel": "Comportamento all'avvio",
+  "settingsStartupConnectAuto": "Connetti automaticamente all'ultimo mercato (Predefinito)",
+  "settingsStartupConnectManual": "Avvia disconnesso (connetti manualmente)",
+  "settingsStartupConnectHint": "Stabilisce se GlobalMarket si connette subito all'avvio o attende disconnesso finché non clicchi su «Connetti».",
+  "logStartedDisconnected": "Avviato in modalità disconnessa – clicca su «Connetti» in alto a destra per avviare la sincronizzazione.",
+  "logDisconnectedByUser": "Disconnesso manualmente – sincronizzazione del mercato in pausa.",
+  "logConnectingByUser": "Connessione manuale richiesta – sincronizzazione con il mercato selezionato...",
+  "toastConnected": "Connessione al mercato in corso...",
+  "toastDisconnected": "Disconnesso (modalità offline)."
 }

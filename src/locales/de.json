@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulation: Optionale Update-Empfehlung auf v{latestVersion} gesetzt.",
   "logMockLatestVersionReset": "Simulation: Optionale Update-Empfehlung aufgehoben.",
   "logClientIpLocked": "Netzwerk-Sperre aktiv: Diese Installation wurde in der letzten Stunde aus einem anderen Netzwerk verwendet. Automatischer Neuversuch in ca. {minutes} Min.",
-  "logClientIdRequired": "Verbindung abgelehnt: Ungültige oder fehlende Client-Kennung (X-Client-Id)."
+  "logClientIdRequired": "Verbindung abgelehnt: Ungültige oder fehlende Client-Kennung (X-Client-Id).",
+  "stateDisconnected": "Getrennt",
+  "btnConnect": "Verbinden",
+  "btnDisconnect": "Trennen",
+  "btnConnectTooltip": "Mit ausgewähltem Markt verbinden",
+  "btnDisconnectTooltip": "Verbindung trennen und in den lokalen Offline-Modus wechseln",
+  "settingsStartupConnectLabel": "Verhalten beim Programmstart",
+  "settingsStartupConnectAuto": "Automatisch mit letztem Markt verbinden (Standard)",
+  "settingsStartupConnectManual": "Getrennt starten (manuell verbinden)",
+  "settingsStartupConnectHint": "Legt fest, ob GlobalMarket beim Start sofort online geht oder getrennt wartet, bis du auf „Verbinden“ klickst.",
+  "logStartedDisconnected": "Im getrennten Modus gestartet – klicke oben rechts auf „Verbinden“, um die Markt-Synchronisation zu starten.",
+  "logDisconnectedByUser": "Verbindung manuell getrennt – Markt-Synchronisation pausiert.",
+  "logConnectingByUser": "Verbindung manuell gestartet – synchronisiere mit ausgewähltem Markt…",
+  "toastConnected": "Verbindung wird hergestellt…",
+  "toastDisconnected": "Verbindung getrennt (Offline-Modus)."
 }

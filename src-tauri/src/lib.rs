@@ -13,7 +13,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 pub const PROTOCOL_EXE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Flags pre-release Beta builds (`0.9.x`) across UI badges, window titles, and diagnostic reports
-/// while keeping `Cargo.toml` / `tauri.conf.json` strictly numeric (`0.9.10`) for Windows MSI/NSIS & Lua SemVer parsing.
+/// while keeping `Cargo.toml` / `tauri.conf.json` strictly numeric (`0.9.11`) for Windows MSI/NSIS & Lua SemVer parsing.
 pub const IS_BETA_BUILD: bool = true;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -35,10 +35,15 @@ pub fn run() {
 
             let manager = BridgeManager::new(config_file, Some(app.handle().clone()));
             let initial_cfg = manager.get_config();
-            let initial_edition = manager.get_snapshot().game_edition;
+            let initial_snap = manager.get_snapshot();
             app.manage(manager);
 
-            tray::setup_system_tray(app, &initial_cfg.language, initial_edition.as_deref())?;
+            tray::setup_system_tray(
+                app,
+                &initial_cfg.language,
+                initial_snap.game_edition.as_deref(),
+                initial_snap.connection_enabled,
+            )?;
             tray::apply_window_theme(app.handle(), &initial_cfg.theme);
             tray::restore_main_window(app.handle());
             Ok(())
@@ -75,6 +80,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::get_bridge_snapshot,
+            commands::set_bridge_connected,
             commands::get_bridge_logs,
             commands::get_app_config,
             commands::set_fs25_profile_path,

@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulação: Recomendação de atualização opcional definida para v{latestVersion}.",
   "logMockLatestVersionReset": "Simulação: Recomendação de atualização opcional removida.",
   "logClientIpLocked": "Bloqueio de rede ativo: esta instalação foi usada a partir de outra rede na última hora. Nova tentativa automática em ~{minutes} min.",
-  "logClientIdRequired": "Conexão recusada: identificador do cliente ausente ou inválido (X-Client-Id)."
+  "logClientIdRequired": "Conexão recusada: identificador do cliente ausente ou inválido (X-Client-Id).",
+  "stateDisconnected": "Desconectado",
+  "btnConnect": "Conectar",
+  "btnDisconnect": "Desconectar",
+  "btnConnectTooltip": "Reconectar o bridge ao mercado ativo e retomar a sincronização com o FS25",
+  "btnDisconnectTooltip": "Desconectar o bridge manualmente, interromper o tráfego de rede e limpar os arquivos online",
+  "settingsStartupConnectLabel": "Conexão ao iniciar",
+  "settingsStartupConnectAuto": "Conectar automaticamente ao último mercado",
+  "settingsStartupConnectManual": "Iniciar desconectado (conectar manualmente)",
+  "settingsStartupConnectHint": "No modo manual, o bridge permanece desconectado até que você clique em Conectar.",
+  "logStartedDisconnected": "Bridge iniciado desconectado (configuração de inicialização: conexão manual).",
+  "logDisconnectedByUser": "Bridge desconectado manualmente pelo usuário. Tráfego de rede interrompido.",
+  "logConnectingByUser": "Conectando ao mercado (solicitado pelo usuário)...",
+  "toastConnected": "Conexão iniciada",
+  "toastDisconnected": "Bridge desconectado"
 }

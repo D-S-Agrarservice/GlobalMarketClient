@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simülasyon: İsteğe bağlı güncelleme önerisi v{latestVersion} olarak ayarlandı.",
   "logMockLatestVersionReset": "Simülasyon: İsteğe bağlı güncelleme önerisi kaldırıldı.",
   "logClientIpLocked": "Ağ kilidi aktif: Bu kurulum son bir saat içinde başka bir ağdan kullanıldı. ~{minutes} dk içinde otomatik yeniden denenecek.",
-  "logClientIdRequired": "Bağlantı reddedildi: Eksik veya geçersiz istemci kimliği (X-Client-Id)."
+  "logClientIdRequired": "Bağlantı reddedildi: Eksik veya geçersiz istemci kimliği (X-Client-Id).",
+  "stateDisconnected": "Bağlantı Kesildi",
+  "btnConnect": "Bağlan",
+  "btnDisconnect": "Bağlantıyı Kes",
+  "btnConnectTooltip": "Köprüyü etkin pazara yeniden bağla ve FS25 senkronizasyonunu sürdür",
+  "btnDisconnectTooltip": "Köprüyü manuel olarak kes, ağ trafiğini durdur ve çevrimiçi köprü dosyalarını temizle",
+  "settingsStartupConnectLabel": "Başlangıçta bağlantı",
+  "settingsStartupConnectAuto": "Son pazara otomatik bağlan",
+  "settingsStartupConnectManual": "Bağlantısız başlat (manuel bağlan)",
+  "settingsStartupConnectHint": "Manuel modda köprü siz Bağlan'a tıklayana kadar bağlantısız kalır.",
+  "logStartedDisconnected": "Köprü bağlantısız başlatıldı (başlangıç ayarı: manuel bağlantı).",
+  "logDisconnectedByUser": "Köprü kullanıcı tarafından manuel olarak kesildi. Ağ trafiği durduruldu.",
+  "logConnectingByUser": "Pazara bağlanılıyor (kullanıcı tarafından başlatıldı)...",
+  "toastConnected": "Bağlantı başlatıldı",
+  "toastDisconnected": "Köprü bağlantısı kesildi"
 }

@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Szimuláció: Opcionális frissítési ajánlás beállítva erre: v{latestVersion}.",
   "logMockLatestVersionReset": "Szimuláció: Opcionális frissítési ajánlás törölve.",
   "logClientIpLocked": "Hálózati zárolás aktív: ezt a telepítést az elmúlt órában másik hálózatról használták. Automatikus újrapróbálkozás ~{minutes} perc múlva.",
-  "logClientIdRequired": "Kapcsolat elutasítva: hiányzó vagy érvénytelen kliensazonosító (X-Client-Id)."
+  "logClientIdRequired": "Kapcsolat elutasítva: hiányzó vagy érvénytelen kliensazonosító (X-Client-Id).",
+  "stateDisconnected": "Szétkapcsolva",
+  "btnConnect": "Csatlakozás",
+  "btnDisconnect": "Szétkapcsolás",
+  "btnConnectTooltip": "A bridge újracsatlakoztatása az aktív piachoz és az FS25 szinkronizálás folytatása",
+  "btnDisconnectTooltip": "A bridge kézi szétkapcsolása, hálózati forgalom leállítása és az online bridge fájlok eltávolítása",
+  "settingsStartupConnectLabel": "Csatlakozás indításkor",
+  "settingsStartupConnectAuto": "Automatikus csatlakozás az utolsó piachoz",
+  "settingsStartupConnectManual": "Indítás szétkapcsolva (kézi csatlakozás)",
+  "settingsStartupConnectHint": "Kézi indításnál a bridge szétkapcsolva marad, amíg nem csatlakoztatja.",
+  "logStartedDisconnected": "A bridge szétkapcsolva indult el (indítási beállítás: kézi csatlakozás).",
+  "logDisconnectedByUser": "A felhasználó kézzel szétkapcsolta a bridge-et. Hálózati forgalom leállítva.",
+  "logConnectingByUser": "Csatlakozás a piachoz (felhasználó által indítva)...",
+  "toastConnected": "Csatlakozás elindítva",
+  "toastDisconnected": "Bridge szétkapcsolva"
 }

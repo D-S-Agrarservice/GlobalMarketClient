@@ -22,8 +22,8 @@ use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
     sanitize_market_name, write_heartbeat_xml, write_heartbeat_xml_with_latest,
-    write_market_data_xml, HeartbeatBranding, IncomingPacket, MAX_MARKET_NAME_BYTES,
-    MAX_RETAINED_MARKET_SYNC_FILES,
+    write_market_data_xml, write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket,
+    MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
@@ -458,6 +458,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
 
     let user_profile = env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\TestFarmer".to_string());
     let snap = BridgeSnapshot {
+        connection_enabled: true,
         state: BridgeConnectionState::Online,
         game_edition: Some("FS25".to_string()),
         access_tier: AccessTier::Developer,
@@ -473,9 +474,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "0.9.10".to_string(),
+        exe_version: "0.9.11".to_string(),
         min_exe_version: "0.9.9".to_string(),
-        latest_exe_version: Some("0.9.11".to_string()),
+        latest_exe_version: Some("0.9.12".to_string()),
         approved_count: 10,
         pending_count: 2,
         rejected_count: 0,
@@ -513,8 +514,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
-    assert!(report.contains("app_version: \"0.9.10-beta (protocol 0.9.10)\""));
-    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.11)\""));
+    assert!(report.contains("app_version: \"0.9.11-beta (protocol 0.9.11)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.12)\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
@@ -1510,7 +1511,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.11\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.12\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
                                 "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
@@ -1661,10 +1662,10 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
-    assert!(xml_a.contains("<version>0.9.10</version>"));
+    assert!(xml_a.contains("<version>0.9.11</version>"));
     assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
-    assert!(xml_a.contains("<latestVersion>0.9.11</latestVersion>"));
-    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.11"));
+    assert!(xml_a.contains("<latestVersion>0.9.12</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.12"));
     assert!(mgr
         .get_logs()
         .iter()
@@ -2305,5 +2306,289 @@ fn live_market_switch_preserves_heartbeat_xml_during_handshake_and_deletes_on_sh
 
     stop_srv.store(true, Ordering::SeqCst);
     let _ = server_thread.join();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manual_disconnect_switch_and_auto_connect_on_launch_false_work_cleanly() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let stop_srv = Arc::new(AtomicBool::new(false));
+    let stop_srv_clone = Arc::clone(&stop_srv);
+    let meta_hits = Arc::new(AtomicUsize::new(0));
+    let market_hits = Arc::new(AtomicUsize::new(0));
+    let meta_hits_srv = Arc::clone(&meta_hits);
+    let market_hits_srv = Arc::clone(&market_hits);
+
+    let server_thread = thread::spawn(move || {
+        while !stop_srv_clone.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut reader = BufReader::new(&mut stream);
+                    let mut req_line = String::new();
+                    if reader.read_line(&mut req_line).is_err() || req_line.is_empty() {
+                        continue;
+                    }
+                    let mut token_hdr: Option<String> = None;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty()
+                        {
+                            break;
+                        }
+                        if let Some((k, v)) = line.split_once(':') {
+                            if k.trim().eq_ignore_ascii_case("x-market-token") {
+                                token_hdr = Some(v.trim().to_string());
+                            }
+                        }
+                    }
+                    drop(reader);
+
+                    if req_line.starts_with("GET /api/v1/meta/status ") {
+                        meta_hits_srv.fetch_add(1, Ordering::SeqCst);
+                        let market_name = if token_hdr.as_deref() == Some("dedi-token") {
+                            "Custom Dedi Hub"
+                        } else {
+                            "Global Market Official"
+                        };
+                        let json = format!(
+                            r#"{{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":10,"market_name":"{market_name}","api_version":"2.6.0","market_logo_url":null}}"#
+                        );
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req_line.starts_with("GET /api/v1/market/state ") {
+                        market_hits_srv.fetch_add(1, Ordering::SeqCst);
+                        let json = r#"{"updated_at":1763058000,"items":[{"fill_type":"WHEAT","fill_level":50000,"trend":1.00,"great_demand":false,"status":"APPROVED"}]}"#;
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            json.len(),
+                            json
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                    let _ = stream.flush();
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(15));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let dir = env::temp_dir().join(format!("fs25_gm_disconnect_toggle_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let profile_dir = dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let paths = resolve_bridge_paths(&profile_dir).unwrap();
+    fs::create_dir_all(&paths.read_dir).unwrap();
+    fs::create_dir_all(&paths.write_dir).unwrap();
+    fs::create_dir_all(&paths.staging_dir).unwrap();
+
+    // Seed stale runtime XML artifacts before boot to verify auto_connect_on_launch=false cleans them up.
+    fs::write(
+        &paths.online_xml_file,
+        "<globalMarketOnline isConnected=\"true\" protocolVersion=\"1\" />",
+    )
+    .unwrap();
+    fs::write(
+        paths.read_dir.join("gmDataSync_stale.xml"),
+        "<gmDataSync action=\"marketData\" />",
+    )
+    .unwrap();
+    fs::write(paths.staging_dir.join("stale.tmp"), "temp").unwrap();
+
+    let cfg_file = dir.join("settings.json");
+    let init_cfg = AppConfig {
+        access_tier: AccessTier::Developer,
+        backend_mode: BackendMode::Live,
+        backend_url: format!("http://{addr}"),
+        fs25_profile_path: Some(profile_dir.to_string_lossy().into_owned()),
+        auto_connect_on_launch: false,
+        ..AppConfig::default()
+    };
+    init_cfg.save_to_file(&cfg_file).unwrap();
+
+    let mgr = BridgeManager::new(cfg_file, None);
+    let initial_snap = mgr.get_snapshot();
+    assert!(!mgr.is_connection_enabled());
+    assert!(!initial_snap.connection_enabled);
+    assert_eq!(initial_snap.state, BridgeConnectionState::Disconnected);
+    assert!(
+        !paths.online_xml_file.exists(),
+        "Launching with auto_connect_on_launch=false must delete stale globalMarketOnline.xml"
+    );
+    assert_eq!(fs::read_dir(&paths.read_dir).unwrap().flatten().count(), 0);
+    assert_eq!(fs::read_dir(&paths.staging_dir).unwrap().flatten().count(), 0);
+
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        meta_hits.load(Ordering::SeqCst),
+        0,
+        "Disconnected startup must make zero status HTTP requests"
+    );
+    assert_eq!(
+        market_hits.load(Ordering::SeqCst),
+        0,
+        "Disconnected startup must make zero market HTTP requests"
+    );
+
+    // Switching/adding a market token while disconnected must remain Disconnected without polling.
+    mgr.add_market_token("dedi-token", Some("My Dedi")).unwrap();
+    thread::sleep(Duration::from_millis(200));
+    let after_token_snap = mgr.get_snapshot();
+    assert!(!mgr.is_connection_enabled());
+    assert_eq!(after_token_snap.state, BridgeConnectionState::Disconnected);
+    assert_eq!(meta_hits.load(Ordering::SeqCst), 0);
+    assert!(!paths.online_xml_file.exists());
+
+    // Connecting manually enables worker + HTTP polling + XML generation with branding attributes.
+    let conn_snap = mgr.set_connection_enabled(true);
+    assert!(conn_snap.connection_enabled);
+    assert!(mgr.is_connection_enabled());
+
+    let wait_for = |pred: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < deadline {
+            if pred() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        false
+    };
+
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && paths.online_xml_file.exists()
+                && fs::read_dir(&paths.read_dir)
+                    .map(|it| it.flatten().count() > 0)
+                    .unwrap_or(false)
+        }),
+        "Manual connect must bring the bridge online and emit heartbeat + gmDataSync XMLs"
+    );
+    assert!(meta_hits.load(Ordering::SeqCst) > 0);
+    assert!(market_hits.load(Ordering::SeqCst) > 0);
+
+    let sync_xml_content = fs::read_dir(&paths.read_dir)
+        .unwrap()
+        .flatten()
+        .find_map(|e| fs::read_to_string(e.path()).ok())
+        .expect("Expected gmDataSync XML in read/");
+    assert!(
+        sync_xml_content.contains("isPrivateMarket=\"true\"")
+            && sync_xml_content.contains("marketName=\"Custom Dedi Hub\"")
+            && sync_xml_content.contains("brandingTier=\"2\"")
+            && sync_xml_content.contains("logoFile=\"\""),
+        "gmDataSync XML must embed branding attributes from active heartbeat branding: {sync_xml_content}"
+    );
+
+    // Seed an extra staging temp file, then disconnect manually: cleanup must be immediate and HTTP traffic must stop.
+    fs::write(paths.staging_dir.join("in_flight.tmp"), "partial").unwrap();
+    let disc_snap = mgr.set_connection_enabled(false);
+    assert!(!disc_snap.connection_enabled);
+    assert!(!mgr.is_connection_enabled());
+    assert_eq!(disc_snap.state, BridgeConnectionState::Disconnected);
+    assert!(
+        !paths.online_xml_file.exists(),
+        "Manual disconnect must immediately delete globalMarketOnline.xml"
+    );
+    assert_eq!(
+        fs::read_dir(&paths.read_dir).unwrap().flatten().count(),
+        0,
+        "Manual disconnect must immediately clear unread gmDataSync_*.xml files"
+    );
+    assert_eq!(
+        fs::read_dir(&paths.staging_dir).unwrap().flatten().count(),
+        0,
+        "Manual disconnect must immediately clear staging temp files"
+    );
+
+    let hits_at_disconnect =
+        meta_hits.load(Ordering::SeqCst) + market_hits.load(Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(350));
+    assert_eq!(
+        meta_hits.load(Ordering::SeqCst) + market_hits.load(Ordering::SeqCst),
+        hits_at_disconnect,
+        "Disconnected state must produce zero HTTP requests after worker stops"
+    );
+
+    mgr.shutdown();
+    stop_srv.store(true, Ordering::SeqCst);
+    let _ = server_thread.join();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn market_data_xml_with_branding_stamps_tier_and_logo_attributes() {
+    let dir = env::temp_dir().join(format!("fs25_gm_sync_branding_xml_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let staging_dir = dir.join(".staging");
+    let read_dir = dir.join("read");
+    fs::create_dir_all(&staging_dir).unwrap();
+    fs::create_dir_all(&read_dir).unwrap();
+
+    let items = vec![MarketItemDto {
+        fill_type: "WHEAT".to_string(),
+        title: Some("Wheat".to_string()),
+        fill_level: 10_000,
+        trend: 1.0,
+        great_demand: false,
+        great_demand_bonus: 0.0,
+        great_demand_remaining: 0,
+        status: FillTypeStatus::Approved,
+    }];
+
+    // Tier 3 private market with custom DDS logo
+    let tier3 = HeartbeatBranding {
+        branding_tier: 3,
+        is_private_market: true,
+        market_name: Some("Nordic Coop".to_string()),
+        has_custom_logo: true,
+        logo_file: Some("logos/logo_abc123def456.dds".to_string()),
+    };
+    let path_t3 =
+        write_market_data_xml_with_branding(&staging_dir, &read_dir, &items, Some(&tier3)).unwrap();
+    let xml_t3 = fs::read_to_string(&path_t3).unwrap();
+    assert!(xml_t3.contains("brandingTier=\"3\""));
+    assert!(xml_t3.contains("isPrivateMarket=\"true\""));
+    assert!(xml_t3.contains("marketName=\"Nordic Coop\""));
+    assert!(xml_t3.contains("logoFile=\"logos/logo_abc123def456.dds\""));
+
+    // Tier 0 public market without custom logo: explicit empty logoFile="" clears Lua cache
+    let tier0 = HeartbeatBranding {
+        branding_tier: 0,
+        is_private_market: false,
+        market_name: None,
+        has_custom_logo: false,
+        logo_file: None,
+    };
+    let path_t0 =
+        write_market_data_xml_with_branding(&staging_dir, &read_dir, &items, Some(&tier0)).unwrap();
+    let xml_t0 = fs::read_to_string(&path_t0).unwrap();
+    assert!(xml_t0.contains("brandingTier=\"0\""));
+    assert!(xml_t0.contains("isPrivateMarket=\"false\""));
+    assert!(xml_t0.contains("logoFile=\"\""));
+    assert!(!xml_t0.contains("marketName="));
+
+    // None branding remains clean for legacy callers
+    let path_none =
+        write_market_data_xml_with_branding(&staging_dir, &read_dir, &items, None).unwrap();
+    let xml_none = fs::read_to_string(&path_none).unwrap();
+    assert!(!xml_none.contains("brandingTier="));
+    assert!(!xml_none.contains("logoFile="));
+
     let _ = fs::remove_dir_all(&dir);
 }

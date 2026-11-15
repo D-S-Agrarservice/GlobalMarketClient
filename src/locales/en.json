@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulation: Optional update recommendation set to v{latestVersion}.",
   "logMockLatestVersionReset": "Simulation: Optional update recommendation cleared.",
   "logClientIpLocked": "Network lock active: This installation was used from another network within the last hour. Automatic retry in ~{minutes} min.",
-  "logClientIdRequired": "Connection rejected: Missing or invalid client identifier (X-Client-Id)."
+  "logClientIdRequired": "Connection rejected: Missing or invalid client identifier (X-Client-Id).",
+  "stateDisconnected": "Disconnected",
+  "btnConnect": "Connect",
+  "btnDisconnect": "Disconnect",
+  "btnConnectTooltip": "Connect to selected market",
+  "btnDisconnectTooltip": "Disconnect and switch FS25 to local offline mode",
+  "settingsStartupConnectLabel": "Startup Connection Behavior",
+  "settingsStartupConnectAuto": "Connect automatically to last active market (Default)",
+  "settingsStartupConnectManual": "Start disconnected (connect manually)",
+  "settingsStartupConnectHint": "Controls whether GlobalMarket connects immediately on launch or waits disconnected until you click 'Connect'.",
+  "logStartedDisconnected": "Started in disconnected mode – click 'Connect' in the top right to start market synchronization.",
+  "logDisconnectedByUser": "Disconnected manually – market synchronization paused.",
+  "logConnectingByUser": "Manual connect requested – synchronizing with selected market...",
+  "toastConnected": "Connecting to market...",
+  "toastDisconnected": "Disconnected (Offline mode)."
 }

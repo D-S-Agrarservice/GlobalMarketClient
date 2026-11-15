@@ -283,6 +283,17 @@ pub fn write_market_data_xml(
     read_dir: &Path,
     items: &[MarketItemDto],
 ) -> Result<PathBuf, String> {
+    write_market_data_xml_with_branding(staging_dir, read_dir, items, None)
+}
+
+/// Atomically writes `read/gmDataSync_<timestamp>.xml` (`action="marketData"`, Spec Section 3.3)
+/// with optional packet-level market branding attributes consumed by `GlobalMarket:readMarketSyncBranding`.
+pub fn write_market_data_xml_with_branding(
+    staging_dir: &Path,
+    read_dir: &Path,
+    items: &[MarketItemDto],
+    branding: Option<&HeartbeatBranding>,
+) -> Result<PathBuf, String> {
     let ts = now_unix_secs();
     let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
     let filename = if seq == 1 {
@@ -292,9 +303,39 @@ pub fn write_market_data_xml(
     };
     let target_path = read_dir.join(filename);
 
+    let root_tag = match branding {
+        Some(raw_branding) => {
+            let effective = raw_branding.normalized();
+            let is_priv_str = if effective.is_private_market {
+                "true"
+            } else {
+                "false"
+            };
+            let mut root_attrs = format!(
+                "action=\"marketData\" brandingTier=\"{}\" isPrivateMarket=\"{is_priv_str}\"",
+                effective.branding_tier
+            );
+            if effective.is_private_market {
+                if let Some(ref name) = effective.market_name {
+                    root_attrs.push_str(&format!(" marketName=\"{}\"", escape(name)));
+                }
+            }
+            // Always emit `logoFile` when packet branding is present so Lua's `readMarketSyncBranding`
+            // clears any previously active custom logo when switching back to Tier 0 or Tier 2.
+            let rel_logo = if effective.has_custom_logo {
+                effective.logo_file.as_deref().unwrap_or("")
+            } else {
+                ""
+            };
+            root_attrs.push_str(&format!(" logoFile=\"{}\"", escape(rel_logo)));
+            format!("<gmDataSync {root_attrs}>\n")
+        }
+        None => "<gmDataSync action=\"marketData\">\n".to_string(),
+    };
+
     let mut xml = String::with_capacity(256 + items.len() * 140);
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
-    xml.push_str("<gmDataSync action=\"marketData\">\n");
+    xml.push_str(&root_tag);
     xml.push_str("    <fillTypes>\n");
 
     for item in items {

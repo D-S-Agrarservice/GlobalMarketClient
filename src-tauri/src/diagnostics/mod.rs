@@ -84,6 +84,7 @@ fn count_xml_files(dir: &Path) -> usize {
 fn format_state(state: BridgeConnectionState) -> &'static str {
     match state {
         BridgeConnectionState::PathMissing => "PATH_MISSING",
+        BridgeConnectionState::Disconnected => "DISCONNECTED",
         BridgeConnectionState::Connecting => "CONNECTING",
         BridgeConnectionState::Online => "ONLINE",
         BridgeConnectionState::BackendOffline => "BACKEND_OFFLINE",
@@ -234,11 +235,12 @@ pub fn build_diagnostic_report_with_secrets(
         std::env::consts::ARCH
     ));
     report.push_str(&format!(
-        "ui_settings: \"lang={}, tier={}, tray={}, notifications={}\"\n",
+        "ui_settings: \"lang={}, tier={}, tray={}, notifications={}, auto_connect={}\"\n",
         config.language,
         config.access_tier.as_str(),
         config.minimize_to_tray,
-        config.notifications_enabled
+        config.notifications_enabled,
+        config.auto_connect_on_launch
     ));
     report.push_str(&format!("backend_mode: \"{mode_str}\"\n"));
     report.push_str(&format!(

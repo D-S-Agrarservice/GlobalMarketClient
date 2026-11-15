@@ -71,12 +71,13 @@ interface UiState {
   availableUpdateVersion: string | null;
   updateInstallingState: "idle" | "downloading" | "installing";
   updateDownloadPercent: number;
+  togglingConnection: boolean;
 }
 
 const state: UiState = {
   info: {
-    appVersion: "0.9.10",
-    protocolVersion: "0.9.10",
+    appVersion: "0.9.11",
+    protocolVersion: "0.9.11",
     isBeta: true,
     platform: "desktop",
   },
@@ -88,12 +89,14 @@ const state: UiState = {
     minimizeToTray: true,
     notificationsEnabled: true,
     logAutoScroll: true,
+    autoConnectOnLaunch: true,
     backendMode: "live",
     backendUrl: OFFICIAL_PROD_BACKEND_URL,
     activeTokenId: null,
   },
   snapshot: {
     state: "connecting",
+    connectionEnabled: true,
     gameEdition: null,
     accessTier: "user",
     backendMode: "live",
@@ -108,7 +111,7 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "0.9.10",
+    exeVersion: "0.9.11",
     minExeVersion: "0.9.9",
     latestExeVersion: null,
     approvedCount: 0,
@@ -138,6 +141,7 @@ const state: UiState = {
   availableUpdateVersion: null,
   updateInstallingState: "idle",
   updateDownloadPercent: 0,
+  togglingConnection: false,
 };
 
 let pendingAppUpdate: Update | null = null;
@@ -559,6 +563,12 @@ function getConnectionVisuals(conn: BridgeConnectionState): {
         label: t("stateOnline"),
         dotClass: "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]",
         pillClass: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+      };
+    case "disconnected":
+      return {
+        label: t("stateDisconnected"),
+        dotClass: "bg-zinc-500",
+        pillClass: "border-zinc-600/80 bg-zinc-800 text-zinc-300",
       };
     case "connecting":
       return {
@@ -1137,8 +1147,12 @@ function renderDashboardHtml(): string {
     ),
   ].join("");
 
+  const hasQuickMarketSwitcher = !isMock && savedTokens.length > 0;
+  const rightControlWidthClass = hasQuickMarketSwitcher ? "w-48" : "w-40";
+  const rightControlPyClass = hasQuickMarketSwitcher ? "py-1" : "py-1.5";
+
   const quickMarketSwitcherHtml =
-    !isMock && savedTokens.length > 0
+    hasQuickMarketSwitcher
       ? `
         <select
           id="select-quick-market"
@@ -1150,14 +1164,12 @@ function renderDashboardHtml(): string {
                 ? "border-sky-500/50 bg-sky-500/10 text-sky-100"
                 : "border-[#ff9600]/55 bg-[#ff9600]/10 text-amber-100"
               : "border-zinc-700 bg-[#252528] text-zinc-200"
-          } px-2.5 py-1.5 text-xs font-semibold hover:border-[#ff9600] focus:border-[#ff9600] focus:outline-none cursor-pointer"
+          } px-2.5 ${rightControlPyClass} text-xs font-semibold hover:border-[#ff9600] focus:border-[#ff9600] focus:outline-none cursor-pointer"
         >
           ${quickMarketOptionsHtml}
         </select>
       `
       : "";
-
-  const rightControlWidthClass = !isMock && savedTokens.length > 0 ? "w-48" : "w-40";
 
   return `
     <!-- 3-Column Hero Header: Left Brand/Version | Center Logo + Hidden 5x Trigger + Status | Right Settings + Language + Market Switcher -->
@@ -1215,7 +1227,9 @@ function renderDashboardHtml(): string {
                     state.snapshot.lastHeartbeatUnix ?? null,
                   ),
                 )
-              : ""
+              : state.snapshot.state === "disconnected"
+                ? escapeHtml(t("stateDisconnected"))
+                : ""
           }"
           class="inline-flex items-center gap-2 rounded-full border px-3.5 py-1 text-xs font-semibold ${conn.pillClass}"
         >
@@ -1245,13 +1259,41 @@ function renderDashboardHtml(): string {
         </div>
       </div>
 
-      <!-- Right Column: Settings Button + Quick Language Selector + Quick Market Switcher -->
-      <div class="flex flex-col items-end gap-2">
+      <!-- Right Column: Connection Switch + Settings Button + Quick Language Selector + Quick Market Switcher -->
+      <div class="flex flex-col items-end gap-1.5">
+        <button
+          id="btn-toggle-connection"
+          type="button"
+          ${state.togglingConnection ? "disabled" : ""}
+          title="${escapeHtml(
+            state.snapshot.connectionEnabled
+              ? t("btnDisconnectTooltip")
+              : t("btnConnectTooltip"),
+          )}"
+          class="${rightControlWidthClass} flex items-center justify-center gap-1.5 rounded-md border ${
+            state.snapshot.connectionEnabled
+              ? "border-red-500/35 bg-red-500/10 text-red-200 hover:border-red-400 hover:text-red-300"
+              : "border-emerald-500/45 bg-emerald-500/15 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
+          } px-3 ${rightControlPyClass} text-xs font-semibold transition ${
+            state.togglingConnection ? "opacity-60 cursor-wait" : "cursor-pointer"
+          }"
+        >
+          <svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+            <line x1="12" y1="2" x2="12" y2="12"></line>
+          </svg>
+          <span class="truncate">${escapeHtml(
+            state.snapshot.connectionEnabled
+              ? t("btnDisconnect")
+              : t("btnConnect"),
+          )}</span>
+        </button>
+
         <button
           id="btn-open-settings"
           type="button"
           title="${escapeHtml(t("btnSettings"))}"
-          class="${rightControlWidthClass} flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-[#252528] px-3 py-1.5 text-xs font-medium text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer"
+          class="${rightControlWidthClass} flex items-center justify-center gap-1.5 rounded-md border border-zinc-700 bg-[#252528] px-3 ${rightControlPyClass} text-xs font-medium text-zinc-200 hover:border-[#ff9600] hover:text-[#ff9600] transition cursor-pointer"
         >
           <svg class="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
@@ -1263,7 +1305,7 @@ function renderDashboardHtml(): string {
         <select
           id="select-quick-lang"
           aria-label="Language"
-          class="${rightControlWidthClass} rounded-md border border-zinc-700 bg-[#252528] px-2.5 py-1.5 text-xs font-semibold text-zinc-200 hover:border-[#ff9600]/60 focus:border-[#ff9600] focus:outline-none cursor-pointer"
+          class="${rightControlWidthClass} rounded-md border border-zinc-700 bg-[#252528] px-2.5 ${rightControlPyClass} text-xs font-semibold text-zinc-200 hover:border-[#ff9600]/60 focus:border-[#ff9600] focus:outline-none cursor-pointer"
         >
           ${langOptionsHtml}
         </select>
@@ -1745,6 +1787,26 @@ function renderSettingsModalHtml(): string {
             <p class="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
               ${escapeHtml(t("settingsConnectionSection"))}
             </p>
+
+            <div>
+              <label for="cfg-startup-connect" class="block font-semibold text-zinc-200 mb-1">
+                ${escapeHtml(t("settingsStartupConnectLabel"))}
+              </label>
+              <select
+                id="cfg-startup-connect"
+                class="w-full rounded-md border border-zinc-700 bg-[#18181b] px-3 py-2 text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+              >
+                <option value="auto" ${state.config.autoConnectOnLaunch !== false ? "selected" : ""} class="bg-[#252528] text-zinc-100">
+                  ${escapeHtml(t("settingsStartupConnectAuto"))}
+                </option>
+                <option value="disconnected" ${state.config.autoConnectOnLaunch === false ? "selected" : ""} class="bg-[#252528] text-zinc-100">
+                  ${escapeHtml(t("settingsStartupConnectManual"))}
+                </option>
+              </select>
+              <p class="mt-1 text-[11px] text-zinc-400">
+                ${escapeHtml(t("settingsStartupConnectHint"))}
+              </p>
+            </div>
 
             ${devServerFieldsHtml}
 
@@ -2366,6 +2428,27 @@ function bindDashboardEvents(): void {
     });
 
   document
+    .querySelector<HTMLButtonElement>("#btn-toggle-connection")
+    ?.addEventListener("click", async () => {
+      if (state.togglingConnection) return;
+      const nextConnected = !state.snapshot.connectionEnabled;
+      state.togglingConnection = true;
+      renderDashboardOnly();
+      try {
+        const snap = await invoke<BridgeSnapshot>("set_bridge_connected", {
+          connected: nextConnected,
+        });
+        applySnapshot(snap);
+        showToast(t(nextConnected ? "toastConnected" : "toastDisconnected"));
+      } catch (err) {
+        showToast(String(err));
+      } finally {
+        state.togglingConnection = false;
+        renderDashboardOnly();
+      }
+    });
+
+  document
     .querySelector<HTMLButtonElement>("#btn-open-settings")
     ?.addEventListener("click", () => {
       state.activeModal = "settings";
@@ -2526,7 +2609,7 @@ function bindDashboardEvents(): void {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
       const targetVer = state.mockLockedMinVersion
         ? "9.9.9"
-        : state.info.protocolVersion || "0.9.10";
+        : state.info.protocolVersion || "0.9.11";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
@@ -2542,7 +2625,7 @@ function bindDashboardEvents(): void {
       if (state.mockOptionalUpdate) {
         state.dismissedOptionalVersion = null;
       }
-      const targetOpt = state.mockOptionalUpdate ? "0.9.11" : null;
+      const targetOpt = state.mockOptionalUpdate ? "0.9.12" : null;
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });
@@ -2839,6 +2922,9 @@ function bindModalEvents(): void {
       const autoScrollVal =
         document.querySelector<HTMLInputElement>("#cfg-autoscroll")?.checked ??
         true;
+      const startupConnectVal =
+        document.querySelector<HTMLSelectElement>("#cfg-startup-connect")
+          ?.value ?? "auto";
       const modeVal = isDev
         ? ((document.querySelector<HTMLSelectElement>("#cfg-mode")
             ?.value as BackendMode) ?? state.config.backendMode)
@@ -2858,6 +2944,7 @@ function bindModalEvents(): void {
           minimizeToTray: trayVal,
           notificationsEnabled: notifyVal,
           logAutoScroll: autoScrollVal,
+          autoConnectOnLaunch: startupConnectVal !== "disconnected",
           backendMode: modeVal,
           backendUrl: urlVal,
         };
@@ -2967,6 +3054,7 @@ async function bootstrap(): Promise<void> {
     state.config = {
       ...config,
       theme: normalizeTheme(config.theme),
+      autoConnectOnLaunch: config.autoConnectOnLaunch !== false,
     };
     applyThemeToDom(state.config.theme);
     applySnapshot(snapshot);

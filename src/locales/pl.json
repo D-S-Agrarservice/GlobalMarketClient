@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Symulacja: Opcjonalna aktualizacja ustawiona na v{latestVersion}.",
   "logMockLatestVersionReset": "Symulacja: Wyłączono powiadomienie o opcjonalnej aktualizacji.",
   "logClientIpLocked": "Blokada sieciowa aktywna: ta instalacja była używana z innej sieci w ciągu ostatniej godziny. Automatyczna próba za ok. {minutes} min.",
-  "logClientIdRequired": "Połączenie odrzucone: brakujący lub nieprawidłowy identyfikator klienta (X-Client-Id)."
+  "logClientIdRequired": "Połączenie odrzucone: brakujący lub nieprawidłowy identyfikator klienta (X-Client-Id).",
+  "stateDisconnected": "Rozłączono",
+  "btnConnect": "Połącz",
+  "btnDisconnect": "Rozłącz",
+  "btnConnectTooltip": "Połącz z wybranym rynkiem",
+  "btnDisconnectTooltip": "Rozłącz i przełącz FS25 w lokalny tryb offline",
+  "settingsStartupConnectLabel": "Zachowanie przy uruchomieniu",
+  "settingsStartupConnectAuto": "Automatycznie połącz z ostatnim rynkiem (Domyślnie)",
+  "settingsStartupConnectManual": "Uruchom jako rozłączony (połącz ręcznie)",
+  "settingsStartupConnectHint": "Określa, czy GlobalMarket ma łączyć się od razu po starcie, czy czekać rozłączony, aż klikniesz „Połącz”.",
+  "logStartedDisconnected": "Uruchomiono w trybie rozłączonym – kliknij „Połącz” w prawym górnym rogu, aby rozpocząć synchronizację.",
+  "logDisconnectedByUser": "Rozłączono ręcznie – synchronizacja z rynkiem wstrzymana.",
+  "logConnectingByUser": "Zlecono ręczne połączenie – synchronizacja z wybranym rynkiem…",
+  "toastConnected": "Łączenie z rynkiem…",
+  "toastDisconnected": "Rozłączono (tryb offline)."
 }

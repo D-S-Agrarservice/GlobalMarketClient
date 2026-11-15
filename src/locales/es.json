@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulación: Actualización opcional establecida en v{latestVersion}.",
   "logMockLatestVersionReset": "Simulación: Actualización opcional desactivada.",
   "logClientIpLocked": "Bloqueo de red activo: esta instalación se usó desde otra red en la última hora. Reintento automático en aprox. {minutes} min.",
-  "logClientIdRequired": "Conexión rechazada: identificador de cliente ausente o no válido (X-Client-Id)."
+  "logClientIdRequired": "Conexión rechazada: identificador de cliente ausente o no válido (X-Client-Id).",
+  "stateDisconnected": "Desconectado",
+  "btnConnect": "Conectar",
+  "btnDisconnect": "Desconectar",
+  "btnConnectTooltip": "Conectar al mercado seleccionado",
+  "btnDisconnectTooltip": "Desconectar y cambiar FS25 al modo sin conexión local",
+  "settingsStartupConnectLabel": "Comportamiento al iniciar",
+  "settingsStartupConnectAuto": "Conectar automáticamente al último mercado activo (Predeterminado)",
+  "settingsStartupConnectManual": "Iniciar desconectado (conectar manualmente)",
+  "settingsStartupConnectHint": "Define si GlobalMarket se conecta de inmediato al iniciarse o permanece desconectado hasta que pulses «Conectar».",
+  "logStartedDisconnected": "Iniciado en modo desconectado – pulsa «Conectar» arriba a la derecha para iniciar la sincronización.",
+  "logDisconnectedByUser": "Desconectado manualmente – sincronización del mercado en pausa.",
+  "logConnectingByUser": "Conexión manual solicitada – sincronizando con el mercado seleccionado...",
+  "toastConnected": "Conectando al mercado...",
+  "toastDisconnected": "Desconectado (modo sin conexión)."
 }

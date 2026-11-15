@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulatie: Aanbeveling voor optionele update ingesteld op v{latestVersion}.",
   "logMockLatestVersionReset": "Simulatie: Aanbeveling voor optionele update gewist.",
   "logClientIpLocked": "Netwerkvergrendeling actief: deze installatie is in het afgelopen uur vanaf een ander netwerk gebruikt. Automatische poging over ~{minutes} min.",
-  "logClientIdRequired": "Verbinding geweigerd: ontbrekende of ongeldige client-ID (X-Client-Id)."
+  "logClientIdRequired": "Verbinding geweigerd: ontbrekende of ongeldige client-ID (X-Client-Id).",
+  "stateDisconnected": "Verbroken",
+  "btnConnect": "Verbinden",
+  "btnDisconnect": "Verbreken",
+  "btnConnectTooltip": "Verbinden met geselecteerde markt",
+  "btnDisconnectTooltip": "Verbinding verbreken en FS25 naar lokale offline-modus schakelen",
+  "settingsStartupConnectLabel": "Gedrag bij opstarten",
+  "settingsStartupConnectAuto": "Automatisch verbinden met laatste markt (Standaard)",
+  "settingsStartupConnectManual": "Verbroken starten (handmatig verbinden)",
+  "settingsStartupConnectHint": "Bepaalt of GlobalMarket direct bij het opstarten online gaat of verbroken wacht tot je op 'Verbinden' klikt.",
+  "logStartedDisconnected": "Gestart in verbroken modus – klik rechtsboven op 'Verbinden' om marktsynchronisatie te starten.",
+  "logDisconnectedByUser": "Handmatig verbroken – marktsynchronisatie gepauzeerd.",
+  "logConnectingByUser": "Handmatige verbinding gestart – synchroniseren met geselecteerde markt…",
+  "toastConnected": "Verbinding maken met markt…",
+  "toastDisconnected": "Verbinding verbroken (offline-modus)."
 }

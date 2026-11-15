@@ -24,6 +24,7 @@ export type AccessTier = "user" | "extended" | "developer";
 
 export type BridgeConnectionState =
   | "pathMissing"
+  | "disconnected"
   | "connecting"
   | "online"
   | "backendOffline"
@@ -58,6 +59,7 @@ export interface AppConfig {
   minimizeToTray: boolean;
   notificationsEnabled: boolean;
   logAutoScroll: boolean;
+  autoConnectOnLaunch: boolean;
   backendMode: BackendMode;
   backendUrl: string;
   activeTokenId: string | null;
@@ -65,6 +67,7 @@ export interface AppConfig {
 
 export interface BridgeSnapshot {
   state: BridgeConnectionState;
+  connectionEnabled: boolean;
   gameEdition: string | null;
   accessTier: AccessTier;
   backendMode: BackendMode;

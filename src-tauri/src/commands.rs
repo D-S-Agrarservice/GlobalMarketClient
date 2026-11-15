@@ -30,6 +30,20 @@ pub fn get_bridge_snapshot(bridge: State<'_, BridgeManager>) -> BridgeSnapshot {
 }
 
 #[tauri::command]
+pub async fn set_bridge_connected(
+    connected: bool,
+    app_handle: AppHandle,
+) -> Result<BridgeSnapshot, String> {
+    tokio::task::spawn_blocking(move || {
+        use tauri::Manager;
+        let bridge = app_handle.state::<BridgeManager>();
+        bridge.set_connection_enabled(connected)
+    })
+    .await
+    .map_err(|e| format!("Failed to update bridge connection state: {e}"))
+}
+
+#[tauri::command]
 pub fn get_bridge_logs(bridge: State<'_, BridgeManager>) -> Vec<LogEntry> {
     bridge.get_logs()
 }

@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulering: Rekommendation för valfri uppdatering satt till v{latestVersion}.",
   "logMockLatestVersionReset": "Simulering: Rekommendation för valfri uppdatering rensad.",
   "logClientIpLocked": "Nätverkslås aktivt: Denna installation användes från ett annat nätverk under den senaste timmen. Automatiskt nytt försök om ~{minutes} min.",
-  "logClientIdRequired": "Anslutning nekad: Saknat eller ogiltigt klient-ID (X-Client-Id)."
+  "logClientIdRequired": "Anslutning nekad: Saknat eller ogiltigt klient-ID (X-Client-Id).",
+  "stateDisconnected": "Frånkopplad",
+  "btnConnect": "Anslut",
+  "btnDisconnect": "Koppla från",
+  "btnConnectTooltip": "Återanslut bridgen till den aktiva marknaden och återuppta FS25-synkronisering",
+  "btnDisconnectTooltip": "Koppla från bridgen manuellt, stoppa nätverkstrafik och rensa online-bridgefiler",
+  "settingsStartupConnectLabel": "Anslutning vid start",
+  "settingsStartupConnectAuto": "Anslut automatiskt till senaste marknaden",
+  "settingsStartupConnectManual": "Starta frånkopplad (anslut manuellt)",
+  "settingsStartupConnectHint": "Vid manuell start förblir bridgen frånkopplad tills du klickar på Anslut.",
+  "logStartedDisconnected": "Bridge startad frånkopplad (startinställning: manuell anslutning).",
+  "logDisconnectedByUser": "Bridge manuellt frånkopplad av användaren. Nätverkstrafik stoppad.",
+  "logConnectingByUser": "Ansluter till marknaden (begärt av användaren)...",
+  "toastConnected": "Anslutning startad",
+  "toastDisconnected": "Bridge frånkopplad"
 }

@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulare: Recomandarea de actualizare opțională setată la v{latestVersion}.",
   "logMockLatestVersionReset": "Simulare: Recomandarea de actualizare opțională eliminată.",
   "logClientIpLocked": "Blocare de rețea activă: această instalare a fost utilizată dintr-o altă rețea în ultima oră. Reîncercare automată în ~{minutes} min.",
-  "logClientIdRequired": "Conexiune respinsă: identificator client lipsă sau nevalid (X-Client-Id)."
+  "logClientIdRequired": "Conexiune respinsă: identificator client lipsă sau nevalid (X-Client-Id).",
+  "stateDisconnected": "Deconectat",
+  "btnConnect": "Conectare",
+  "btnDisconnect": "Deconectare",
+  "btnConnectTooltip": "Reconectează bridge-ul la piața activă și reia sincronizarea cu FS25",
+  "btnDisconnectTooltip": "Deconectează manual bridge-ul, oprește traficul de rețea și șterge fișierele online",
+  "settingsStartupConnectLabel": "Conectare la pornire",
+  "settingsStartupConnectAuto": "Conectare automată la ultima piață",
+  "settingsStartupConnectManual": "Pornire deconectat (conectare manuală)",
+  "settingsStartupConnectHint": "În modul manual, bridge-ul rămâne deconectat până când îl conectați.",
+  "logStartedDisconnected": "Bridge pornit deconectat (setare la pornire: conectare manuală).",
+  "logDisconnectedByUser": "Bridge deconectat manual de utilizator. Traficul de rețea a fost oprit.",
+  "logConnectingByUser": "Se conectează la piață (solicitat de utilizator)...",
+  "toastConnected": "Conectare pornită",
+  "toastDisconnected": "Bridge deconectat"
 }

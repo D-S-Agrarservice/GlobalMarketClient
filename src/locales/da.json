@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulering: Valgfri opdateringsanbefaling sat til v{latestVersion}.",
   "logMockLatestVersionReset": "Simulering: Valgfri opdateringsanbefaling ryddet.",
   "logClientIpLocked": "Netværkslås aktiv: Denne installation har været brugt fra et andet netværk inden for den seneste time. Automatisk forsøg om ~{minutes} min.",
-  "logClientIdRequired": "Forbindelse afvist: Manglende eller ugyldigt klient-ID (X-Client-Id)."
+  "logClientIdRequired": "Forbindelse afvist: Manglende eller ugyldigt klient-ID (X-Client-Id).",
+  "stateDisconnected": "Afbrudt",
+  "btnConnect": "Forbind",
+  "btnDisconnect": "Afbryd",
+  "btnConnectTooltip": "Genopret forbindelse mellem bridge og det aktive marked og genoptag FS25-synkronisering",
+  "btnDisconnectTooltip": "Afbryd bridgen manuelt, stop netværkstrafik og ryd online bridge-filer",
+  "settingsStartupConnectLabel": "Forbindelse ved opstart",
+  "settingsStartupConnectAuto": "Forbind automatisk til seneste marked",
+  "settingsStartupConnectManual": "Start afbrudt (forbind manuelt)",
+  "settingsStartupConnectHint": "Ved manuel opstart forbliver bridgen afbrudt, indtil du klikker på Forbind.",
+  "logStartedDisconnected": "Bridge startet i afbrudt tilstand (opstartsindstilling: manuel forbindelse).",
+  "logDisconnectedByUser": "Bridge manuelt afbrudt af bruger. Netværkstrafik stoppet.",
+  "logConnectingByUser": "Opretter forbindelse til markedet (startet af bruger)...",
+  "toastConnected": "Forbindelse startet",
+  "toastDisconnected": "Bridge afbrudt"
 }

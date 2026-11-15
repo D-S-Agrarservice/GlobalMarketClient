@@ -210,5 +210,19 @@
   "logMockLatestVersion": "Simulace: Doporučení volitelné aktualizace nastaveno na v{latestVersion}.",
   "logMockLatestVersionReset": "Simulace: Doporučení volitelné aktualizace zrušeno.",
   "logClientIpLocked": "Síťový zámek aktivní: tato instalace byla v poslední hodině použita z jiné sítě. Automatický pokus za ~{minutes} min.",
-  "logClientIdRequired": "Připojení odmítnuto: chybějící nebo neplatný identifikátor klienta (X-Client-Id)."
+  "logClientIdRequired": "Připojení odmítnuto: chybějící nebo neplatný identifikátor klienta (X-Client-Id).",
+  "stateDisconnected": "Odpojeno",
+  "btnConnect": "Připojit",
+  "btnDisconnect": "Odpojit",
+  "btnConnectTooltip": "Znovu připojit bridge k aktivnímu trhu a obnovit synchronizaci s FS25",
+  "btnDisconnectTooltip": "Ručně odpojit bridge, zastavit síťovou komunikaci a odebrat online bridge soubory",
+  "settingsStartupConnectLabel": "Připojení při spuštění",
+  "settingsStartupConnectAuto": "Automaticky připojit k poslednímu trhu",
+  "settingsStartupConnectManual": "Začít odpojeno (připojit ručně)",
+  "settingsStartupConnectHint": "Při ručním spuštění zůstane bridge v režimu Odpojeno, dokud jej nepřipojíte.",
+  "logStartedDisconnected": "Bridge spuštěn v režimu odpojení (nastavení spuštění: ruční připojení).",
+  "logDisconnectedByUser": "Bridge ručně odpojen uživatelem. Síťová komunikace zastavena.",
+  "logConnectingByUser": "Navazování připojení k trhu (spuštěno uživatelem)...",
+  "toastConnected": "Připojení spuštěno",
+  "toastDisconnected": "Bridge odpojen"
 }
