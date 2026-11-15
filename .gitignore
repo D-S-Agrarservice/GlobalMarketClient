@@ -1,3 +1,6 @@
+# Antigravity & AI Agent Knowledge Base (local only)
+.agents/
+
 # Node / Frontend
 node_modules/
 dist/
