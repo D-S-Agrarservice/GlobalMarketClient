@@ -29,9 +29,10 @@ use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
 };
 use globalmarket_client_lib::config::{
-    digest_access_key, languages_equivalent, normalize_language, qualify_transaction_id,
-    verify_access_key, verify_access_key_with_digests, AccessTier, AppConfig, BackendMode,
-    DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL, OFFICIAL_LOGO_CDN_URL,
+    digest_access_key, languages_equivalent, normalize_language, normalize_theme,
+    qualify_transaction_id, verify_access_key, verify_access_key_with_digests, AccessTier,
+    AppConfig, BackendMode, DEFAULT_OFFICIAL_BACKEND_URL, OFFICIAL_DEV_BACKEND_URL,
+    OFFICIAL_LOGO_CDN_URL,
 };
 use image::codecs::webp::WebPEncoder;
 use image::{ExtendedColorType, ImageEncoder, Rgba, RgbaImage};
@@ -1025,6 +1026,14 @@ fn access_tier_keys_and_five_language_crop_localization_work() {
     assert!(languages_equivalent("br", "pt"));
     assert!(languages_equivalent("cs", "cz"));
     assert!(!languages_equivalent("jp", "en"));
+
+    // Theme normalization (defaults strictly to dark)
+    assert_eq!(AppConfig::default().theme, "dark");
+    assert_eq!(normalize_theme("dark"), "dark");
+    assert_eq!(normalize_theme("LIGHT"), "light");
+    assert_eq!(normalize_theme("system"), "system");
+    assert_eq!(normalize_theme("auto"), "system");
+    assert_eq!(normalize_theme("invalid-theme"), "dark");
 
     assert_eq!(localize_fill_type("RAISINS", "de"), Some("Rosinen"));
     assert_eq!(localize_fill_type("RAISINS", "en"), Some("Raisins"));

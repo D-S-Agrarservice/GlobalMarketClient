@@ -54,9 +54,15 @@ pub fn update_app_config(
     bridge: State<'_, BridgeManager>,
 ) -> Result<BridgeSnapshot, String> {
     let snap = bridge.update_config(config)?;
-    let updated_lang = bridge.get_config().language;
-    crate::tray::update_tray_language(&app_handle, &updated_lang, snap.game_edition.as_deref());
+    let updated_cfg = bridge.get_config();
+    crate::tray::update_tray_language(&app_handle, &updated_cfg.language, snap.game_edition.as_deref());
+    crate::tray::apply_window_theme(&app_handle, &updated_cfg.theme);
     Ok(snap)
+}
+
+#[tauri::command]
+pub fn preview_window_theme(theme: String, app_handle: AppHandle) {
+    crate::tray::apply_window_theme(&app_handle, &theme);
 }
 
 #[tauri::command]

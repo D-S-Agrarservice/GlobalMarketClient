@@ -191,6 +191,18 @@ pub fn sync_window_and_tray_edition(app_handle: &AppHandle, game_edition: Option
     }
 }
 
+/// Applies the native OS window titlebar theme (`dark` default, `light`, or `None` for OS `system`).
+pub fn apply_window_theme(app_handle: &AppHandle, theme: &str) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        let target = match crate::config::normalize_theme(theme).as_str() {
+            "light" => Some(tauri::Theme::Light),
+            "system" => None,
+            _ => Some(tauri::Theme::Dark),
+        };
+        let _ = win.set_theme(target);
+    }
+}
+
 /// Restores, unminimizes, and focuses the main application window.
 pub fn restore_main_window(app_handle: &AppHandle) {
     if let Some(win) = app_handle.get_webview_window("main") {

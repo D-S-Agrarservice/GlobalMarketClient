@@ -42,6 +42,7 @@ import {
   OFFICIAL_PROD_BACKEND_URL,
   OPEN_SOURCE_PACKAGES,
   type SavedTokenProfile,
+  type ThemePreference,
 } from "./types";
 
 const MAX_UI_LOGS = 250;
@@ -83,6 +84,7 @@ const state: UiState = {
     accessTier: "user",
     fs25ProfilePath: null,
     language: "de",
+    theme: "dark",
     minimizeToTray: true,
     notificationsEnabled: true,
     logAutoScroll: true,
@@ -144,6 +146,42 @@ let toastTimer: number | undefined;
 let copyFeedbackTimer: number | undefined;
 let versionClickCount = 0;
 let versionClickResetTimer: number | undefined;
+let previewingUnsavedTheme = false;
+
+const systemDarkMedia =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+
+function normalizeTheme(raw?: string | null): ThemePreference {
+  const lower = (raw ?? "").trim().toLowerCase();
+  if (lower === "light") return "light";
+  if (lower === "system" || lower === "auto") return "system";
+  return "dark";
+}
+
+function resolveEffectiveTheme(pref: ThemePreference): "dark" | "light" {
+  if (pref === "light") return "light";
+  if (pref === "system") {
+    return systemDarkMedia && !systemDarkMedia.matches ? "light" : "dark";
+  }
+  return "dark";
+}
+
+function applyThemeToDom(prefRaw?: string | null): ThemePreference {
+  const pref = normalizeTheme(prefRaw ?? state.config.theme);
+  const effective = resolveEffectiveTheme(pref);
+  document.documentElement.setAttribute("data-theme", effective);
+  document.documentElement.style.colorScheme = effective;
+  return pref;
+}
+
+function revertPreviewedThemeIfNeeded(): void {
+  if (!previewingUnsavedTheme) return;
+  previewingUnsavedTheme = false;
+  const saved = applyThemeToDom(state.config.theme);
+  void invoke("preview_window_theme", { theme: saved }).catch(() => {});
+}
 
 function escapeHtml(raw: string): string {
   return raw
@@ -1538,6 +1576,7 @@ function refreshSavedProfilesListInModal(): void {
 
 function renderSettingsModalHtml(): string {
   const currentLang = normalizeLangForForm(state.config.language);
+  const currentTheme = normalizeTheme(state.config.theme);
   const isDev = getEffectiveTier() === "developer";
   const activeMode = getEffectiveBackendMode();
 
@@ -1620,17 +1659,39 @@ function renderSettingsModalHtml(): string {
         </div>
 
         <form id="form-settings" class="p-5 space-y-4 text-xs max-h-[78vh] overflow-y-auto dsa-scrollbar">
-          <!-- Language -->
-          <div>
-            <label for="cfg-lang" class="block font-semibold text-zinc-200 mb-1">
-              ${escapeHtml(t("settingsLanguage"))}
-            </label>
-            <select
-              id="cfg-lang"
-              class="w-full rounded-md border border-zinc-700 bg-[#18181b] px-3 py-2 text-zinc-100 focus:border-[#ff9600] focus:outline-none"
-            >
-              ${langSelectHtml}
-            </select>
+          <!-- Language & Appearance -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label for="cfg-lang" class="block font-semibold text-zinc-200 mb-1">
+                ${escapeHtml(t("settingsLanguage"))}
+              </label>
+              <select
+                id="cfg-lang"
+                class="w-full rounded-md border border-zinc-700 bg-[#18181b] px-3 py-2 text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+              >
+                ${langSelectHtml}
+              </select>
+            </div>
+
+            <div>
+              <label for="cfg-theme" class="block font-semibold text-zinc-200 mb-1">
+                ${escapeHtml(t("settingsTheme"))}
+              </label>
+              <select
+                id="cfg-theme"
+                class="w-full rounded-md border border-zinc-700 bg-[#18181b] px-3 py-2 text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+              >
+                <option value="dark" ${currentTheme === "dark" ? "selected" : ""} class="bg-[#252528] text-zinc-100">
+                  🌙 ${escapeHtml(t("settingsThemeDark"))}
+                </option>
+                <option value="light" ${currentTheme === "light" ? "selected" : ""} class="bg-[#252528] text-zinc-100">
+                  ☀️ ${escapeHtml(t("settingsThemeLight"))}
+                </option>
+                <option value="system" ${currentTheme === "system" ? "selected" : ""} class="bg-[#252528] text-zinc-100">
+                  🖥 ${escapeHtml(t("settingsThemeSystem"))}
+                </option>
+              </select>
+            </div>
           </div>
 
           <!-- Window & Notifications -->
@@ -2621,10 +2682,20 @@ function bindDashboardEvents(): void {
 
 function bindModalEvents(): void {
   const closeModal = (): void => {
+    revertPreviewedThemeIfNeeded();
     state.activeModal = "none";
     state.accessKeyError = null;
     renderModalOnly();
   };
+
+  document
+    .querySelector<HTMLSelectElement>("#cfg-theme")
+    ?.addEventListener("change", (ev) => {
+      const target = ev.currentTarget as HTMLSelectElement;
+      const previewPref = applyThemeToDom(target.value);
+      previewingUnsavedTheme = previewPref !== normalizeTheme(state.config.theme);
+      void invoke("preview_window_theme", { theme: previewPref }).catch(() => {});
+    });
 
   document
     .querySelector<HTMLButtonElement>("#btn-close-modal")
@@ -2757,6 +2828,10 @@ function bindModalEvents(): void {
       const isDev = getEffectiveTier() === "developer";
       const langVal =
         document.querySelector<HTMLSelectElement>("#cfg-lang")?.value ?? "de";
+      const themeVal = normalizeTheme(
+        document.querySelector<HTMLSelectElement>("#cfg-theme")?.value ??
+          state.config.theme,
+      );
       const trayVal =
         document.querySelector<HTMLInputElement>("#cfg-tray")?.checked ?? true;
       const notifyVal =
@@ -2779,6 +2854,7 @@ function bindModalEvents(): void {
         const nextConfig: AppConfig = {
           ...state.config,
           language: setLocale(langVal),
+          theme: themeVal,
           minimizeToTray: trayVal,
           notificationsEnabled: notifyVal,
           logAutoScroll: autoScrollVal,
@@ -2789,10 +2865,12 @@ function bindModalEvents(): void {
         const snap = await invoke<BridgeSnapshot>("update_app_config", {
           config: nextConfig,
         });
+        previewingUnsavedTheme = false;
         state.config = {
           ...nextConfig,
           activeTokenId: snap.activeTokenId ?? nextConfig.activeTokenId,
         };
+        applyThemeToDom(state.config.theme);
         applySnapshot(snap);
         state.activeModal = "none";
         renderAll();
@@ -2814,7 +2892,11 @@ function bindModalEvents(): void {
           key: rawKey,
         });
         const snap = await invoke<BridgeSnapshot>("get_bridge_snapshot");
-        state.config = updatedCfg;
+        state.config = {
+          ...updatedCfg,
+          theme: normalizeTheme(updatedCfg.theme),
+        };
+        applyThemeToDom(state.config.theme);
         applySnapshot(snap);
         state.accessKeyError = null;
         state.activeModal = "none";
@@ -2837,7 +2919,11 @@ function bindModalEvents(): void {
       try {
         const updatedCfg = await invoke<AppConfig>("reset_access_tier");
         const snap = await invoke<BridgeSnapshot>("get_bridge_snapshot");
-        state.config = updatedCfg;
+        state.config = {
+          ...updatedCfg,
+          theme: normalizeTheme(updatedCfg.theme),
+        };
+        applyThemeToDom(state.config.theme);
         applySnapshot(snap);
         state.accessKeyError = null;
         state.activeModal = "none";
@@ -2850,9 +2936,16 @@ function bindModalEvents(): void {
 }
 
 async function bootstrap(): Promise<void> {
+  systemDarkMedia?.addEventListener("change", () => {
+    if (!previewingUnsavedTheme && normalizeTheme(state.config.theme) === "system") {
+      applyThemeToDom("system");
+    }
+  });
+
   window.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
       if (state.activeModal !== "none") {
+        revertPreviewedThemeIfNeeded();
         state.activeModal = "none";
         state.accessKeyError = null;
         renderModalOnly();
@@ -2871,11 +2964,16 @@ async function bootstrap(): Promise<void> {
       invoke<LogEntry[]>("get_bridge_logs"),
     ]);
     state.info = info;
-    state.config = config;
+    state.config = {
+      ...config,
+      theme: normalizeTheme(config.theme),
+    };
+    applyThemeToDom(state.config.theme);
     applySnapshot(snapshot);
     state.logs = logs;
     setLocale(config.language);
   } catch {
+    applyThemeToDom("dark");
     setLocale("de");
     syncDocumentTitle();
   }

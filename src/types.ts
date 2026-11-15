@@ -18,6 +18,8 @@ export type SupportedLocale =
 
 export type BackendMode = "mock" | "live";
 
+export type ThemePreference = "dark" | "light" | "system";
+
 export type AccessTier = "user" | "extended" | "developer";
 
 export type BridgeConnectionState =
@@ -52,6 +54,7 @@ export interface AppConfig {
   accessTier: AccessTier;
   fs25ProfilePath: string | null;
   language: string;
+  theme: ThemePreference;
   minimizeToTray: boolean;
   notificationsEnabled: boolean;
   logAutoScroll: boolean;

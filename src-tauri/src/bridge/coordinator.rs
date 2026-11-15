@@ -333,9 +333,10 @@ impl BridgeManager {
         Ok(self.get_snapshot())
     }
 
-    /// Updates user configuration (language, notifications, tray behavior, backend mode/URL, or active token profile).
+    /// Updates user configuration (language, theme, notifications, tray behavior, backend mode/URL, or active token profile).
     pub fn update_config(&self, mut next: AppConfig) -> Result<BridgeSnapshot, String> {
         next.language = crate::config::normalize_language(&next.language);
+        next.theme = crate::config::normalize_theme(&next.theme);
 
         let (needs_worker_restart, lang_changed) = {
             let mut guard = self

@@ -34,11 +34,12 @@ pub fn run() {
             let config_file = config_dir.join("settings.json");
 
             let manager = BridgeManager::new(config_file, Some(app.handle().clone()));
-            let initial_lang = manager.get_config().language;
+            let initial_cfg = manager.get_config();
             let initial_edition = manager.get_snapshot().game_edition;
             app.manage(manager);
 
-            tray::setup_system_tray(app, &initial_lang, initial_edition.as_deref())?;
+            tray::setup_system_tray(app, &initial_cfg.language, initial_edition.as_deref())?;
+            tray::apply_window_theme(app.handle(), &initial_cfg.theme);
             tray::restore_main_window(app.handle());
             Ok(())
         })
@@ -78,6 +79,7 @@ pub fn run() {
             commands::get_app_config,
             commands::set_fs25_profile_path,
             commands::update_app_config,
+            commands::preview_window_theme,
             commands::add_market_token,
             commands::select_active_market_token,
             commands::update_market_token_label,

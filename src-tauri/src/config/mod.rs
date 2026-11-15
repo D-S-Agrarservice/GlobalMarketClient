@@ -82,6 +82,8 @@ pub struct AppConfig {
     pub fs25_profile_path: Option<String>,
     /// UI language code (`de`, `en`, `fr`, `es`, `pl`, `it`, `nl`, `cz`, `pt`, `hu`, `da`, `sv`, `ro`, `tr`, `ru`, `uk`). Fallback is always `en`.
     pub language: String,
+    /// UI color theme preference (`dark` default, `light`, or `system`).
+    pub theme: String,
     /// Minimize window to the system tray instead of quitting when clicking the window close button.
     pub minimize_to_tray: bool,
     /// Show OS desktop notifications (e.g. when a new global Great Demand starts).
@@ -109,6 +111,7 @@ impl Default for AppConfig {
             access_tier: AccessTier::User,
             fs25_profile_path: None,
             language: "de".to_string(),
+            theme: "dark".to_string(),
             minimize_to_tray: true,
             notifications_enabled: true,
             log_auto_scroll: true,
@@ -125,6 +128,7 @@ impl AppConfig {
         if let Ok(raw) = fs::read_to_string(config_file) {
             if let Ok(mut parsed) = serde_json::from_str::<AppConfig>(&raw) {
                 parsed.language = normalize_language(&parsed.language);
+                parsed.theme = normalize_theme(&parsed.theme);
                 let mut needs_save = false;
 
                 if !is_valid_client_id(&parsed.client_id) {
@@ -197,6 +201,15 @@ pub fn normalize_language(lang: &str) -> String {
         "se" => "sv".to_string(),
         "ua" => "uk".to_string(),
         _ => "en".to_string(),
+    }
+}
+
+/// Normalizes UI color theme preference (`dark`, `light`, or `system`). Defaults strictly to `dark`.
+pub fn normalize_theme(theme: &str) -> String {
+    match theme.trim().to_ascii_lowercase().as_str() {
+        "light" => "light".to_string(),
+        "system" | "auto" => "system".to_string(),
+        _ => "dark".to_string(),
     }
 }
 
