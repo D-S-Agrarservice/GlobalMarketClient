@@ -5,25 +5,27 @@ use globalmarket_client_lib::api::fastapi::{
 };
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
-    FillTypeStatus, MarketItemDto, TransactionRequest, TransactionType, WhitelistItemDto,
-    WhitelistSyncRequest,
+    ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
+    ContractSubAction, FillTypeStatus, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
+    TransactionRequest, TransactionType, WhitelistItemDto, WhitelistSyncRequest,
 };
 use globalmarket_client_lib::api::{ApiError, BackendService};
 use globalmarket_client_lib::bridge::coordinator::{
     encode_base64, BridgeConnectionState, BridgeManager,
 };
 use globalmarket_client_lib::bridge::dds::{
-    convert_logo_bytes_to_dds_bytes, decode_dds_to_rgba8, is_valid_cached_logo_dds,
-    logo_cache_hash12, logo_rel_path_for_hash, EXPECTED_LOGO_DDS_BYTES, LOGO_CANVAS_HEIGHT,
-    LOGO_CANVAS_WIDTH, LOGO_MIPMAP_COUNT,
+    convert_logo_bytes_to_dds_bytes, decode_dds_to_rgba8, default_dsa_logo_rel_path,
+    is_valid_cached_logo_dds, logo_cache_hash12, logo_rel_path_for_hash, EXPECTED_LOGO_DDS_BYTES,
+    LOGO_CANVAS_HEIGHT, LOGO_CANVAS_WIDTH, LOGO_MIPMAP_COUNT,
 };
 use globalmarket_client_lib::bridge::l10n::localize_fill_type;
 use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
-    sanitize_market_name, write_heartbeat_xml, write_heartbeat_xml_with_latest,
-    write_market_data_xml, write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket,
-    MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
+    sanitize_market_name, write_contract_data_xml, write_heartbeat_xml,
+    write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest, write_market_data_xml,
+    write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket, MAX_MARKET_NAME_BYTES,
+    MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
@@ -474,9 +476,12 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "0.9.11".to_string(),
+        exe_version: "0.9.13".to_string(),
         min_exe_version: "0.9.9".to_string(),
-        latest_exe_version: Some("0.9.12".to_string()),
+        latest_exe_version: Some("0.9.14".to_string()),
+        contracts_supported: true,
+        open_contracts_count: 2,
+        open_offers_count: 3,
         approved_count: 10,
         pending_count: 2,
         rejected_count: 0,
@@ -514,8 +519,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
-    assert!(report.contains("app_version: \"0.9.11-beta (protocol 0.9.11)\""));
-    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.12)\""));
+    assert!(report.contains("app_version: \"0.9.13-beta (protocol 0.9.13)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.14)\""));
+    assert!(report.contains("contracts_bridge: \"supported=true, open_contracts=2, open_offers=3\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
@@ -1511,7 +1517,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.12\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.14\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
                                 "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
@@ -1662,10 +1668,10 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
-    assert!(xml_a.contains("<version>0.9.11</version>"));
+    assert!(xml_a.contains("<version>0.9.13</version>"));
     assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
-    assert!(xml_a.contains("<latestVersion>0.9.12</latestVersion>"));
-    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.12"));
+    assert!(xml_a.contains("<latestVersion>0.9.14</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.14"));
     assert!(mgr
         .get_logs()
         .iter()
@@ -1732,7 +1738,9 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
         "Cached logos/logo_<hash>.dds must prevent redundant WebP downloads & re-encodes"
     );
 
-    // 4. Switch to Official Market (None / Tier 0) while keeping both tokens saved in vault!
+    // 4. Switch to Official Market (None / UI Tier 0) while keeping both tokens saved in vault!
+    // Built-in DSA logo fallback guarantees FS25 always renders the DSA `.dds` logo in-game (`brandingTier="1"`).
+    let default_dsa_rel = default_dsa_logo_rel_path();
     mgr.select_active_market_token(None).unwrap();
 
     assert!(
@@ -1743,13 +1751,20 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                 && s.active_token_id.is_none()
                 && s.saved_tokens.len() == 2
                 && !s.is_private_market
-                && s.market_logo_file.is_none()
+                && s.market_logo_file.as_deref() == Some(default_dsa_rel.as_str())
                 && fs::read_to_string(&online_xml_path)
-                    .map(|x| x.contains("brandingTier=\"0\"") && !x.contains("logoFile="))
+                    .map(|x| {
+                        x.contains("brandingTier=\"1\"")
+                            && x.contains("isPrivateMarket=\"false\"")
+                            && !x.contains("marketName=")
+                            && x.contains("hasCustomLogo=\"true\"")
+                            && x.contains(&format!("logoFile=\"{default_dsa_rel}\""))
+                    })
                     .unwrap_or(false)
         }),
-        "Switching to Official Market should immediately reset globalMarketOnline.xml to Tier 0 while retaining saved profiles"
+        "Switching to Official Market should keep UI branding_tier=0 while emitting the built-in DSA DDS logo for FS25"
     );
+    assert!(is_valid_cached_logo_dds(&bridge_root.join(&default_dsa_rel)));
 
     // 5. Also verify Developer Mock mode Tier 0..3 simulation + DDS output
     let mut cfg_mock = mgr.get_config();
@@ -2482,6 +2497,8 @@ fn manual_disconnect_switch_and_auto_connect_on_launch_false_work_cleanly() {
     assert!(meta_hits.load(Ordering::SeqCst) > 0);
     assert!(market_hits.load(Ordering::SeqCst) > 0);
 
+    let default_dsa_rel = default_dsa_logo_rel_path();
+    assert_eq!(mgr.get_snapshot().branding_tier, 2);
     let sync_xml_content = fs::read_dir(&paths.read_dir)
         .unwrap()
         .flatten()
@@ -2490,10 +2507,11 @@ fn manual_disconnect_switch_and_auto_connect_on_launch_false_work_cleanly() {
     assert!(
         sync_xml_content.contains("isPrivateMarket=\"true\"")
             && sync_xml_content.contains("marketName=\"Custom Dedi Hub\"")
-            && sync_xml_content.contains("brandingTier=\"2\"")
-            && sync_xml_content.contains("logoFile=\"\""),
-        "gmDataSync XML must embed branding attributes from active heartbeat branding: {sync_xml_content}"
+            && sync_xml_content.contains("brandingTier=\"3\"")
+            && sync_xml_content.contains(&format!("logoFile=\"{default_dsa_rel}\"")),
+        "gmDataSync XML for Private Market without custom logo must emit built-in DSA DDS logo: {sync_xml_content}"
     );
+    assert!(is_valid_cached_logo_dds(&paths.bridge_root.join(&default_dsa_rel)));
 
     // Seed an extra staging temp file, then disconnect manually: cleanup must be immediate and HTTP traffic must stop.
     fs::write(paths.staging_dir.join("in_flight.tmp"), "partial").unwrap();
@@ -2591,4 +2609,568 @@ fn market_data_xml_with_branding_stamps_tier_and_logo_attributes() {
     assert!(!xml_none.contains("logoFile="));
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn etappe2_contract_xml_roundtrip_and_pruning_isolation() {
+    let dir = env::temp_dir().join(format!("fs25_gm_contracts_xml_test_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let staging_dir = dir.join(".staging");
+    let read_dir = dir.join("read");
+    let online_file = dir.join("globalMarketOnline.xml");
+
+    // 1. Heartbeat contractsSupported capability gate (true only when connected && supported)
+    write_heartbeat_xml_with_capabilities(
+        &staging_dir,
+        &online_file,
+        true,
+        "0.9.12",
+        "0.9.10",
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    let hb_on = fs::read_to_string(&online_file).unwrap();
+    assert!(hb_on.contains("isConnected=\"true\""));
+    assert!(hb_on.contains("contractsSupported=\"true\""));
+
+    write_heartbeat_xml_with_capabilities(
+        &staging_dir,
+        &online_file,
+        false,
+        "0.9.12",
+        "0.9.10",
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    let hb_off = fs::read_to_string(&online_file).unwrap();
+    assert!(hb_off.contains("isConnected=\"false\""));
+    assert!(hb_off.contains("contractsSupported=\"false\""));
+
+    // 2. Outgoing contractAction XML parsing (including negative priceDeltaPct, bales/pallets, ACK_SETTLEMENT)
+    let outgoing_xml = r#"<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<gmDataSync action="contractAction">
+    <request subAction="CREATE_OFFER" actionId="a3f901c48b2e7d10_12000_1" serverId="a3f901c48b2e7d10" farmId="2" farmName="Südhof &amp; Co" fillType="barley" liters="25000" priceDeltaPct="-7" allowPartial="false" durationHours="48" wasBale="true" wasPallet="false" />
+    <request subAction="ACK_SETTLEMENT" actionId="a3f901c48b2e7d10_12050_2" serverId="a3f901c48b2e7d10" settlementIds="set_901,set_902" />
+</gmDataSync>"#;
+
+    match parse_incoming_write_xml(outgoing_xml, "20261117_200000_1").unwrap() {
+        IncomingPacket::ContractActions(reqs) => {
+            assert_eq!(reqs.len(), 2);
+            assert_eq!(reqs[0].sub_action, ContractSubAction::CreateOffer);
+            assert_eq!(reqs[0].action_id, "a3f901c48b2e7d10_12000_1");
+            assert_eq!(reqs[0].server_id, "a3f901c48b2e7d10");
+            assert_eq!(reqs[0].farm_id, Some(2));
+            assert_eq!(reqs[0].farm_name.as_deref(), Some("Südhof & Co"));
+            assert_eq!(reqs[0].fill_type.as_deref(), Some("BARLEY"));
+            assert_eq!(reqs[0].liters, Some(25_000));
+            assert_eq!(reqs[0].price_delta_pct, Some(-7));
+            assert_eq!(reqs[0].allow_partial, Some(false));
+            assert_eq!(reqs[0].duration_hours, Some(48));
+            assert_eq!(reqs[0].was_bale, Some(true));
+            assert_eq!(reqs[0].was_pallet, Some(false));
+
+            assert_eq!(reqs[1].sub_action, ContractSubAction::AckSettlement);
+            assert_eq!(reqs[1].settlement_ids.as_deref(), Some("set_901,set_902"));
+        }
+        other => panic!("unexpected packet: {other:?}"),
+    }
+
+    // 3. Incoming gmContractSync_*.xml writer & isolation from gmDataSync_*.xml pruning
+    let contract_state = ContractStateResponse {
+        updated_at: 1_763_395_200,
+        contracts: vec![OnlineContractDto {
+            remote_id: "c_101".to_string(),
+            origin: "ONLINE".to_string(),
+            is_npc: false,
+            issuer_server_id: "99aa11bb22cc33dd".to_string(),
+            issuer_farm_id: 1,
+            issuer_name: "Nordhof <Server A>".to_string(),
+            contractor_server_id: String::new(),
+            contractor_farm_id: 0,
+            fill_type: "WHEAT".to_string(),
+            total_liters: 5_000_000_000, // Clamped to i32::MAX
+            delivered_liters: 0,
+            base_trend_factor: 1.05,
+            bonus_pct: 12,
+            remaining_seconds: 172_800,
+            status: "OPEN".to_string(),
+        }],
+        direct_offers: vec![OnlineDirectOfferDto {
+            remote_id: "o_205".to_string(),
+            origin: "ONLINE".to_string(),
+            is_npc: false,
+            seller_server_id: "99aa11bb22cc33dd".to_string(),
+            seller_farm_id: 2,
+            seller_name: "Südhof".to_string(),
+            fill_type: "BARLEY".to_string(),
+            total_liters: 25_000,
+            remaining_liters: 25_000,
+            price_delta_pct: -5,
+            allow_partial: true,
+            remaining_seconds: 86_400,
+            was_bale: false,
+            was_pallet: false,
+            status: "OPEN".to_string(),
+        }],
+        action_results: vec![ContractActionResultDto {
+            action_id: "a3f901c48b2e7d10_12000_1".to_string(),
+            sub_action: "BUY_OFFER".to_string(),
+            status: "ACCEPTED".to_string(),
+            reason: String::new(),
+            remote_id: "o_205".to_string(),
+            granted_liters: 10_000,
+            base_trend_factor: 1.0,
+            bonus_pct: 0,
+            remaining_seconds: 0,
+        }],
+        settlements: vec![ContractSettlementDto {
+            settlement_id: "set_901".to_string(),
+            settlement_type: "CONTRACT_DELIVERY".to_string(),
+            target_server_id: "a3f901c48b2e7d10".to_string(),
+            target_farm_id: 1,
+            remote_id: "c_101".to_string(),
+            fill_type: "WHEAT".to_string(),
+            liters: 20_000,
+            missing_liters: 0,
+            base_trend_factor: 1.0,
+            price_delta_pct: 0,
+            source_label: "#c_101 (Südhof)".to_string(),
+        }],
+    };
+
+    let contract_xml_path =
+        write_contract_data_xml(&staging_dir, &read_dir, &contract_state).unwrap();
+    let fname = contract_xml_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap();
+    assert!(
+        fname.starts_with("gmContractSync_"),
+        "Contract sync packet MUST use gmContractSync_ prefix, got {fname}"
+    );
+    let raw_bytes = fs::read(&contract_xml_path).unwrap();
+    assert!(!raw_bytes.starts_with(&[0xEF, 0xBB, 0xBF]));
+    let xml_str = String::from_utf8(raw_bytes).unwrap();
+    assert!(xml_str.contains("<gmDataSync action=\"contractData\">"));
+    assert!(xml_str.contains("totalLiters=\"2147483647\""));
+    assert!(xml_str.contains("baseTrendFactor=\"1.0500\""));
+    assert!(xml_str.contains("issuerName=\"Nordhof &lt;Server A&gt;\""));
+    assert!(xml_str.contains("priceDeltaPct=\"-5\""));
+    assert!(xml_str.contains("actionId=\"a3f901c48b2e7d10_12000_1\""));
+    assert!(xml_str.contains("settlementId=\"set_901\" type=\"CONTRACT_DELIVERY\""));
+
+    // Writing 10 spot-market snapshots MUST NOT evict unread gmContractSync_*.xml!
+    for idx in 1..=10 {
+        write_market_data_xml(
+            &staging_dir,
+            &read_dir,
+            &[MarketItemDto {
+                fill_type: "WHEAT".to_string(),
+                title: None,
+                fill_level: 500_000 + idx * 1_000,
+                trend: 1.0,
+                great_demand: false,
+                great_demand_bonus: 0.0,
+                great_demand_remaining: 0,
+                status: FillTypeStatus::Approved,
+            }],
+        )
+        .unwrap();
+    }
+
+    assert!(
+        contract_xml_path.exists(),
+        "Spot-market gmDataSync pruning must NEVER delete unread gmContractSync_*.xml!"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn etappe2_end_to_end_contracts_offers_settlements_and_fastapi_http() {
+    // Part A: FastAPI HTTP client ETag scoping per server_id & POST /api/v1/contracts/actions
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server_thread = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for step in 0..5 {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+
+            let mut headers = Vec::new();
+            let mut content_length = 0_usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = trimmed.split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        content_length = v.trim().parse().unwrap_or(0);
+                    }
+                    headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+                }
+            }
+            let mut body_bytes = vec![0_u8; content_length];
+            if content_length > 0 {
+                reader.read_exact(&mut body_bytes).unwrap();
+            }
+            let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+            let get_hdr = |name: &str| -> Option<String> {
+                headers
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.clone())
+            };
+
+            let response = match step {
+                0 => {
+                    assert!(request_line.starts_with("GET /api/v1/meta/status "));
+                    let json = r#"{"online":true,"min_exe_version":"0.9.10","poll_interval_sec":10,"market_name":"Global Market","api_version":"2.1.0","contracts_supported":true}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                1 => {
+                    assert!(request_line.starts_with("GET /api/v1/contracts/state "));
+                    let json = r#"{"updated_at":1763395200,"contracts":[{"remote_id":"c_1","origin":"ONLINE","is_npc":false,"issuer_server_id":"srv_other","issuer_farm_id":1,"issuer_name":"Nordhof","contractor_server_id":"","contractor_farm_id":0,"fill_type":"WHEAT","total_liters":50000,"delivered_liters":0,"base_trend_factor":1.0,"bonus_pct":12,"remaining_seconds":86400,"status":"OPEN"}],"direct_offers":[],"action_results":[],"settlements":[]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"cetag-anon\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                2 => {
+                    // Switching from server_id=None to server_id=Some("srv_a") MUST NOT reuse "cetag-anon"!
+                    assert!(
+                        request_line.starts_with("GET /api/v1/contracts/state?server_id=srv_a ")
+                    );
+                    assert_eq!(get_hdr("if-none-match"), None);
+                    let json = r#"{"updated_at":1763395205,"contracts":[{"remote_id":"c_1","origin":"ONLINE","is_npc":false,"issuer_server_id":"srv_other","issuer_farm_id":1,"issuer_name":"Nordhof","contractor_server_id":"srv_a","contractor_farm_id":1,"fill_type":"WHEAT","total_liters":50000,"delivered_liters":10000,"base_trend_factor":1.0,"bonus_pct":12,"remaining_seconds":86395,"status":"ACTIVE"}],"direct_offers":[],"action_results":[],"settlements":[]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"cetag-srva\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                3 => {
+                    // Repeat poll with same server_id="srv_a" sends If-None-Match: "cetag-srva" -> 304 Not Modified
+                    assert!(
+                        request_line.starts_with("GET /api/v1/contracts/state?server_id=srv_a ")
+                    );
+                    assert_eq!(get_hdr("if-none-match").as_deref(), Some("\"cetag-srva\""));
+                    "HTTP/1.1 304 Not Modified\r\nETag: \"cetag-srva\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
+                }
+                4 => {
+                    assert!(request_line.starts_with("POST /api/v1/contracts/actions "));
+                    assert!(body_str.contains("\"sub_action\":\"CREATE_OFFER\""));
+                    assert!(body_str.contains("\"action_id\":\"srv_a_9000_1\""));
+                    assert!(body_str.contains("\"price_delta_pct\":-5"));
+                    let json = r#"{"updated_at":1763395210,"contracts":[],"direct_offers":[{"remote_id":"o_99","origin":"ONLINE","is_npc":false,"seller_server_id":"srv_a","seller_farm_id":1,"seller_name":"Hof A","fill_type":"BARLEY","total_liters":20000,"remaining_liters":20000,"price_delta_pct":-5,"allow_partial":true,"remaining_seconds":86400,"was_bale":false,"was_pallet":false,"status":"OPEN"}],"action_results":[{"action_id":"srv_a_9000_1","sub_action":"CREATE_OFFER","status":"ACCEPTED","reason":"","remote_id":"o_99","granted_liters":0,"base_trend_factor":1.0,"bonus_pct":0,"remaining_seconds":86400}],"settlements":[]}"#;
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"cetag-srva-2\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        json.len(),
+                        json
+                    )
+                }
+                _ => unreachable!(),
+            };
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            drop(reader);
+            let _ = stream.read(&mut [0_u8; 64]);
+        }
+    });
+
+    let api = FastApiBackend::new(format!("http://{addr}"), None, "cid1234567890abc".to_string())
+        .unwrap();
+    let hs = api.check_status().unwrap();
+    assert!(hs.contracts_supported);
+
+    let s_anon = api.fetch_contracts_state(None).unwrap();
+    assert_eq!(s_anon.contracts.len(), 1);
+    assert_eq!(s_anon.contracts[0].status, "OPEN");
+
+    let s_srva = api.fetch_contracts_state(Some("srv_a")).unwrap();
+    assert_eq!(s_srva.contracts[0].status, "ACTIVE");
+
+    let s_cached = api.fetch_contracts_state(Some("srv_a")).unwrap();
+    assert_eq!(s_cached.contracts[0].delivered_liters, 10_000);
+
+    let after_post = api
+        .submit_contract_action(ContractActionRequest {
+            sub_action: ContractSubAction::CreateOffer,
+            action_id: "srv_a_9000_1".to_string(),
+            server_id: "srv_a".to_string(),
+            farm_id: Some(1),
+            farm_name: Some("Hof A".to_string()),
+            remote_id: None,
+            fill_type: Some("BARLEY".to_string()),
+            liters: Some(20_000),
+            base_trend_factor: None,
+            bonus_pct: None,
+            price_delta_pct: Some(-5),
+            allow_partial: Some(true),
+            duration_hours: Some(24),
+            was_bale: Some(false),
+            was_pallet: Some(false),
+            settlement_ids: None,
+        })
+        .unwrap();
+    assert_eq!(after_post.direct_offers.len(), 1);
+    assert_eq!(after_post.action_results[0].remote_id, "o_99");
+    server_thread.join().unwrap();
+
+    // Part B: Full Coordinator + LocalMockBackend E2E lifecycle (CREATE -> SIMULATE SETTLEMENT -> ACK_SETTLEMENT)
+    let test_dir = env::temp_dir().join(format!(
+        "fs25_gm_e2e_contracts_mgr_{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&test_dir);
+    let profile_dir = test_dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let config_file = test_dir.join("config").join("settings.json");
+    AppConfig {
+        access_tier: AccessTier::Developer,
+        backend_mode: BackendMode::Mock,
+        fs25_profile_path: Some(profile_dir.to_string_lossy().into_owned()),
+        ..AppConfig::default()
+    }
+    .save_to_file(&config_file)
+    .unwrap();
+
+    let mgr = BridgeManager::new(config_file, None);
+    let bridge_root = profile_dir.join("modSettings").join("FS25_GlobalMarket");
+    let write_dir = bridge_root.join("write");
+    let read_dir = bridge_root.join("read");
+    let online_file = bridge_root.join("globalMarketOnline.xml");
+
+    for _ in 0..40 {
+        if online_file
+            .exists()
+            .then(|| fs::read_to_string(&online_file).ok())
+            .flatten()
+            .is_some_and(|s| s.contains("contractsSupported=\"true\""))
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let hb_xml = fs::read_to_string(&online_file).unwrap();
+    assert!(hb_xml.contains("contractsSupported=\"true\""));
+
+    // Clear initial read_dir files as Lua would, then emit _2 (CREATE_CONTRACT) and _10 (CREATE_OFFER)
+    for entry in fs::read_dir(&read_dir).unwrap().flatten() {
+        let _ = fs::remove_file(entry.path());
+    }
+
+    fs::write(
+        write_dir.join("contractAction_20261117_200500_2.xml"),
+        r#"<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<gmDataSync action="contractAction">
+    <request subAction="CREATE_CONTRACT" actionId="a3f901c48b2e7d10_1000_2" serverId="a3f901c48b2e7d10" farmId="1" farmName="Hof Meier [Dedi]" fillType="WHEAT" liters="30000" baseTrendFactor="1.0" bonusPct="15" durationHours="48" />
+</gmDataSync>"#,
+    )
+    .unwrap();
+    fs::write(
+        write_dir.join("contractAction_20261117_200500_10.xml"),
+        r#"<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<gmDataSync action="contractAction">
+    <request subAction="CREATE_OFFER" actionId="a3f901c48b2e7d10_1000_10" serverId="a3f901c48b2e7d10" farmId="1" farmName="Hof Meier [Dedi]" fillType="BARLEY" liters="15000" priceDeltaPct="-4" allowPartial="true" durationHours="24" />
+</gmDataSync>"#,
+    )
+    .unwrap();
+
+    for _ in 0..80 {
+        let write_left = fs::read_dir(&write_dir).unwrap().flatten().count();
+        let snap = mgr.get_snapshot();
+        if write_left == 0 && snap.open_contracts_count >= 2 && snap.open_offers_count >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    let snap = mgr.get_snapshot();
+    assert!(snap.contracts_supported);
+    assert!(snap.open_contracts_count >= 2);
+    assert!(snap.open_offers_count >= 2);
+
+    let contract_sync_xmls: String = fs::read_dir(&read_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("gmContractSync_"))
+        })
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .collect();
+    assert!(contract_sync_xmls.contains("actionId=\"a3f901c48b2e7d10_1000_2\" subAction=\"CREATE_CONTRACT\" status=\"ACCEPTED\""));
+    assert!(contract_sync_xmls.contains("actionId=\"a3f901c48b2e7d10_1000_10\" subAction=\"CREATE_OFFER\" status=\"ACCEPTED\""));
+
+    // Clear read_dir, trigger Mock foreign counterparty fulfillment, and verify settlements arrive in gmContractSync_*.xml
+    for entry in fs::read_dir(&read_dir).unwrap().flatten() {
+        let _ = fs::remove_file(entry.path());
+    }
+    let sim_summary = mgr.mock_simulate_contract_activity().unwrap();
+    assert!(sim_summary.contains("fulfilled=1, sold=1"));
+
+    let mut settlement_xml = String::new();
+    for _ in 0..60 {
+        settlement_xml = fs::read_dir(&read_dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("gmContractSync_"))
+            })
+            .filter_map(|e| fs::read_to_string(e.path()).ok())
+            .collect();
+        if settlement_xml.contains("type=\"CONTRACT_DELIVERY\"")
+            && settlement_xml.contains("type=\"OFFER_SOLD\"")
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(settlement_xml.contains("type=\"CONTRACT_DELIVERY\""));
+    assert!(settlement_xml.contains("type=\"CONTRACT_COMPLETED_ISSUER\""));
+    assert!(settlement_xml.contains("type=\"OFFER_SOLD\""));
+
+    // Acknowledge settlements via ACK_SETTLEMENT
+    for entry in fs::read_dir(&read_dir).unwrap().flatten() {
+        let _ = fs::remove_file(entry.path());
+    }
+    fs::write(
+        write_dir.join("contractAction_20261117_200600_11.xml"),
+        r#"<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<gmDataSync action="contractAction">
+    <request subAction="ACK_SETTLEMENT" actionId="a3f901c48b2e7d10_2000_11" serverId="a3f901c48b2e7d10" settlementIds="mock_set_1,mock_set_2,mock_set_3" />
+</gmDataSync>"#,
+    )
+    .unwrap();
+
+    for _ in 0..60 {
+        if fs::read_dir(&write_dir).unwrap().flatten().count() == 0 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let post_ack_xml: String = fs::read_dir(&read_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("gmContractSync_"))
+        })
+        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .collect();
+    assert!(!post_ack_xml.contains("settlementId=\"mock_set_1\""));
+
+    mgr.shutdown();
+    assert!(!online_file.exists());
+    assert_eq!(fs::read_dir(&read_dir).unwrap().flatten().count(), 0);
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn all_16_locale_files_have_100_percent_key_and_placeholder_parity() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn extract_placeholders(text: &str) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '{' {
+                let mut token = String::new();
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        break;
+                    }
+                    token.push(inner);
+                }
+                if !token.is_empty() {
+                    out.insert(token);
+                }
+            }
+        }
+        out
+    }
+
+    let locales_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("src")
+        .join("locales");
+
+    let expected_langs = [
+        "de", "en", "fr", "es", "pl", "it", "nl", "cz", "pt", "hu", "da", "sv", "ro", "tr", "ru",
+        "uk",
+    ];
+
+    let en_raw = fs::read_to_string(locales_dir.join("en.json")).expect("read en.json");
+    let en_map: BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(&en_raw).expect("valid JSON in en.json");
+    let en_keys: BTreeSet<String> = en_map.keys().cloned().collect();
+
+    for lang in expected_langs {
+        let path = locales_dir.join(format!("{lang}.json"));
+        let raw = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read locale {lang}.json: {e}"));
+        let map: BTreeMap<String, serde_json::Value> = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("Invalid JSON in {lang}.json: {e}"));
+        let keys: BTreeSet<String> = map.keys().cloned().collect();
+
+        let missing: Vec<_> = en_keys.difference(&keys).collect();
+        let extra: Vec<_> = keys.difference(&en_keys).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "Locale {lang}.json key mismatch vs en.json! missing={missing:?}, extra={extra:?}"
+        );
+
+        for (k, en_val) in &en_map {
+            if let (Some(en_str), Some(loc_str)) =
+                (en_val.as_str(), map.get(k).and_then(|v| v.as_str()))
+            {
+                assert_eq!(
+                    extract_placeholders(en_str),
+                    extract_placeholders(loc_str),
+                    "Placeholder mismatch in {lang}.json for key '{k}'"
+                );
+            }
+        }
+    }
 }

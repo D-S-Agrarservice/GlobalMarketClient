@@ -102,6 +102,7 @@ pub fn run() {
             commands::mock_set_latest_version,
             commands::mock_set_community_logo,
             commands::mock_set_branding_tier,
+            commands::mock_simulate_contract_activity,
         ])
         .build(tauri::generate_context!())
         .expect("error while building GlobalMarketClient application");

@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Handmatig verbroken – marktsynchronisatie gepauzeerd.",
   "logConnectingByUser": "Handmatige verbinding gestart – synchroniseren met geselecteerde markt…",
   "toastConnected": "Verbinding maken met markt…",
-  "toastDisconnected": "Verbinding verbroken (offline-modus)."
+  "toastDisconnected": "Verbinding verbroken (offline-modus).",
+  "contractsBadge": "{count} Contracten",
+  "offersBadge": "{count} Directe aanbiedingen",
+  "mockBtnContractsSim": "Contract/aanbod simuleren",
+  "logContractActionSent": "Contractactie gesynchroniseerd: {subAction} ({detail})",
+  "logContractActionRejected": "Contractactie geweigerd: {subAction} ({reason})",
+  "logContractSettlementSynced": "Afrekeningen ontvangen: {count} contract-/aanbodboeking(en) doorgegeven aan FS.",
+  "logMockContractSim": "Simulatie: Online contract- en aanbodgebeurtenis geactiveerd ({summary})."
 }

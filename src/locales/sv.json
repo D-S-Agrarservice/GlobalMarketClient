@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Bridge manuellt frånkopplad av användaren. Nätverkstrafik stoppad.",
   "logConnectingByUser": "Ansluter till marknaden (begärt av användaren)...",
   "toastConnected": "Anslutning startad",
-  "toastDisconnected": "Bridge frånkopplad"
+  "toastDisconnected": "Bridge frånkopplad",
+  "contractsBadge": "{count} Kontrakt",
+  "offersBadge": "{count} Direkterbjudanden",
+  "mockBtnContractsSim": "Simulera kontrakt/erbjudande",
+  "logContractActionSent": "Kontraktsåtgärd synkroniserad: {subAction} ({detail})",
+  "logContractActionRejected": "Kontraktsåtgärd avvisad: {subAction} ({reason})",
+  "logContractSettlementSynced": "Avräkningar mottagna: {count} kontrakt-/erbjudandepost(er) levererade till FS.",
+  "logMockContractSim": "Simulering: Onlinehändelse för kontrakt och direkterbjudande utlöst ({summary})."
 }

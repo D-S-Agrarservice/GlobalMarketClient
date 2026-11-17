@@ -272,6 +272,10 @@ pub fn build_diagnostic_report_with_secrets(
         "whitelist_items: \"approved={}, pending={}, rejected={}\"\n",
         snapshot.approved_count, snapshot.pending_count, snapshot.rejected_count
     ));
+    report.push_str(&format!(
+        "contracts_bridge: \"supported={}, open_contracts={}, open_offers={}\"\n",
+        snapshot.contracts_supported, snapshot.open_contracts_count, snapshot.open_offers_count
+    ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
     report.push_str("recent_logs:\n");

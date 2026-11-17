@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Bridge ručně odpojen uživatelem. Síťová komunikace zastavena.",
   "logConnectingByUser": "Navazování připojení k trhu (spuštěno uživatelem)...",
   "toastConnected": "Připojení spuštěno",
-  "toastDisconnected": "Bridge odpojen"
+  "toastDisconnected": "Bridge odpojen",
+  "contractsBadge": "{count} Kontrakty",
+  "offersBadge": "{count} Okamžité nabídky",
+  "mockBtnContractsSim": "Simulovat kontrakt/nabídku",
+  "logContractActionSent": "Akce kontraktu odeslána: {subAction} ({detail})",
+  "logContractActionRejected": "Akce kontraktu zamítnuta: {subAction} ({reason})",
+  "logContractSettlementSynced": "Zúčtování přijato: předáno {count} položek kontraktů/nabídek do FS.",
+  "logMockContractSim": "Simulace: Spuštěna událost online kontraktu a okamžité nabídky ({summary})."
 }

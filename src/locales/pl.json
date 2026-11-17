@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Rozłączono ręcznie – synchronizacja z rynkiem wstrzymana.",
   "logConnectingByUser": "Zlecono ręczne połączenie – synchronizacja z wybranym rynkiem…",
   "toastConnected": "Łączenie z rynkiem…",
-  "toastDisconnected": "Rozłączono (tryb offline)."
+  "toastDisconnected": "Rozłączono (tryb offline).",
+  "contractsBadge": "{count} Kontrakty",
+  "offersBadge": "{count} Oferty bezpośrednie",
+  "mockBtnContractsSim": "Symuluj kontrakt/ofertę",
+  "logContractActionSent": "Akcja kontraktu przesłana: {subAction} ({detail})",
+  "logContractActionRejected": "Akcja kontraktu odrzucona: {subAction} ({reason})",
+  "logContractSettlementSynced": "Rozliczenia odebrane: przekazano {count} rozliczeń kontraktów/ofert do FS.",
+  "logMockContractSim": "Symulacja: Wywołano zdarzenie kontraktu i oferty bezpośredniej online ({summary})."
 }

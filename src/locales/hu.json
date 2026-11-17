@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "A felhasználó kézzel szétkapcsolta a bridge-et. Hálózati forgalom leállítva.",
   "logConnectingByUser": "Csatlakozás a piachoz (felhasználó által indítva)...",
   "toastConnected": "Csatlakozás elindítva",
-  "toastDisconnected": "Bridge szétkapcsolva"
+  "toastDisconnected": "Bridge szétkapcsolva",
+  "contractsBadge": "{count} Szerződés",
+  "offersBadge": "{count} Azonnali ajánlat",
+  "mockBtnContractsSim": "Szerződés/ajánlat szimulálása",
+  "logContractActionSent": "Szerződéses művelet elküldve: {subAction} ({detail})",
+  "logContractActionRejected": "Szerződéses művelet elutasítva: {subAction} ({reason})",
+  "logContractSettlementSynced": "Elszámolások fogadva: {count} szerződéses/ajánlati tétel átadva az FS-nek.",
+  "logMockContractSim": "Szimuláció: Online szerződéses és azonnali ajánlati esemény kiváltva ({summary})."
 }

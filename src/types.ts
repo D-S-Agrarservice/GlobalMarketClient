@@ -85,6 +85,9 @@ export interface BridgeSnapshot {
   exeVersion: string;
   minExeVersion: string;
   latestExeVersion: string | null;
+  contractsSupported: boolean;
+  openContractsCount: number;
+  openOffersCount: number;
   approvedCount: number;
   pendingCount: number;
   rejectedCount: number;

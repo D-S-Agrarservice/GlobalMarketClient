@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Bridge desconectado manualmente pelo usuário. Tráfego de rede interrompido.",
   "logConnectingByUser": "Conectando ao mercado (solicitado pelo usuário)...",
   "toastConnected": "Conexão iniciada",
-  "toastDisconnected": "Bridge desconectado"
+  "toastDisconnected": "Bridge desconectado",
+  "contractsBadge": "{count} Contratos",
+  "offersBadge": "{count} Ofertas diretas",
+  "mockBtnContractsSim": "Simular contrato/oferta",
+  "logContractActionSent": "Ação de contrato sincronizada: {subAction} ({detail})",
+  "logContractActionRejected": "Ação de contrato rejeitada: {subAction} ({reason})",
+  "logContractSettlementSynced": "Liquidações recebidas: {count} lançamento(s) de contratos/ofertas entregues ao FS.",
+  "logMockContractSim": "Simulação: Evento de contrato e oferta direta online acionado ({summary})."
 }

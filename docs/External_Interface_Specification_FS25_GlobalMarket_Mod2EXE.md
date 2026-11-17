@@ -53,7 +53,9 @@ Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_
 | `server_whitelist.xml` | **Lua (Server) -> Lokal** | Statische Referenzliste aller auf der geladenen Map registrierten FillTypes (wird beim Map-Start im Singleplayer bzw. auf dem Host/Dedicated Server erzeugt). |
 | `write/whitelist_<date>_<seq>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="updateWhitelist"`):** Wird vom aktiven Data-Host geschrieben, sobald er vom Server den Data-Host-Token erhält oder im Client live den Markt wechselt. **Client liest & löscht diese Datei.** |
 | `read/gmDataSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="marketData"`):** Eingehende globale Marktdaten. Wird vom Data-Host alle `1000 ms` gepollt, chronologisch sortiert eingelesen und gelöscht. Der Rust-Client behält bei geschlossenem Spiel maximal die `3` neuesten Snapshots vor (`MAX_RETAINED_MARKET_SYNC_FILES = 3`) und räumt `read/` beim Beenden auf. |
+| `read/gmContractSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="contractData"`):** Eingehende Online-Verträge, Direktangebote, Action-Acks (`actionResults`) und `settlements` (Etappe 2). Wird vom selben `1000 ms`-Poll gelesen & gelöscht. Separate Dateinamensklasse, damit `MAX_RETAINED_MARKET_SYNC_FILES` niemals ungelesene Quittungen verdrängt. |
 | `write/transaction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="transaction"`):** Ausgehende Kauf-/Verkaufstransaktion in ganzen Litern. **Client liest, überträgt idempotent ans Backend & löscht diese Datei.** |
+| `write/contractAction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="contractAction"`):** Ausgehende Etappe-2-Aktion (`CREATE_*`, `CANCEL_*`, `ACCEPT_CONTRACT`, `DELIVER_CONTRACT`, `BUY_OFFER`, `ACK_SETTLEMENT`, `REQUEST_SYNC`). **Client liest, sendet idempotent ans Backend & löscht diese Datei.** |
 
 ### 1.3 Verbindliche Datei-I/O-Regeln für Rust (`GlobalMarketClient`) & Lua
 1. **Atomares Schreiben über `.staging/` (Schutz vor Halb-Lese-Zugriffen & `getFiles`-Races):**
@@ -151,6 +153,7 @@ sequenceDiagram
     * **Anti-Zombie-Regel (FS25 Sandbox-konform):** Da `os.time()` in der FS25-Lua-Sandbox `nil` ist, prüft Lua bei jedem Status-Poll (`2000 ms`), ob sich `timestamp` gegenüber dem zuletzt gelesenen Wert weiterbewegt. Bleibt `timestamp` länger als `10000 ms` unverändert (`self.exeStaleMs > 10000`), stuft Lua den Client als beendet/abgestürzt ein (`isExeRunningLocal = false`). Existiert beim allerersten Poll bereits eine alte `globalMarketOnline.xml` (z. B. nach einem früheren PC-Absturz), wartet Lua zwingend auf den ersten Timestamp-Fortschritt, bevor der Client als aktiv gilt.
     * **Sauberer Shutdown:** Beim Stoppen der Bridge oder regulären Schließen des `GlobalMarketClient` wird `globalMarketOnline.xml` sofort per `cleanup_bridge_runtime_files` gelöscht, sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt.
   * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
+  * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Etappe 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
   * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.9` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
     * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.9`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod, übernimmt Lua sofort die höhere Untergrenze, blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein.
@@ -277,6 +280,44 @@ sequenceDiagram
   * `type` (`string`, Pflicht):
     * `"BUY"` = Spieler kauft Ware vom Markt $\rightarrow$ **Backend verringert den Bestand um `amount` Liter.**
     * `"SELL"` = Spieler verkauft Ware an den Markt $\rightarrow$ **Backend erhöht den Bestand um `amount` Liter.**
+
+---
+
+### 3.5 Serverübergreifende Lieferverträge & Direktangebote (Etappe 2: `contractAction` & `contractData`)
+
+Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifenden Austausch von Spieler-Lieferverträgen (`#25`) und `±10 %`-Direktangeboten über zwei komplementäre XML-Pakete (freigeschaltet via `globalMarketOnline#contractsSupported="true"`):
+
+* **Anti-Arbitrage & Echtzeit-Fristen:** Es werden **niemals** Euro-Beträge übertragen. Verträge verwenden `baseTrendFactor` (`float`, relativ zum lokalen Map-Spy-Normalpreis) + `bonusPct`; Direktangebote verwenden `priceDeltaPct` (`-10..+10`, relativ zum aktuellen Spotpreis der Zielkarte). Fristen werden als `durationHours` (ausgehend) bzw. `remainingSeconds` (eingehend) in Echtzeit geführt.
+* **Persistente Server-ID (`serverInstanceId`):** Jedes Savegame erzeugt eine persistente 16-stellige Hex-ID in `globalMarket.xml`. Bei einem Data-Host-Failover bleibt die Zuordnung `(serverId, farmId)` dadurch stabil.
+
+1. **Ausgehende Aktionen (`write/contractAction_<date>_<seq>.xml`, `action="contractAction"`):**
+   ```xml
+   <?xml version="1.0" encoding="utf-8" standalone="no"?>
+   <gmDataSync action="contractAction">
+       <request subAction="CREATE_CONTRACT" actionId="a3f901c48b2e7d10_12000_1" serverId="a3f901c48b2e7d10" farmId="1" farmName="Hof Meier [Dedi EU]" fillType="WHEAT" liters="50000" baseTrendFactor="1.00" bonusPct="12" durationHours="48" />
+   </gmDataSync>
+   ```
+   Unterstützte `subAction`-Werte: `CREATE_CONTRACT`, `CANCEL_CONTRACT`, `ACCEPT_CONTRACT`, `DELIVER_CONTRACT`, `CREATE_OFFER`, `BUY_OFFER`, `CANCEL_OFFER`, `ACK_SETTLEMENT` (mit `settlementIds="s1,s2"`), `REQUEST_SYNC`.
+
+2. **Eingehender Sync (`read/gmContractSync_<ts>_<seq>.xml`, `action="contractData"`):**
+   ```xml
+   <?xml version="1.0" encoding="utf-8" standalone="no"?>
+   <gmDataSync action="contractData">
+       <contracts>
+           <contract remoteId="c_101" origin="ONLINE" isNpc="false" issuerServerId="99aa..." issuerFarmId="1" issuerName="Nordhof" contractorServerId="" contractorFarmId="0" fillType="WHEAT" totalLiters="50000" deliveredLiters="0" baseTrendFactor="1.00" bonusPct="12" remainingSeconds="172800" status="OPEN" />
+       </contracts>
+       <directOffers>
+           <offer remoteId="o_205" origin="ONLINE" isNpc="false" sellerServerId="99aa..." sellerFarmId="2" sellerName="Südhof" fillType="BARLEY" totalLiters="25000" remainingLiters="25000" priceDeltaPct="-5" allowPartial="true" remainingSeconds="86400" wasBale="false" wasPallet="false" status="OPEN" />
+       </directOffers>
+       <actionResults>
+           <result actionId="a3f901c48b2e7d10_12000_1" subAction="BUY_OFFER" status="ACCEPTED" reason="" remoteId="o_205" grantedLiters="10000" baseTrendFactor="1.00" bonusPct="0" remainingSeconds="0" />
+       </actionResults>
+       <settlements>
+           <settlement settlementId="set_901" type="CONTRACT_DELIVERY" targetServerId="a3f901c48b2e7d10" targetFarmId="1" remoteId="c_101" fillType="WHEAT" liters="20000" missingLiters="0" baseTrendFactor="1.00" priceDeltaPct="0" sourceLabel="#c_101 (Südhof)" />
+       </settlements>
+   </gmDataSync>
+   ```
+   Unterstützte `settlement#type`-Werte: `CONTRACT_DELIVERY`, `CONTRACT_COMPLETED_ISSUER`, `CONTRACT_EXPIRED_OPEN`, `CONTRACT_DEFAULT_REFUND`, `CONTRACT_PENALTY_DEBIT` (`15 %` Strafe), `OFFER_SOLD`, `OFFER_RETURNED`. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
 
 ---
 

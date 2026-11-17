@@ -127,4 +127,174 @@ pub struct ServerHandshake {
     /// Optional custom logo URL returned by the backend when a valid Community/Logo `X-Market-Token` is active.
     #[serde(default)]
     pub market_logo_url: Option<String>,
+    /// Capability gate for Etappe 2 cross-server Supply Contracts & Direct Offers (`#25`).
+    #[serde(default)]
+    pub contracts_supported: bool,
+}
+
+/// Outgoing Etappe 2 contract & direct-offer action types (`write/contractAction_*.xml` -> `POST /api/v1/contracts/actions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ContractSubAction {
+    CreateContract,
+    CancelContract,
+    AcceptContract,
+    DeliverContract,
+    CreateOffer,
+    BuyOffer,
+    CancelOffer,
+    AckSettlement,
+    RequestSync,
+}
+
+impl ContractSubAction {
+    pub fn from_xml_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "CREATE_CONTRACT" => Some(Self::CreateContract),
+            "CANCEL_CONTRACT" => Some(Self::CancelContract),
+            "ACCEPT_CONTRACT" => Some(Self::AcceptContract),
+            "DELIVER_CONTRACT" => Some(Self::DeliverContract),
+            "CREATE_OFFER" => Some(Self::CreateOffer),
+            "BUY_OFFER" => Some(Self::BuyOffer),
+            "CANCEL_OFFER" => Some(Self::CancelOffer),
+            "ACK_SETTLEMENT" => Some(Self::AckSettlement),
+            "REQUEST_SYNC" => Some(Self::RequestSync),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateContract => "CREATE_CONTRACT",
+            Self::CancelContract => "CANCEL_CONTRACT",
+            Self::AcceptContract => "ACCEPT_CONTRACT",
+            Self::DeliverContract => "DELIVER_CONTRACT",
+            Self::CreateOffer => "CREATE_OFFER",
+            Self::BuyOffer => "BUY_OFFER",
+            Self::CancelOffer => "CANCEL_OFFER",
+            Self::AckSettlement => "ACK_SETTLEMENT",
+            Self::RequestSync => "REQUEST_SYNC",
+        }
+    }
+}
+
+/// Outgoing Etappe 2 action parsed from `write/contractAction_<date>_<seq>.xml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractActionRequest {
+    pub sub_action: ContractSubAction,
+    pub action_id: String,
+    pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liters: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_trend_factor: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bonus_pct: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_delta_pct: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_partial: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_hours: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was_bale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub was_pallet: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_ids: Option<String>,
+}
+
+/// Authoritative online Supply Contract entry (`<contracts><contract .../></contracts>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineContractDto {
+    pub remote_id: String,
+    pub origin: String,
+    pub is_npc: bool,
+    pub issuer_server_id: String,
+    pub issuer_farm_id: i32,
+    pub issuer_name: String,
+    pub contractor_server_id: String,
+    pub contractor_farm_id: i32,
+    pub fill_type: String,
+    pub total_liters: i64,
+    pub delivered_liters: i64,
+    pub base_trend_factor: f32,
+    pub bonus_pct: i32,
+    pub remaining_seconds: i64,
+    pub status: String,
+}
+
+/// Authoritative online +/-10% Direct Offer entry (`<directOffers><offer .../></directOffers>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineDirectOfferDto {
+    pub remote_id: String,
+    pub origin: String,
+    pub is_npc: bool,
+    pub seller_server_id: String,
+    pub seller_farm_id: i32,
+    pub seller_name: String,
+    pub fill_type: String,
+    pub total_liters: i64,
+    pub remaining_liters: i64,
+    pub price_delta_pct: i32,
+    pub allow_partial: bool,
+    pub remaining_seconds: i64,
+    pub was_bale: bool,
+    pub was_pallet: bool,
+    pub status: String,
+}
+
+/// Wait-free `Pending -> Ack` result entry (`<actionResults><result .../></actionResults>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractActionResultDto {
+    pub action_id: String,
+    pub sub_action: String,
+    pub status: String,
+    pub reason: String,
+    pub remote_id: String,
+    pub granted_liters: i64,
+    pub base_trend_factor: f32,
+    pub bonus_pct: i32,
+    pub remaining_seconds: i64,
+}
+
+/// Authoritative cross-server delivery, payout, refund, or breach-penalty settlement (`<settlements><settlement .../></settlements>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractSettlementDto {
+    pub settlement_id: String,
+    #[serde(rename = "type")]
+    pub settlement_type: String,
+    pub target_server_id: String,
+    pub target_farm_id: i32,
+    pub remote_id: String,
+    pub fill_type: String,
+    pub liters: i64,
+    pub missing_liters: i64,
+    pub base_trend_factor: f32,
+    pub price_delta_pct: i32,
+    pub source_label: String,
+}
+
+/// Complete Etappe 2 contract & direct-offer state snapshot (`GET /api/v1/contracts/state` & `POST /api/v1/contracts/actions`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContractStateResponse {
+    pub updated_at: i64,
+    pub contracts: Vec<OnlineContractDto>,
+    pub direct_offers: Vec<OnlineDirectOfferDto>,
+    pub action_results: Vec<ContractActionResultDto>,
+    pub settlements: Vec<ContractSettlementDto>,
 }

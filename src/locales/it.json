@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Disconnesso manualmente – sincronizzazione del mercato in pausa.",
   "logConnectingByUser": "Connessione manuale richiesta – sincronizzazione con il mercato selezionato...",
   "toastConnected": "Connessione al mercato in corso...",
-  "toastDisconnected": "Disconnesso (modalità offline)."
+  "toastDisconnected": "Disconnesso (modalità offline).",
+  "contractsBadge": "{count} Contratti",
+  "offersBadge": "{count} Offerte dirette",
+  "mockBtnContractsSim": "Simula contratto/offerta",
+  "logContractActionSent": "Azione contratto sincronizzata: {subAction} ({detail})",
+  "logContractActionRejected": "Azione contratto rifiutata: {subAction} ({reason})",
+  "logContractSettlementSynced": "Liquidazioni ricevute: {count} registrazione/i di contratti/offerte inviate a FS.",
+  "logMockContractSim": "Simulazione: Attivato evento contratto e offerta diretta online ({summary})."
 }

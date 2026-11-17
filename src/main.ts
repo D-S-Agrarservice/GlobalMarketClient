@@ -76,8 +76,8 @@ interface UiState {
 
 const state: UiState = {
   info: {
-    appVersion: "0.9.11",
-    protocolVersion: "0.9.11",
+    appVersion: "0.9.13",
+    protocolVersion: "0.9.13",
     isBeta: true,
     platform: "desktop",
   },
@@ -111,9 +111,12 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "0.9.11",
+    exeVersion: "0.9.13",
     minExeVersion: "0.9.9",
     latestExeVersion: null,
+    contractsSupported: false,
+    openContractsCount: 0,
+    openOffersCount: 0,
     approvedCount: 0,
     pendingCount: 0,
     rejectedCount: 0,
@@ -1039,6 +1042,13 @@ function renderDashboardHtml(): string {
               ✓ ${escapeHtml(t("mockBtnApprove"))}
             </button>
             <button
+              id="btn-mock-contracts"
+              type="button"
+              class="rounded bg-cyan-500/15 border border-cyan-500/40 px-2.5 py-1 text-xs font-medium text-cyan-300 hover:bg-cyan-500 hover:text-zinc-950 transition cursor-pointer"
+            >
+              📋 ${escapeHtml(t("mockBtnContractsSim"))}
+            </button>
+            <button
               id="btn-mock-offline"
               type="button"
               class="rounded border px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
@@ -1372,6 +1382,18 @@ function renderDashboardHtml(): string {
         </div>
 
         <div class="flex flex-wrap items-center gap-1.5">
+          ${
+            state.snapshot.contractsSupported
+              ? `
+          <span class="rounded bg-sky-500/15 border border-sky-500/30 px-2 py-0.5 text-[11px] font-medium text-sky-300">
+            📋 ${escapeHtml(t("contractsBadge", { count: state.snapshot.openContractsCount }))}
+          </span>
+          <span class="rounded bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[11px] font-medium text-cyan-300">
+            🏷 ${escapeHtml(t("offersBadge", { count: state.snapshot.openOffersCount }))}
+          </span>
+          `
+              : ""
+          }
           <span class="rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[11px] font-medium text-emerald-300">
             ✓ ${escapeHtml(t("whitelistApproved", { count: state.snapshot.approvedCount }))}
           </span>
@@ -2592,6 +2614,16 @@ function bindDashboardEvents(): void {
     });
 
   document
+    .querySelector<HTMLButtonElement>("#btn-mock-contracts")
+    ?.addEventListener("click", async () => {
+      try {
+        await invoke("mock_simulate_contract_activity");
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
+  document
     .querySelector<HTMLButtonElement>("#btn-mock-offline")
     ?.addEventListener("click", async () => {
       state.mockSimulatedOffline = !state.mockSimulatedOffline;
@@ -2609,7 +2641,7 @@ function bindDashboardEvents(): void {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
       const targetVer = state.mockLockedMinVersion
         ? "9.9.9"
-        : state.info.protocolVersion || "0.9.11";
+        : state.info.protocolVersion || "0.9.13";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
@@ -2625,7 +2657,7 @@ function bindDashboardEvents(): void {
       if (state.mockOptionalUpdate) {
         state.dismissedOptionalVersion = null;
       }
-      const targetOpt = state.mockOptionalUpdate ? "0.9.12" : null;
+      const targetOpt = state.mockOptionalUpdate ? "0.9.14" : null;
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });

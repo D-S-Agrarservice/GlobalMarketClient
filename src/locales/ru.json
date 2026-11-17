@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Отключено вручную – синхронизация рынка приостановлена.",
   "logConnectingByUser": "Запрошено ручное подключение – синхронизация с выбранным рынком…",
   "toastConnected": "Подключение к рынку…",
-  "toastDisconnected": "Отключено (автономный режим)."
+  "toastDisconnected": "Отключено (автономный режим).",
+  "contractsBadge": "{count} Контракты",
+  "offersBadge": "{count} Прямые предложения",
+  "mockBtnContractsSim": "Симуляция контракта/предл.",
+  "logContractActionSent": "Действие по контракту отправлено: {subAction} ({detail})",
+  "logContractActionRejected": "Действие по контракту отклонено: {subAction} ({reason})",
+  "logContractSettlementSynced": "Расчёты получены: передано {count} записей по контрактам/предложениям в FS.",
+  "logMockContractSim": "Симуляция: Запущено онлайн-событие контракта и прямого предложения ({summary})."
 }

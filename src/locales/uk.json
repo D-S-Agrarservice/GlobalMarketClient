@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Міст вручну відключено користувачем. Мережевий трафік зупинено.",
   "logConnectingByUser": "Підключення до ринку (за ініціативою користувача)...",
   "toastConnected": "Підключення запущено",
-  "toastDisconnected": "Міст відключено"
+  "toastDisconnected": "Міст відключено",
+  "contractsBadge": "{count} Контракти",
+  "offersBadge": "{count} Прямі пропозиції",
+  "mockBtnContractsSim": "Симулювати контракт/проп.",
+  "logContractActionSent": "Дію за контрактом передано: {subAction} ({detail})",
+  "logContractActionRejected": "Дію за контрактом відхилено: {subAction} ({reason})",
+  "logContractSettlementSynced": "Розрахунки отримано: передано {count} записів контрактів/пропозицій до FS.",
+  "logMockContractSim": "Симуляція: Запущено онлайн-подію контракту та прямої пропозиції ({summary})."
 }

@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Déconnexion manuelle – synchronisation avec le marché mise en pause.",
   "logConnectingByUser": "Connexion manuelle demandée – synchronisation avec le marché sélectionné…",
   "toastConnected": "Connexion au marché en cours…",
-  "toastDisconnected": "Déconnecté (mode hors ligne)."
+  "toastDisconnected": "Déconnecté (mode hors ligne).",
+  "contractsBadge": "{count} Contrats",
+  "offersBadge": "{count} Offres directes",
+  "mockBtnContractsSim": "Simuler contrat/offre",
+  "logContractActionSent": "Action de contrat transmise : {subAction} ({detail})",
+  "logContractActionRejected": "Action de contrat refusée : {subAction} ({reason})",
+  "logContractSettlementSynced": "Règlements reçus : {count} écriture(s) de contrats/offres transmise(s) à FS.",
+  "logMockContractSim": "Simulation : Événement de contrat et d’offre directe déclenché ({summary})."
 }

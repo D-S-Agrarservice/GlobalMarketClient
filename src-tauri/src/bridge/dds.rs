@@ -34,6 +34,11 @@ pub const MAX_LOGO_RAW_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum accepted source image width or height (`4096 px`).
 pub const MAX_LOGO_DIMENSION: u32 = 4096;
 
+/// Built-in official D-S-Agrarservice logo (`src/assets/dsa-logo.png`), rendered in-game whenever
+/// no custom Community/Logo token is active (both Official Global Market and Tier-2 Private Markets).
+pub const DEFAULT_DSA_LOGO_PNG: &[u8] = include_bytes!("../../../src/assets/dsa-logo.png");
+const DEFAULT_DSA_LOGO_SEED: &[u8] = b"builtin://dsa-default-logo-v1";
+
 const DDS_MAGIC: &[u8; 4] = b"DDS ";
 const DDS_HEADER_SIZE: u32 = 124;
 const DDS_PIXELFORMAT_SIZE: u32 = 32;
@@ -62,6 +67,25 @@ pub fn logo_cache_hash12(seed: &[u8]) -> String {
 /// Formats the relative `modSettings/FS<YY>_GlobalMarket/` path (`logos/logo_<12char_sha256>.dds`).
 pub fn logo_rel_path_for_hash(hash12: &str) -> String {
     format!("logos/logo_{hash12}.dds")
+}
+
+/// Deterministic relative path (`logos/logo_<hash12>.dds`) for the built-in default DSA market logo.
+pub fn default_dsa_logo_rel_path() -> String {
+    logo_rel_path_for_hash(&logo_cache_hash12(DEFAULT_DSA_LOGO_SEED))
+}
+
+/// Ensures the built-in DSA logo (`src/assets/dsa-logo.png`) is converted once and cached as a
+/// GIANTS-compliant `512x256` 10-mipmap `DXT5` `.dds` inside `logos_dir` without any server download.
+pub fn ensure_default_dsa_logo_dds(staging_dir: &Path, logos_dir: &Path) -> Option<String> {
+    let hash12 = logo_cache_hash12(DEFAULT_DSA_LOGO_SEED);
+    let rel_logo = logo_rel_path_for_hash(&hash12);
+    let target_dds = logos_dir.join(format!("logo_{hash12}.dds"));
+    if is_valid_cached_logo_dds(&target_dds) {
+        return Some(rel_logo);
+    }
+    convert_logo_bytes_to_dds_file(DEFAULT_DSA_LOGO_PNG, staging_dir, &target_dds)
+        .ok()
+        .map(|()| rel_logo)
 }
 
 /// Verifies whether `dds_path` already exists on disk as a complete, valid `512x256` 10-mip `DXT5` `.dds` texture.

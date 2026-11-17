@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Bridge manuelt afbrudt af bruger. Netværkstrafik stoppet.",
   "logConnectingByUser": "Opretter forbindelse til markedet (startet af bruger)...",
   "toastConnected": "Forbindelse startet",
-  "toastDisconnected": "Bridge afbrudt"
+  "toastDisconnected": "Bridge afbrudt",
+  "contractsBadge": "{count} Kontrakter",
+  "offersBadge": "{count} Direkte tilbud",
+  "mockBtnContractsSim": "Simuler kontrakt/tilbud",
+  "logContractActionSent": "Kontrakthandling synkroniseret: {subAction} ({detail})",
+  "logContractActionRejected": "Kontrakthandling afvist: {subAction} ({reason})",
+  "logContractSettlementSynced": "Afregninger modtaget: {count} kontrakt-/tilbudspostering(er) leveret til FS.",
+  "logMockContractSim": "Simulering: Online kontrakt- og tilbudshændelse udløst ({summary})."
 }

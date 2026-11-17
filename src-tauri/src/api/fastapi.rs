@@ -1,16 +1,19 @@
 //! Production HTTP client for the Python / FastAPI backend (`FS25: Global Market v2.0.0`).
 //!
-//! Aligned 1:1 with `docs/openapi.json`:
-//! - `GET  /api/v1/meta/status`         -> `MetaStatus`
+//! Aligned 1:1 with `docs/openapi.json` & `docs/Phase2_Contracts_Handoff_Client_and_Backend.md`:
+//! - `GET  /api/v1/meta/status`         -> `MetaStatus` (including `contracts_supported`)
 //! - `GET  /api/v1/market/state`        -> `200 MarketState` or `304 Not Modified` via `ETag` / `If-None-Match`
 //! - `POST /api/v1/market/whitelist`    -> `WhitelistRequest` -> `200 MarketState`
 //! - `POST /api/v1/market/transactions` -> `TransactionRequest` -> `200 MarketState`
+//! - `GET  /api/v1/contracts/state`     -> `200 ContractState` or `304 Not Modified` (`?server_id=...`)
+//! - `POST /api/v1/contracts/actions`   -> `ContractActionRequest` -> `200 ContractState`
 //! - Optional `X-Market-Token` header for private/community/logo keys (absent = official public market).
 //! - Persistent random `X-Client-Id` header so the backend can enforce 16/32 active client slots per key without hardware tracking.
 
 use crate::api::types::{
-    FillTypeStatus, MarketItemDto, MarketStateResponse, ServerHandshake, TransactionRequest,
-    WhitelistSyncRequest,
+    ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
+    FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
+    ServerHandshake, TransactionRequest, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::MAX_LOGO_RAW_BYTES;
@@ -28,11 +31,19 @@ struct CachedMarketState {
     state: MarketStateResponse,
 }
 
+#[derive(Debug, Clone)]
+struct CachedContractState {
+    server_id: Option<String>,
+    etag: String,
+    state: ContractStateResponse,
+}
+
 pub struct FastApiBackend {
     base_url: RwLock<String>,
     market_token: RwLock<Option<String>>,
     client_id: RwLock<Option<String>>,
     etag_cache: Mutex<Option<CachedMarketState>>,
+    contract_etag_cache: Mutex<Option<CachedContractState>>,
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
 }
@@ -63,6 +74,7 @@ impl FastApiBackend {
             market_token: RwLock::new(clean_token(market_token)),
             client_id: RwLock::new(clean_client_id(&client_id)),
             etag_cache: Mutex::new(None),
+            contract_etag_cache: Mutex::new(None),
             client,
             runtime,
         })
@@ -109,6 +121,9 @@ impl FastApiBackend {
         if let Ok(mut guard) = self.etag_cache.lock() {
             *guard = None;
         }
+        if let Ok(mut guard) = self.contract_etag_cache.lock() {
+            *guard = None;
+        }
     }
 
     fn store_or_clear_etag(&self, etag_opt: Option<String>, state: &MarketStateResponse) {
@@ -116,6 +131,28 @@ impl FastApiBackend {
             match etag_opt {
                 Some(etag) if !etag.is_empty() => {
                     *guard = Some(CachedMarketState {
+                        etag,
+                        state: state.clone(),
+                    });
+                }
+                _ => {
+                    *guard = None;
+                }
+            }
+        }
+    }
+
+    fn store_or_clear_contract_etag(
+        &self,
+        server_id: Option<String>,
+        etag_opt: Option<String>,
+        state: &ContractStateResponse,
+    ) {
+        if let Ok(mut guard) = self.contract_etag_cache.lock() {
+            match etag_opt {
+                Some(etag) if !etag.is_empty() => {
+                    *guard = Some(CachedContractState {
+                        server_id,
                         etag,
                         state: state.clone(),
                     });
@@ -175,6 +212,8 @@ struct WireMetaStatus {
     has_custom_logo: Option<bool>,
     #[serde(default, alias = "logo_url")]
     market_logo_url: Option<String>,
+    #[serde(default, alias = "contractsSupported")]
+    contracts_supported: bool,
 }
 
 fn default_true() -> bool {
@@ -248,6 +287,313 @@ struct WireMarketItem {
 
 fn default_one() -> f32 {
     1.0
+}
+
+fn default_origin_online() -> String {
+    "ONLINE".to_string()
+}
+
+fn default_status_open() -> String {
+    "OPEN".to_string()
+}
+
+#[derive(Debug, Serialize)]
+struct WireContractActionPayload<'a> {
+    sub_action: &'a str,
+    action_id: &'a str,
+    server_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    farm_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    farm_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fill_type: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    liters: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_trend_factor: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bonus_pct: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    price_delta_pct: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allow_partial: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_hours: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_bale: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_pallet: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement_ids: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireContractState {
+    #[serde(default)]
+    updated_at: i64,
+    #[serde(default)]
+    contracts: Vec<WireOnlineContract>,
+    #[serde(default, alias = "directOffers")]
+    direct_offers: Vec<WireOnlineOffer>,
+    #[serde(default, alias = "actionResults")]
+    action_results: Vec<WireContractActionResult>,
+    #[serde(default)]
+    settlements: Vec<WireContractSettlement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireOnlineContract {
+    #[serde(alias = "remoteId", alias = "id")]
+    remote_id: String,
+    #[serde(default = "default_origin_online")]
+    origin: String,
+    #[serde(default, alias = "isNpc")]
+    is_npc: bool,
+    #[serde(default, alias = "issuerServerId")]
+    issuer_server_id: String,
+    #[serde(default, alias = "issuerFarmId")]
+    issuer_farm_id: i32,
+    #[serde(default, alias = "issuerName")]
+    issuer_name: String,
+    #[serde(default, alias = "contractorServerId")]
+    contractor_server_id: String,
+    #[serde(default, alias = "contractorFarmId")]
+    contractor_farm_id: i32,
+    #[serde(alias = "fillType")]
+    fill_type: String,
+    #[serde(default, alias = "totalLiters")]
+    total_liters: i64,
+    #[serde(default, alias = "deliveredLiters")]
+    delivered_liters: i64,
+    #[serde(default = "default_one", alias = "baseTrendFactor")]
+    base_trend_factor: f32,
+    #[serde(default, alias = "bonusPct")]
+    bonus_pct: i32,
+    #[serde(default, alias = "remainingSeconds")]
+    remaining_seconds: i64,
+    #[serde(default = "default_status_open")]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireOnlineOffer {
+    #[serde(alias = "remoteId", alias = "id")]
+    remote_id: String,
+    #[serde(default = "default_origin_online")]
+    origin: String,
+    #[serde(default, alias = "isNpc")]
+    is_npc: bool,
+    #[serde(default, alias = "sellerServerId")]
+    seller_server_id: String,
+    #[serde(default, alias = "sellerFarmId")]
+    seller_farm_id: i32,
+    #[serde(default, alias = "sellerName")]
+    seller_name: String,
+    #[serde(alias = "fillType")]
+    fill_type: String,
+    #[serde(default, alias = "totalLiters")]
+    total_liters: i64,
+    #[serde(default, alias = "remainingLiters")]
+    remaining_liters: i64,
+    #[serde(default, alias = "priceDeltaPct")]
+    price_delta_pct: i32,
+    #[serde(default = "default_true", alias = "allowPartial")]
+    allow_partial: bool,
+    #[serde(default, alias = "remainingSeconds")]
+    remaining_seconds: i64,
+    #[serde(default, alias = "wasBale")]
+    was_bale: bool,
+    #[serde(default, alias = "wasPallet")]
+    was_pallet: bool,
+    #[serde(default = "default_status_open")]
+    status: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireContractActionResult {
+    #[serde(alias = "actionId")]
+    action_id: String,
+    #[serde(default, alias = "subAction")]
+    sub_action: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    reason: String,
+    #[serde(default, alias = "remoteId")]
+    remote_id: String,
+    #[serde(default, alias = "grantedLiters")]
+    granted_liters: i64,
+    #[serde(default = "default_one", alias = "baseTrendFactor")]
+    base_trend_factor: f32,
+    #[serde(default, alias = "bonusPct")]
+    bonus_pct: i32,
+    #[serde(default, alias = "remainingSeconds")]
+    remaining_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireContractSettlement {
+    #[serde(alias = "settlementId", alias = "id")]
+    settlement_id: String,
+    #[serde(default, rename = "type", alias = "settlementType")]
+    settlement_type: String,
+    #[serde(default, alias = "targetServerId")]
+    target_server_id: String,
+    #[serde(default, alias = "targetFarmId")]
+    target_farm_id: i32,
+    #[serde(default, alias = "remoteId")]
+    remote_id: String,
+    #[serde(default, alias = "fillType")]
+    fill_type: String,
+    #[serde(default)]
+    liters: i64,
+    #[serde(default, alias = "missingLiters")]
+    missing_liters: i64,
+    #[serde(default = "default_one", alias = "baseTrendFactor")]
+    base_trend_factor: f32,
+    #[serde(default, alias = "priceDeltaPct")]
+    price_delta_pct: i32,
+    #[serde(default, alias = "sourceLabel")]
+    source_label: String,
+}
+
+impl From<WireContractActionResult> for ContractActionResultDto {
+    fn from(r: WireContractActionResult) -> Self {
+        Self {
+            action_id: r.action_id.trim().to_string(),
+            sub_action: r.sub_action.trim().to_ascii_uppercase(),
+            status: if r.status.trim().is_empty() {
+                "REJECTED".to_string()
+            } else {
+                r.status.trim().to_ascii_uppercase()
+            },
+            reason: r.reason,
+            remote_id: r.remote_id.trim().to_string(),
+            granted_liters: r.granted_liters.max(0),
+            base_trend_factor: if r.base_trend_factor.is_finite() && r.base_trend_factor > 0.0 {
+                r.base_trend_factor
+            } else {
+                1.0
+            },
+            bonus_pct: r.bonus_pct,
+            remaining_seconds: r.remaining_seconds.max(0),
+        }
+    }
+}
+
+impl From<WireContractState> for ContractStateResponse {
+    fn from(wire: WireContractState) -> Self {
+        Self {
+            updated_at: wire.updated_at,
+            contracts: wire
+                .contracts
+                .into_iter()
+                .filter(|c| !c.remote_id.trim().is_empty() && !c.fill_type.trim().is_empty())
+                .map(|c| OnlineContractDto {
+                    remote_id: c.remote_id.trim().to_string(),
+                    origin: if c.origin.trim().is_empty() {
+                        "ONLINE".to_string()
+                    } else {
+                        c.origin.trim().to_ascii_uppercase()
+                    },
+                    is_npc: c.is_npc,
+                    issuer_server_id: c.issuer_server_id.trim().to_string(),
+                    issuer_farm_id: c.issuer_farm_id.max(0),
+                    issuer_name: if c.issuer_name.trim().is_empty() {
+                        "Online".to_string()
+                    } else {
+                        c.issuer_name
+                    },
+                    contractor_server_id: c.contractor_server_id.trim().to_string(),
+                    contractor_farm_id: c.contractor_farm_id.max(0),
+                    fill_type: c.fill_type.trim().to_ascii_uppercase(),
+                    total_liters: c.total_liters.max(0),
+                    delivered_liters: c.delivered_liters.max(0),
+                    base_trend_factor: if c.base_trend_factor.is_finite()
+                        && c.base_trend_factor > 0.0
+                    {
+                        c.base_trend_factor
+                    } else {
+                        1.0
+                    },
+                    bonus_pct: c.bonus_pct,
+                    remaining_seconds: c.remaining_seconds.max(0),
+                    status: if c.status.trim().is_empty() {
+                        "OPEN".to_string()
+                    } else {
+                        c.status.trim().to_ascii_uppercase()
+                    },
+                })
+                .collect(),
+            direct_offers: wire
+                .direct_offers
+                .into_iter()
+                .filter(|o| !o.remote_id.trim().is_empty() && !o.fill_type.trim().is_empty())
+                .map(|o| OnlineDirectOfferDto {
+                    remote_id: o.remote_id.trim().to_string(),
+                    origin: if o.origin.trim().is_empty() {
+                        "ONLINE".to_string()
+                    } else {
+                        o.origin.trim().to_ascii_uppercase()
+                    },
+                    is_npc: o.is_npc,
+                    seller_server_id: o.seller_server_id.trim().to_string(),
+                    seller_farm_id: o.seller_farm_id.max(0),
+                    seller_name: if o.seller_name.trim().is_empty() {
+                        "Online".to_string()
+                    } else {
+                        o.seller_name
+                    },
+                    fill_type: o.fill_type.trim().to_ascii_uppercase(),
+                    total_liters: o.total_liters.max(0),
+                    remaining_liters: o.remaining_liters.max(0),
+                    price_delta_pct: o.price_delta_pct,
+                    allow_partial: o.allow_partial,
+                    remaining_seconds: o.remaining_seconds.max(0),
+                    was_bale: o.was_bale,
+                    was_pallet: o.was_pallet,
+                    status: if o.status.trim().is_empty() {
+                        "OPEN".to_string()
+                    } else {
+                        o.status.trim().to_ascii_uppercase()
+                    },
+                })
+                .collect(),
+            action_results: wire
+                .action_results
+                .into_iter()
+                .filter(|r| !r.action_id.trim().is_empty())
+                .map(ContractActionResultDto::from)
+                .collect(),
+            settlements: wire
+                .settlements
+                .into_iter()
+                .filter(|s| !s.settlement_id.trim().is_empty())
+                .map(|s| ContractSettlementDto {
+                    settlement_id: s.settlement_id.trim().to_string(),
+                    settlement_type: s.settlement_type.trim().to_ascii_uppercase(),
+                    target_server_id: s.target_server_id.trim().to_string(),
+                    target_farm_id: s.target_farm_id.max(0),
+                    remote_id: s.remote_id.trim().to_string(),
+                    fill_type: s.fill_type.trim().to_ascii_uppercase(),
+                    liters: s.liters.max(0),
+                    missing_liters: s.missing_liters.max(0),
+                    base_trend_factor: if s.base_trend_factor.is_finite()
+                        && s.base_trend_factor > 0.0
+                    {
+                        s.base_trend_factor
+                    } else {
+                        1.0
+                    },
+                    price_delta_pct: s.price_delta_pct,
+                    source_label: s.source_label,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -422,6 +768,7 @@ impl BackendService for FastApiBackend {
                 branding_tier,
                 is_private_market,
                 market_logo_url,
+                contracts_supported: parsed.contracts_supported,
             })
         })
     }
@@ -549,6 +896,211 @@ impl BackendService for FastApiBackend {
         // Update or invalidate the ETag snapshot so a subsequent GET /market/state never returns pre-transaction data.
         self.store_or_clear_etag(etag_opt, &state);
         Ok(state)
+    }
+
+    fn fetch_contracts_state(
+        &self,
+        server_id: Option<&str>,
+    ) -> Result<ContractStateResponse, ApiError> {
+        let clean_sid = server_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        let url = self.endpoint("/api/v1/contracts/state");
+        let cached_snapshot = self
+            .contract_etag_cache
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|c| c.server_id == clean_sid);
+
+        let mut req = self.apply_auth_header(self.client.get(url));
+        if let Some(ref sid) = clean_sid {
+            req = req.query(&[("server_id", sid.as_str())]);
+        }
+        if let Some(ref cached) = cached_snapshot {
+            req = req.header(IF_NONE_MATCH, &cached.etag);
+        }
+
+        let outcome = self.runtime.block_on(async move {
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?;
+
+            if resp.status() == StatusCode::NOT_FOUND
+                || resp.status() == StatusCode::NOT_IMPLEMENTED
+            {
+                return Err(ApiError::NotSupported(format!("HTTP {}", resp.status())));
+            }
+
+            if resp.status() == StatusCode::NOT_MODIFIED {
+                if let Some(cached) = cached_snapshot {
+                    return Ok((Some(cached.etag), cached.state, true));
+                }
+                return Err(ApiError::Network(
+                    "Received HTTP 304 Not Modified without local contracts ETag cache".to_string(),
+                ));
+            }
+
+            if !resp.status().is_success() {
+                return Err(map_error_response(resp, false).await);
+            }
+
+            let etag = extract_etag(resp.headers());
+            let wire: WireContractState = resp
+                .json()
+                .await
+                .map_err(|e| ApiError::Validation(e.to_string()))?;
+            Ok((etag, ContractStateResponse::from(wire), false))
+        })?;
+
+        let (etag_opt, state, was_not_modified) = outcome;
+        if !was_not_modified {
+            self.store_or_clear_contract_etag(clean_sid, etag_opt, &state);
+        }
+        Ok(state)
+    }
+
+    fn submit_contract_action(
+        &self,
+        action: ContractActionRequest,
+    ) -> Result<ContractStateResponse, ApiError> {
+        let action_id = action.action_id.trim();
+        let server_id = action.server_id.trim();
+        if action_id.is_empty() || server_id.is_empty() {
+            return Err(ApiError::Validation(
+                "Invalid ContractActionRequest: action_id and server_id are required".to_string(),
+            ));
+        }
+
+        let clean_fill = action
+            .fill_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_ascii_uppercase());
+        let payload = WireContractActionPayload {
+            sub_action: action.sub_action.as_str(),
+            action_id,
+            server_id,
+            farm_id: action.farm_id.filter(|&id| id > 0),
+            farm_name: action
+                .farm_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            remote_id: action
+                .remote_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            fill_type: clean_fill.as_deref(),
+            liters: action.liters.filter(|&l| l > 0),
+            base_trend_factor: action
+                .base_trend_factor
+                .filter(|f| f.is_finite() && *f > 0.0)
+                .map(|f| ((f as f64) * 10_000.0).round() / 10_000.0),
+            bonus_pct: action.bonus_pct,
+            price_delta_pct: action.price_delta_pct,
+            allow_partial: action.allow_partial,
+            duration_hours: action.duration_hours.filter(|&h| h > 0),
+            was_bale: action.was_bale,
+            was_pallet: action.was_pallet,
+            settlement_ids: action
+                .settlement_ids
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        };
+
+        let url = self.endpoint("/api/v1/contracts/actions");
+        let req = self.apply_auth_header(self.client.post(url).json(&payload));
+        let (etag_opt, raw_json) = self.runtime.block_on(async move {
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?;
+            if resp.status() == StatusCode::NOT_FOUND
+                || resp.status() == StatusCode::NOT_IMPLEMENTED
+            {
+                return Err(ApiError::NotSupported(format!("HTTP {}", resp.status())));
+            }
+            if !resp.status().is_success() {
+                return Err(map_error_response(resp, true).await);
+            }
+            let etag = extract_etag(resp.headers());
+            let json_val: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ApiError::Validation(e.to_string()))?;
+            Ok((etag, json_val))
+        })?;
+
+        let has_state_arrays = raw_json.get("contracts").is_some()
+            || raw_json.get("direct_offers").is_some()
+            || raw_json.get("directOffers").is_some()
+            || raw_json.get("action_results").is_some()
+            || raw_json.get("actionResults").is_some()
+            || raw_json.get("settlements").is_some()
+            || raw_json.get("state").is_some();
+
+        if has_state_arrays {
+            let state_val = raw_json.get("state").cloned().unwrap_or_else(|| raw_json.clone());
+            let wire_state: WireContractState = serde_json::from_value(state_val)
+                .map_err(|e| ApiError::Validation(e.to_string()))?;
+            let mut parsed_state = ContractStateResponse::from(wire_state);
+
+            if let Some(res_val) = raw_json.get("result") {
+                if let Ok(wire_res) = serde_json::from_value::<WireContractActionResult>(res_val.clone())
+                {
+                    let dto = ContractActionResultDto::from(wire_res);
+                    if !dto.action_id.is_empty()
+                        && !parsed_state
+                            .action_results
+                            .iter()
+                            .any(|r| r.action_id == dto.action_id)
+                    {
+                        parsed_state.action_results.push(dto);
+                    }
+                }
+            }
+
+            self.store_or_clear_contract_etag(Some(server_id.to_string()), etag_opt, &parsed_state);
+            return Ok(parsed_state);
+        }
+
+        // Fallback resilience if a backend returns a single ActionResult object directly instead of ContractStateResponse:
+        // invalidate contract ETag cache, fetch fresh board state, and fold the immediate ActionResult into it.
+        let single_res: Option<ContractActionResultDto> = raw_json
+            .get("result")
+            .cloned()
+            .or_else(|| raw_json.get("action_id").is_some().then(|| raw_json.clone()))
+            .and_then(|v| serde_json::from_value::<WireContractActionResult>(v).ok())
+            .map(ContractActionResultDto::from)
+            .filter(|r| !r.action_id.is_empty());
+
+        let prev_cached = self
+            .contract_etag_cache
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+            .map(|c| c.state);
+
+        let mut board_state = self
+            .fetch_contracts_state(Some(server_id))
+            .or_else(|err| prev_cached.ok_or(err))?;
+
+        if let Some(dto) = single_res {
+            if !board_state
+                .action_results
+                .iter()
+                .any(|r| r.action_id == dto.action_id)
+            {
+                board_state.action_results.push(dto);
+            }
+        }
+        Ok(board_state)
     }
 
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError> {

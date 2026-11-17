@@ -191,3 +191,8 @@ pub fn mock_set_branding_tier(
 ) -> Result<BridgeSnapshot, String> {
     bridge.mock_set_branding_tier(tier, market_name)
 }
+
+#[tauri::command]
+pub fn mock_simulate_contract_activity(bridge: State<'_, BridgeManager>) -> Option<String> {
+    bridge.mock_simulate_contract_activity()
+}

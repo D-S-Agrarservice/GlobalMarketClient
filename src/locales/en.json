@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Disconnected manually – market synchronization paused.",
   "logConnectingByUser": "Manual connect requested – synchronizing with selected market...",
   "toastConnected": "Connecting to market...",
-  "toastDisconnected": "Disconnected (Offline mode)."
+  "toastDisconnected": "Disconnected (Offline mode).",
+  "contractsBadge": "{count} Contracts",
+  "offersBadge": "{count} Direct Offers",
+  "mockBtnContractsSim": "Simulate Contract/Offer",
+  "logContractActionSent": "Contract action synced: {subAction} ({detail})",
+  "logContractActionRejected": "Contract action rejected: {subAction} ({reason})",
+  "logContractSettlementSynced": "Settlements synced: Delivered {count} contract/offer settlement(s) to FS.",
+  "logMockContractSim": "Simulation: Triggered online contract & direct offer event ({summary})."
 }

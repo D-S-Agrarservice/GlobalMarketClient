@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Köprü kullanıcı tarafından manuel olarak kesildi. Ağ trafiği durduruldu.",
   "logConnectingByUser": "Pazara bağlanılıyor (kullanıcı tarafından başlatıldı)...",
   "toastConnected": "Bağlantı başlatıldı",
-  "toastDisconnected": "Köprü bağlantısı kesildi"
+  "toastDisconnected": "Köprü bağlantısı kesildi",
+  "contractsBadge": "{count} Sözleşme",
+  "offersBadge": "{count} Doğrudan Teklif",
+  "mockBtnContractsSim": "Sözleşme/Teklif Simüle Et",
+  "logContractActionSent": "Sözleşme işlemi senkronize edildi: {subAction} ({detail})",
+  "logContractActionRejected": "Sözleşme işlemi reddedildi: {subAction} ({reason})",
+  "logContractSettlementSynced": "Mahsuplaşmalar alındı: {count} sözleşme/teklif kaydı FS'ye iletildi.",
+  "logMockContractSim": "Simülasyon: Çevrimiçi sözleşme ve doğrudan teklif olayı tetiklendi ({summary})."
 }

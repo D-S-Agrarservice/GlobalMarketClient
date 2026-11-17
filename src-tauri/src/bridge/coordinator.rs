@@ -6,17 +6,22 @@
 
 use crate::api::fastapi::FastApiBackend;
 use crate::api::mock::LocalMockBackend;
-use crate::api::types::{FillTypeStatus, MarketItemDto, ServerHandshake};
+use crate::api::types::{
+    ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
+    FillTypeStatus, MarketItemDto, ServerHandshake,
+};
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::{
     convert_logo_bytes_to_dds_file, decode_logo_rgba8, encode_rgba8_to_png_bytes,
-    is_valid_cached_logo_dds, logo_cache_hash12, logo_rel_path_for_hash, MAX_LOGO_RAW_BYTES,
+    ensure_default_dsa_logo_dds, is_valid_cached_logo_dds, logo_cache_hash12,
+    logo_rel_path_for_hash, MAX_LOGO_RAW_BYTES,
 };
 use crate::bridge::l10n::localize_fill_type;
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
-    cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, is_version_sufficient,
-    parse_incoming_write_xml, prune_market_data_xmls, write_heartbeat_xml_with_latest,
+    cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
+    is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
+    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_capabilities,
     write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket,
 };
 use crate::config::{
@@ -119,6 +124,9 @@ pub struct BridgeSnapshot {
     pub exe_version: String,
     pub min_exe_version: String,
     pub latest_exe_version: Option<String>,
+    pub contracts_supported: bool,
+    pub open_contracts_count: usize,
+    pub open_offers_count: usize,
     pub approved_count: usize,
     pub pending_count: usize,
     pub rejected_count: usize,
@@ -144,6 +152,7 @@ struct SharedState {
     config_file: PathBuf,
     token_vault: TokenVault,
     connection_enabled: bool,
+    last_seen_server_id: Option<String>,
     snapshot: BridgeSnapshot,
     logs: VecDeque<LogEntry>,
     extended_expires_at: Option<Instant>,
@@ -246,6 +255,9 @@ impl BridgeManager {
             exe_version: PROTOCOL_EXE_VERSION.to_string(),
             min_exe_version: "0.9.9".to_string(),
             latest_exe_version: None,
+            contracts_supported: false,
+            open_contracts_count: 0,
+            open_offers_count: 0,
             approved_count: 0,
             pending_count: 0,
             rejected_count: 0,
@@ -266,6 +278,7 @@ impl BridgeManager {
                 config_file,
                 token_vault,
                 connection_enabled: initial_connection_enabled,
+                last_seen_server_id: None,
                 snapshot: initial_snapshot,
                 logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
                 extended_expires_at: None,
@@ -383,8 +396,11 @@ impl BridgeManager {
                 .shared
                 .lock()
                 .map_err(|_| "Internal state lock poisoned".to_string())?;
-            guard.config.fs25_profile_path =
-                Some(persisted_dir.to_string_lossy().into_owned());
+            let next_path_str = persisted_dir.to_string_lossy().into_owned();
+            if guard.config.fs25_profile_path.as_deref() != Some(next_path_str.as_str()) {
+                guard.last_seen_server_id = None;
+            }
+            guard.config.fs25_profile_path = Some(next_path_str);
             guard.config.save_to_file(&guard.config_file)?;
         }
 
@@ -454,6 +470,9 @@ impl BridgeManager {
                 .and_then(|id| guard.token_vault.resolve_raw_token(id));
 
             let lang_diff = guard.config.language != next.language;
+            if guard.config.fs25_profile_path != next.fs25_profile_path {
+                guard.last_seen_server_id = None;
+            }
             let restart = guard.config.backend_mode != next.backend_mode
                 || guard.config.backend_url != next.backend_url
                 || guard.config.active_token_id != next.active_token_id
@@ -1069,6 +1088,24 @@ impl BridgeManager {
         Ok(self.get_snapshot())
     }
 
+    /// Triggers foreign contract fulfillment / direct-offer purchase & spawns fresh listings in Developer Mock mode.
+    pub fn mock_simulate_contract_activity(&self) -> Option<String> {
+        if self.get_config().access_tier != AccessTier::Developer {
+            return None;
+        }
+        let summary = self.mock_backend.simulate_contract_activity();
+        self.push_i18n_log(
+            LogLevel::Success,
+            "logMockContractSim",
+            [("summary", summary.clone())],
+            format!(
+                "Simulation: Triggered online contract & direct offer event ({summary})."
+            ),
+        );
+        self.nudge_signal(WorkerSignal::ForceSyncNow);
+        Some(summary)
+    }
+
     /// Signals the worker to stop immediately, cleans up `globalMarketOnline.xml` + `read/gmDataSync_*.xml`
     /// synchronously, and returns the worker `JoinHandle` so GUI shutdown never blocks the main event loop.
     pub fn prepare_fast_exit(&self) -> Option<JoinHandle<()>> {
@@ -1271,6 +1308,9 @@ impl BridgeManager {
                 snap.market_logo_url = None;
                 snap.market_logo_file = None;
                 snap.bridge_path = None;
+                snap.contracts_supported = false;
+                snap.open_contracts_count = 0;
+                snap.open_offers_count = 0;
                 snap.approved_count = 0;
                 snap.pending_count = 0;
                 snap.rejected_count = 0;
@@ -1311,6 +1351,9 @@ impl BridgeManager {
                     snap.market_logo_url = None;
                     snap.market_logo_file = None;
                     snap.bridge_path = None;
+                    snap.contracts_supported = false;
+                    snap.open_contracts_count = 0;
+                    snap.open_offers_count = 0;
                     snap.approved_count = 0;
                     snap.pending_count = 0;
                     snap.rejected_count = 0;
@@ -1335,6 +1378,9 @@ impl BridgeManager {
                 snap.state = BridgeConnectionState::PathMissing;
                 snap.connection_enabled = connection_enabled;
                 snap.api_version = None;
+                snap.contracts_supported = false;
+                snap.open_contracts_count = 0;
+                snap.open_offers_count = 0;
                 snap.approved_count = 0;
                 snap.pending_count = 0;
                 snap.rejected_count = 0;
@@ -1379,6 +1425,9 @@ impl BridgeManager {
                 snap.market_logo_file = remembered_logo_dds;
                 snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
                 snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
+                snap.contracts_supported = false;
+                snap.open_contracts_count = 0;
+                snap.open_offers_count = 0;
                 snap.approved_count = 0;
                 snap.pending_count = 0;
                 snap.rejected_count = 0;
@@ -1397,8 +1446,9 @@ impl BridgeManager {
             return;
         }
 
-        // Clear any leftover `gmDataSync_*.xml` snapshots from previous sessions before starting fresh.
+        // Clear any leftover `gmDataSync_*.xml` & `gmContractSync_*.xml` snapshots from previous sessions before starting fresh.
         prune_market_data_xmls(&paths.read_dir, 0);
+        prune_contract_sync_xmls(&paths.read_dir, 0);
 
         if let Ok(mut paths_guard) = self.active_paths.lock() {
             *paths_guard = Some(paths.clone());
@@ -1419,6 +1469,9 @@ impl BridgeManager {
             snap.market_logo_file = remembered_logo_dds;
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
+            snap.contracts_supported = false;
+            snap.open_contracts_count = 0;
+            snap.open_offers_count = 0;
             snap.approved_count = 0;
             snap.pending_count = 0;
             snap.rejected_count = 0;
@@ -1536,9 +1589,11 @@ fn run_bridge_worker(
     let mut announced_optional_version: Option<String> = None;
     let mut is_connected = false;
     let mut version_ok = true;
+    let mut contracts_supported = false;
 
     let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
     let mut last_market_poll = Instant::now() - Duration::from_secs(60);
+    let mut last_contract_poll = Instant::now() - Duration::from_secs(60);
     let mut last_status_check = Instant::now() - Duration::from_secs(60);
     let mut retry_hold_until: Option<Instant> = None;
 
@@ -1550,6 +1605,16 @@ fn run_bridge_worker(
     let mut active_branding = HeartbeatBranding::default();
     let mut failed_logo_attempts: HashMap<String, Instant> = HashMap::new();
     let mut pending_branding_sync = false;
+
+    let mut active_server_id: Option<String> = shared
+        .lock()
+        .ok()
+        .and_then(|g| g.last_seen_server_id.clone());
+    let mut has_synced_contracts_once = false;
+    let mut last_synced_contract_state = ContractStateResponse::default();
+    let mut last_contract_write_at = Instant::now() - Duration::from_secs(60);
+    let mut delivered_action_ids: VecDeque<String> = VecDeque::new();
+    let mut announced_settlement_ids: HashSet<String> = HashSet::new();
 
     let bridge_display = paths.bridge_root.display().to_string();
     push_i18n_log_shared(
@@ -1714,7 +1779,7 @@ fn run_bridge_worker(
                         }
                     }
 
-                    let resolved_logo_rel = if next_connected {
+                    let custom_logo_rel = if next_connected {
                         resolve_or_cache_handshake_logo(
                             &paths,
                             backend.as_ref(),
@@ -1727,26 +1792,59 @@ fn run_bridge_worker(
                         None
                     };
 
+                    // Whenever no custom Community/Logo token is active (Tier 0 Official Market or Tier 2 Private Market,
+                    // or if a custom logo is temporarily unavailable), automatically supply the built-in DSA logo `.dds`
+                    // so FS25 always renders the official DSA logo in-game without any server stream or mod patch.
+                    let effective_logo_rel = if next_connected {
+                        custom_logo_rel.clone().or_else(|| {
+                            ensure_default_dsa_logo_dds(&paths.staging_dir, &paths.logos_dir)
+                        })
+                    } else {
+                        None
+                    };
+
+                    let ui_branding_tier = if next_connected {
+                        match hs.branding_tier {
+                            1 if custom_logo_rel.is_some() => 1,
+                            1 => 0,
+                            2 => 2,
+                            3 if custom_logo_rel.is_some() => 3,
+                            3 => 2,
+                            _ => 0,
+                        }
+                    } else {
+                        0
+                    };
+
                     let next_branding = if next_connected {
+                        let xml_tier = match (hs.is_private_market, effective_logo_rel.is_some()) {
+                            (false, true) => 1,
+                            (false, false) => 0,
+                            (true, true) => 3,
+                            (true, false) => 2,
+                        };
                         HeartbeatBranding {
-                            branding_tier: hs.branding_tier,
+                            branding_tier: xml_tier,
                             is_private_market: hs.is_private_market,
                             market_name: hs.is_private_market.then(|| hs.market_name.clone()),
-                            has_custom_logo: resolved_logo_rel.is_some(),
-                            logo_file: resolved_logo_rel,
+                            has_custom_logo: effective_logo_rel.is_some(),
+                            logo_file: effective_logo_rel,
                         }
                         .normalized()
                     } else {
                         HeartbeatBranding::default()
                     };
 
+                    let next_contracts_supported = next_connected && hs.contracts_supported;
                     let changed_conn = is_connected != next_connected;
                     let changed_branding = active_branding != next_branding;
+                    let changed_contracts_sup = contracts_supported != next_contracts_supported;
                     is_connected = next_connected;
+                    contracts_supported = next_contracts_supported;
                     active_branding = next_branding.clone();
                     let (r_cnt, w_cnt) = count_bridge_queues(&paths);
 
-                    let ui_logo_url = matches!(next_branding.branding_tier, 1 | 3)
+                    let ui_logo_url = matches!(ui_branding_tier, 1 | 3)
                         .then(|| hs.market_logo_url)
                         .flatten();
 
@@ -1756,11 +1854,11 @@ fn run_bridge_worker(
                                 if let Some(active_id) = guard.config.active_token_id.clone() {
                                     if guard.token_vault.record_handshake_metadata(
                                         &active_id,
-                                        next_branding.branding_tier,
-                                        next_branding.is_private_market,
+                                        ui_branding_tier,
+                                        hs.is_private_market,
                                         hs.is_private_market.then_some(hs.market_name.as_str()),
                                         ui_logo_url.as_deref(),
-                                        next_branding.logo_file.as_deref(),
+                                        custom_logo_rel.as_deref(),
                                     ) {
                                         let _ = guard.token_vault.save();
                                         guard.snapshot.saved_tokens =
@@ -1774,13 +1872,18 @@ fn run_bridge_worker(
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.state = next_state;
                         snap.market_name = hs.market_name;
-                        snap.branding_tier = next_branding.branding_tier;
-                        snap.is_private_market = next_branding.is_private_market;
+                        snap.branding_tier = ui_branding_tier;
+                        snap.is_private_market = hs.is_private_market;
                         snap.market_logo_url = ui_logo_url;
                         snap.market_logo_file = next_branding.logo_file.clone();
                         snap.api_version = Some(hs.api_version);
                         snap.min_exe_version = min_version.clone();
                         snap.latest_exe_version = latest_version.clone();
+                        snap.contracts_supported = contracts_supported;
+                        if !contracts_supported {
+                            snap.open_contracts_count = 0;
+                            snap.open_offers_count = 0;
+                        }
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = if !version_ok {
@@ -1793,7 +1896,8 @@ fn run_bridge_worker(
                     if changed_branding && next_connected {
                         pending_branding_sync = true;
                     }
-                    if changed_conn || changed_branding || changed_versions {
+                    if changed_conn || changed_branding || changed_versions || changed_contracts_sup
+                    {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
                 }
@@ -1806,6 +1910,7 @@ fn run_bridge_worker(
                     }
                     let was_online = is_connected;
                     is_connected = false;
+                    contracts_supported = false;
                     active_branding = HeartbeatBranding::default();
                     let err_msg = err.to_string();
 
@@ -1834,6 +1939,9 @@ fn run_bridge_worker(
                         snap.is_private_market = false;
                         snap.market_logo_url = None;
                         snap.market_logo_file = None;
+                        snap.contracts_supported = false;
+                        snap.open_contracts_count = 0;
+                        snap.open_offers_count = 0;
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = Some(err_msg);
@@ -1855,7 +1963,7 @@ fn run_bridge_worker(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             last_heartbeat = Instant::now();
             let hb_connected = is_connected && version_ok;
-            match write_heartbeat_xml_with_latest(
+            match write_heartbeat_xml_with_capabilities(
                 &paths.staging_dir,
                 &paths.online_xml_file,
                 hb_connected,
@@ -1863,6 +1971,7 @@ fn run_bridge_worker(
                 &min_version,
                 latest_version.as_deref(),
                 hb_connected.then_some(&active_branding),
+                hb_connected && contracts_supported,
             ) {
                 Ok(()) if hb_connected => {
                     let now_secs = SystemTime::now()
@@ -2043,6 +2152,164 @@ fn run_bridge_worker(
                         break;
                     }
                 }
+                Ok(IncomingPacket::ContractActions(action_list)) => {
+                    if !contracts_supported {
+                        synthesize_rejected_contract_actions(
+                            &paths,
+                            &action_list,
+                            "CONTRACTS_NOT_SUPPORTED",
+                            &last_synced_contract_state,
+                            &mut delivered_action_ids,
+                        );
+                        let _ = fs::remove_file(&xml_path);
+                        continue;
+                    }
+
+                    let mut all_ok = true;
+                    let ui_lang = active_ui_language(&shared);
+
+                    for req in action_list {
+                        let req_sid = req.server_id.trim().to_string();
+                        if !req_sid.is_empty() && active_server_id.as_deref() != Some(req_sid.as_str())
+                        {
+                            active_server_id = Some(req_sid.clone());
+                            delivered_action_ids.clear();
+                            announced_settlement_ids.clear();
+                            has_synced_contracts_once = false;
+                            if let Ok(mut guard) = shared.lock() {
+                                guard.last_seen_server_id = Some(req_sid);
+                            }
+                        }
+
+                        if req.sub_action == ContractSubAction::RequestSync {
+                            delivered_action_ids.clear();
+                        }
+
+                        let detail_label = format_contract_action_detail(
+                            &req,
+                            &known_titles,
+                            whitelist_lang.as_deref(),
+                            &ui_lang,
+                        );
+                        let sub_str = req.sub_action.as_str().to_string();
+                        let is_user_facing = !matches!(
+                            req.sub_action,
+                            ContractSubAction::RequestSync | ContractSubAction::AckSettlement
+                        );
+
+                        match backend.submit_contract_action(req.clone()) {
+                            Ok(state) => {
+                                if is_user_facing {
+                                    let matching_res = state
+                                        .action_results
+                                        .iter()
+                                        .find(|r| r.action_id == req.action_id);
+                                    if let Some(res) = matching_res.filter(|r| r.status == "REJECTED") {
+                                        let reason_str = if res.reason.trim().is_empty() {
+                                            "REJECTED".to_string()
+                                        } else {
+                                            res.reason.trim().to_string()
+                                        };
+                                        push_i18n_log_shared(
+                                            &shared,
+                                            &app_handle,
+                                            LogLevel::Warn,
+                                            "logContractActionRejected",
+                                            [
+                                                ("subAction", sub_str.clone()),
+                                                ("reason", reason_str.clone()),
+                                            ],
+                                            format!(
+                                                "Contract action rejected: {sub_str} ({reason_str})"
+                                            ),
+                                        );
+                                    } else {
+                                        push_i18n_log_shared(
+                                            &shared,
+                                            &app_handle,
+                                            LogLevel::Success,
+                                            "logContractActionSent",
+                                            [
+                                                ("subAction", sub_str.clone()),
+                                                ("detail", detail_label.clone()),
+                                            ],
+                                            format!(
+                                                "Contract action synced: {sub_str} ({detail_label})"
+                                            ),
+                                        );
+                                    }
+                                }
+
+                                apply_and_write_contract_state(
+                                    &paths,
+                                    &state,
+                                    true,
+                                    &mut has_synced_contracts_once,
+                                    &mut last_synced_contract_state,
+                                    &mut last_contract_write_at,
+                                    &mut delivered_action_ids,
+                                    &mut announced_settlement_ids,
+                                    &shared,
+                                    &app_handle,
+                                );
+                                last_contract_poll = Instant::now();
+                            }
+                            Err(ApiError::Validation(reason)) => {
+                                synthesize_rejected_contract_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    &reason,
+                                    &last_synced_contract_state,
+                                    &mut delivered_action_ids,
+                                );
+                                push_i18n_log_shared(
+                                    &shared,
+                                    &app_handle,
+                                    LogLevel::Warn,
+                                    "logContractActionRejected",
+                                    [
+                                        ("subAction", sub_str.clone()),
+                                        ("reason", reason.clone()),
+                                    ],
+                                    format!("Contract action rejected: {sub_str} ({reason})"),
+                                );
+                            }
+                            Err(ApiError::NotSupported(_)) => {
+                                contracts_supported = false;
+                                synthesize_rejected_contract_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    "CONTRACTS_NOT_SUPPORTED",
+                                    &last_synced_contract_state,
+                                    &mut delivered_action_ids,
+                                );
+                                emit_snapshot_update(&shared, &app_handle, |snap| {
+                                    snap.contracts_supported = false;
+                                    snap.open_contracts_count = 0;
+                                    snap.open_offers_count = 0;
+                                });
+                                last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
+                            }
+                            Err(err) => {
+                                all_ok = false;
+                                handle_backend_io_error(
+                                    &err,
+                                    &mut is_connected,
+                                    &mut retry_hold_until,
+                                    &shared,
+                                    &app_handle,
+                                );
+                                break;
+                            }
+                        }
+                    }
+
+                    if all_ok {
+                        let _ = fs::remove_file(&xml_path);
+                    } else {
+                        break;
+                    }
+                }
                 Ok(IncomingPacket::IgnoredUnknownAction(act)) => {
                     let _ = fs::remove_file(&xml_path);
                     push_i18n_log_shared(
@@ -2104,6 +2371,60 @@ fn run_bridge_worker(
                         &app_handle,
                     );
                     pending_branding_sync = false;
+                }
+                Err(err) => {
+                    handle_backend_io_error(
+                        &err,
+                        &mut is_connected,
+                        &mut retry_hold_until,
+                        &shared,
+                        &app_handle,
+                    );
+                }
+            }
+        }
+
+        // 5. Periodic Etappe 2 contract & direct-offer state poll (`GET /api/v1/contracts/state`).
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
+            break;
+        }
+        if is_connected
+            && contracts_supported
+            && (force_sync
+                || !has_synced_contracts_once
+                || last_contract_poll.elapsed() >= poll_interval)
+        {
+            last_contract_poll = Instant::now();
+            let contract_res = backend.fetch_contracts_state(active_server_id.as_deref());
+            if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
+                break;
+            }
+            match contract_res {
+                Ok(mut state) => {
+                    state
+                        .action_results
+                        .retain(|r| !delivered_action_ids.iter().any(|id| id == &r.action_id));
+                    apply_and_write_contract_state(
+                        &paths,
+                        &state,
+                        force_sync || !has_synced_contracts_once,
+                        &mut has_synced_contracts_once,
+                        &mut last_synced_contract_state,
+                        &mut last_contract_write_at,
+                        &mut delivered_action_ids,
+                        &mut announced_settlement_ids,
+                        &shared,
+                        &app_handle,
+                    );
+                }
+                Err(ApiError::NotSupported(_)) => {
+                    contracts_supported = false;
+                    emit_snapshot_update(&shared, &app_handle, |snap| {
+                        snap.contracts_supported = false;
+                        snap.open_contracts_count = 0;
+                        snap.open_offers_count = 0;
+                    });
+                    last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                 }
                 Err(err) => {
                     handle_backend_io_error(
@@ -2463,16 +2784,264 @@ fn list_sorted_write_xmls(write_dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
 
-    // Prioritize `whitelist_*.xml` before `transaction_*.xml`, then sort lexicographically by filename.
+    // Prioritize `whitelist_*.xml`, then `contractAction_*.xml`, then `transaction_*.xml`,
+    // sorting numeric sequence suffixes numerically so `_2.xml` always executes before `_10.xml`.
     files.sort_by(|a, b| {
         let a_name = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let b_name = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let a_is_wl = a_name.starts_with("whitelist_");
-        let b_is_wl = b_name.starts_with("whitelist_");
-        b_is_wl.cmp(&a_is_wl).then_with(|| a_name.cmp(b_name))
+        write_filename_sort_key(a_name).cmp(&write_filename_sort_key(b_name))
     });
 
     files
+}
+
+fn write_filename_sort_key(filename: &str) -> (u8, String, u64, String) {
+    let priority = if filename.starts_with("whitelist_") {
+        0
+    } else if filename.starts_with("contractAction_") {
+        1
+    } else if filename.starts_with("transaction_") {
+        2
+    } else {
+        3
+    };
+    let stem = filename
+        .strip_suffix(".xml")
+        .or_else(|| filename.strip_suffix(".XML"))
+        .unwrap_or(filename);
+    if let Some((prefix_ts, seq_raw)) = stem.rsplit_once('_') {
+        if let Ok(seq_num) = seq_raw.parse::<u64>() {
+            return (
+                priority,
+                prefix_ts.to_string(),
+                seq_num,
+                filename.to_string(),
+            );
+        }
+    }
+    (priority, stem.to_string(), 0, filename.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_and_write_contract_state(
+    paths: &BridgePaths,
+    state: &ContractStateResponse,
+    force_write_xml: bool,
+    has_synced_contracts_once: &mut bool,
+    last_synced_contract_state: &mut ContractStateResponse,
+    last_contract_write_at: &mut Instant,
+    delivered_action_ids: &mut VecDeque<String>,
+    announced_settlement_ids: &mut HashSet<String>,
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+) {
+    let elapsed_secs = last_contract_write_at.elapsed().as_secs() as i64;
+    let unacked_settlement_retry_due = !state.settlements.is_empty()
+        && elapsed_secs >= 30
+        && !has_unread_contract_sync_xml(&paths.read_dir);
+
+    let should_write = force_write_xml
+        || !*has_synced_contracts_once
+        || !state.action_results.is_empty()
+        || unacked_settlement_retry_due
+        || contract_state_semantically_changed(last_synced_contract_state, state, elapsed_secs);
+
+    if should_write {
+        match write_contract_data_xml(&paths.staging_dir, &paths.read_dir, state) {
+            Ok(_) => {
+                for res in &state.action_results {
+                    record_delivered_action_id(delivered_action_ids, &res.action_id);
+                }
+                let mut new_settlements = 0_usize;
+                for s in &state.settlements {
+                    if announced_settlement_ids.insert(s.settlement_id.clone()) {
+                        new_settlements += 1;
+                    }
+                }
+                // Prune announced_settlement_ids that are no longer pending on the server
+                if state.settlements.is_empty() && announced_settlement_ids.len() > 256 {
+                    announced_settlement_ids.clear();
+                }
+                if new_settlements > 0 {
+                    push_i18n_log_shared(
+                        shared,
+                        app_handle,
+                        LogLevel::Success,
+                        "logContractSettlementSynced",
+                        [("count", new_settlements.to_string())],
+                        format!(
+                            "Settlements synced: Delivered {new_settlements} contract/offer settlement(s) to FS."
+                        ),
+                    );
+                }
+
+                let mut stored = state.clone();
+                stored.action_results.clear();
+                *last_synced_contract_state = stored;
+                *last_contract_write_at = Instant::now();
+                *has_synced_contracts_once = true;
+            }
+            Err(err) => {
+                push_raw_log_shared(shared, app_handle, LogLevel::Error, err);
+                return;
+            }
+        }
+    }
+
+    let (r_cnt, w_cnt) = count_bridge_queues(paths);
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    emit_snapshot_update(shared, app_handle, |snap| {
+        snap.contracts_supported = true;
+        snap.open_contracts_count = state.contracts.len();
+        snap.open_offers_count = state.direct_offers.len();
+        snap.read_queue_count = r_cnt;
+        snap.write_queue_count = w_cnt;
+        snap.last_sync_unix = Some(now_secs);
+    });
+}
+
+fn contract_state_semantically_changed(
+    prev: &ContractStateResponse,
+    next: &ContractStateResponse,
+    elapsed_secs: i64,
+) -> bool {
+    if prev.contracts.len() != next.contracts.len()
+        || prev.direct_offers.len() != next.direct_offers.len()
+        || prev.settlements.len() != next.settlements.len()
+    {
+        return true;
+    }
+
+    for (a, b) in prev.contracts.iter().zip(next.contracts.iter()) {
+        let a_factor_bp = (a.base_trend_factor * 10_000.0).round() as i64;
+        let b_factor_bp = (b.base_trend_factor * 10_000.0).round() as i64;
+        let expected_rem = (a.remaining_seconds - elapsed_secs).max(0);
+        if a.remote_id != b.remote_id
+            || a.origin != b.origin
+            || a.is_npc != b.is_npc
+            || a.issuer_server_id != b.issuer_server_id
+            || a.issuer_farm_id != b.issuer_farm_id
+            || a.issuer_name != b.issuer_name
+            || a.contractor_server_id != b.contractor_server_id
+            || a.contractor_farm_id != b.contractor_farm_id
+            || a.fill_type != b.fill_type
+            || a.total_liters != b.total_liters
+            || a.delivered_liters != b.delivered_liters
+            || a_factor_bp != b_factor_bp
+            || a.bonus_pct != b.bonus_pct
+            || a.status != b.status
+            || (b.remaining_seconds - expected_rem).abs() > 120
+        {
+            return true;
+        }
+    }
+
+    for (a, b) in prev.direct_offers.iter().zip(next.direct_offers.iter()) {
+        let expected_rem = (a.remaining_seconds - elapsed_secs).max(0);
+        if a.remote_id != b.remote_id
+            || a.origin != b.origin
+            || a.is_npc != b.is_npc
+            || a.seller_server_id != b.seller_server_id
+            || a.seller_farm_id != b.seller_farm_id
+            || a.seller_name != b.seller_name
+            || a.fill_type != b.fill_type
+            || a.total_liters != b.total_liters
+            || a.remaining_liters != b.remaining_liters
+            || a.price_delta_pct != b.price_delta_pct
+            || a.allow_partial != b.allow_partial
+            || a.was_bale != b.was_bale
+            || a.was_pallet != b.was_pallet
+            || a.status != b.status
+            || (b.remaining_seconds - expected_rem).abs() > 120
+        {
+            return true;
+        }
+    }
+
+    for (a, b) in prev.settlements.iter().zip(next.settlements.iter()) {
+        if a.settlement_id != b.settlement_id
+            || a.settlement_type != b.settlement_type
+            || a.liters != b.liters
+            || a.missing_liters != b.missing_liters
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn record_delivered_action_id(queue: &mut VecDeque<String>, action_id: &str) {
+    let clean = action_id.trim();
+    if clean.is_empty() || queue.iter().any(|id| id == clean) {
+        return;
+    }
+    if queue.len() >= 512 {
+        queue.pop_front();
+    }
+    queue.push_back(clean.to_string());
+}
+
+fn synthesize_rejected_contract_actions(
+    paths: &BridgePaths,
+    actions: &[ContractActionRequest],
+    reason: &str,
+    board_baseline: &ContractStateResponse,
+    delivered_action_ids: &mut VecDeque<String>,
+) {
+    let mut results = Vec::new();
+    for act in actions {
+        if matches!(
+            act.sub_action,
+            ContractSubAction::RequestSync | ContractSubAction::AckSettlement
+        ) {
+            continue;
+        }
+        record_delivered_action_id(delivered_action_ids, &act.action_id);
+        results.push(ContractActionResultDto {
+            action_id: act.action_id.clone(),
+            sub_action: act.sub_action.as_str().to_string(),
+            status: "REJECTED".to_string(),
+            reason: reason.to_string(),
+            remote_id: act.remote_id.clone().unwrap_or_default(),
+            granted_liters: 0,
+            base_trend_factor: act.base_trend_factor.unwrap_or(1.0),
+            bonus_pct: act.bonus_pct.unwrap_or(0),
+            remaining_seconds: 0,
+        });
+    }
+    if results.is_empty() {
+        return;
+    }
+    let mut synthetic = board_baseline.clone();
+    synthetic.action_results = results;
+    let _ = write_contract_data_xml(&paths.staging_dir, &paths.read_dir, &synthetic);
+}
+
+fn format_contract_action_detail(
+    req: &ContractActionRequest,
+    known_titles: &HashMap<String, String>,
+    whitelist_lang: Option<&str>,
+    ui_lang: &str,
+) -> String {
+    if let Some(ref ft) = req.fill_type {
+        let title = resolve_fill_type_code(ft, None, known_titles, whitelist_lang, ui_lang);
+        if let Some(liters) = req.liters {
+            return format!("{liters} L {title}");
+        }
+        return title;
+    }
+    if let Some(ref rid) = req.remote_id {
+        if let Some(liters) = req.liters {
+            return format!("#{rid} • {liters} L");
+        }
+        return format!("#{rid}");
+    }
+    req.action_id.clone()
 }
 
 fn read_string_with_retry(path: &Path) -> Option<String> {

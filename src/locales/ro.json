@@ -224,5 +224,12 @@
   "logDisconnectedByUser": "Bridge deconectat manual de utilizator. Traficul de rețea a fost oprit.",
   "logConnectingByUser": "Se conectează la piață (solicitat de utilizator)...",
   "toastConnected": "Conectare pornită",
-  "toastDisconnected": "Bridge deconectat"
+  "toastDisconnected": "Bridge deconectat",
+  "contractsBadge": "{count} Contracte",
+  "offersBadge": "{count} Oferte directe",
+  "mockBtnContractsSim": "Simulează contract/ofertă",
+  "logContractActionSent": "Acțiune contract sincronizată: {subAction} ({detail})",
+  "logContractActionRejected": "Acțiune contract respinsă: {subAction} ({reason})",
+  "logContractSettlementSynced": "Decontări primite: {count} înregistrare/înregistrări de contracte/oferte transmise către FS.",
+  "logMockContractSim": "Simulare: Eveniment online de contract și ofertă directă declanșat ({summary})."
 }
