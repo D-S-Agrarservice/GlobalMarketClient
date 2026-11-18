@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_CAPACITY_LITERS: f32 = 2_000_000.0;
-const DEFAULT_MOCK_PRIVATE_MARKET_NAME: &str = "WeekendFarmers (Mock)";
+const DEFAULT_MOCK_PRIVATE_MARKET_NAME: &str = "DSA-Dev Test (Mock)";
 const MOCK_FOREIGN_SERVER_ID: &str = "mock_eu_srv_0001";
 const FALLBACK_MOCK_LOGO_PNG: &[u8] = crate::bridge::dds::DEFAULT_DSA_LOGO_PNG;
 
@@ -144,7 +144,7 @@ impl Default for MockState {
         Self {
             simulate_offline: false,
             simulated_contracts_supported: true,
-            simulated_min_version: "0.9.9".to_string(),
+            simulated_min_version: "0.9.12".to_string(),
             simulated_latest_version: None,
             simulated_branding_tier: 0,
             simulated_private_market_name: DEFAULT_MOCK_PRIVATE_MARKET_NAME.to_string(),
