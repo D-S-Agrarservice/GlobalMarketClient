@@ -1,6 +1,8 @@
 # GlobalMarket – Externe Schnittstellen-Spezifikation & Datenverkehr: Lua <-> Rust Client XML-Bridge
 
-Dieses Dokument ist die verbindliche technische Spezifikation für den Datenverkehr zwischen dem FS25 Lua-Mod (`FS25_GlobalMarket` bzw. zukünftigen `FS<YY>_GlobalMarket`-Editionen) und der offiziellen plattformübergreifenden Desktop-Applikation **`GlobalMarketClient`** (Repository `FS25_GlobalMarketExe`, implementiert in **Rust + Tauri v2** für Windows, macOS & Linux / Steam Deck) inklusive Online-Backend (`gm.bydora.de`).
+Dieses Dokument ist die verbindliche technische Spezifikation für den Datenverkehr zwischen dem FS25 Lua-Mod (`FS25_GlobalMarket` bzw. zukünftigen `FS<YY>_GlobalMarket`-Editionen) und der offiziellen plattformübergreifenden Desktop-Applikation **`GlobalMarketClient`** (Repository `D-S-Agrarservice/GlobalMarketClient`, implementiert in **Rust + Tauri v2** für Windows, macOS & Linux / Steam Deck) inklusive Online-Backend (`gm.bydora.de`).
+
+> **Einzige Quelle:** Diese Datei im Client-Repo (`docs/`) ist die maßgebliche Fassung. Die frühere Kopie im Mod (`.agents/skills/lua/references/projects/FS25_GlobalMarket_EXE_Backend_Bridge.md`) verweist nur noch hierher. Änderungen an der Schnittstelle werden ausschließlich hier gepflegt.
 
 Da die Lua-Sandbox der GIANTS Engine aus Sicherheitsgründen keine direkten ausgehenden HTTP-, TCP- oder WebSocket-Verbindungen zulässt, erfolgt die gesamte Kommunikation zwischen Spiel und Desktop-Client asynchron und atomar über XML- und `.dds`-Dateien im lokalen `modSettings`-Ordner des Spielers.
 
@@ -47,7 +49,7 @@ Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_
 
 | Relativer Pfad | Richtung | Lebenszyklus & Zweck |
 | :--- | :--- | :--- |
-| `globalMarketOnline.xml` | **Client -> Lua** | **Persistente Statusdatei** (Heartbeat, Backend-Verbindungsstatus, Client-Version, `minVersion`, optionales `latestVersion` sowie 3-Stufen-Markt-Branding). Wird vom Rust-Client alle `3–5 s` atomar aktualisiert und von Lua alle `2000 ms` gelesen (**nicht von Lua gelöscht!**). Bei einem internen Live-Markt-/Token-Wechsel bleibt die Datei bis zum atomaren Überschreiben durch den neuen Handshake bestehen (nur `read/` & `.staging/` werden geleert); beim echten Beenden des Clients oder Profilordner-Wechsel löscht der Client die Datei sofort (`remove_heartbeat_xml`). |
+| `globalMarketOnline.xml` | **Client -> Lua** | **Persistente Statusdatei** (Heartbeat, Backend-Verbindungsstatus, Client-Version, `minVersion`, optionales `latestVersion` sowie 3-Stufen-Markt-Branding). Wird vom Rust-Client alle `3–5 s` atomar aktualisiert und von Lua alle `2000 ms` gelesen (**nicht von Lua gelöscht!**). Bei einem internen Live-Markt-/Token-Wechsel bleibt die Datei bis zum atomaren Überschreiben durch den neuen Handshake bestehen (nur `read/` & `.staging/` werden geleert); beim echten Beenden des Clients, beim Ausschalten der Online-Verbindung oder beim Profilordner-Wechsel löscht der Client die Datei sofort (`remove_heartbeat_xml`). |
 | `logos/logo_<hash12>.dds` | **Client -> Lua** | **Gecachte Branding-Textur:** Vom Rust-Client aus `.webp`/`.png`/`.jpg`/`.dds` erzeugte GIANTS-konforme `512x256` `BC3/DXT5`-Textur inkl. 10 Mipmaps (`174.928 Bytes`), referenziert über `logoFile` in `globalMarketOnline.xml`. |
 | `.staging/stage_<pid>_<seq>.tmp` | **Client intern** | **Temporärer Staging-Ordner** außerhalb von `read/`, in dem der Rust-Client neue XML- und `.dds`-Dateien vollständig schreibt und flusht, bevor sie per `std::fs::rename` atomar ans Ziel verschoben werden. |
 | `server_whitelist.xml` | **Lua (Server) -> Lokal** | Statische Referenzliste aller auf der geladenen Map registrierten FillTypes (wird beim Map-Start im Singleplayer bzw. auf dem Host/Dedicated Server erzeugt). |
@@ -135,30 +137,30 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
-      <version>0.9.9</version>
-      <minVersion>0.9.9</minVersion>
+      <version>0.9.13</version>
+      <minVersion>0.9.10</minVersion>
   </globalMarketOnline>
   ```
 * **XML-Struktur (Beispiel Tier 3 – Eigener Privatmarkt mit Community-Logo & optionaler Update-Empfehlung):**
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="3" isPrivateMarket="true" marketName="WeekendFarmers" hasCustomLogo="true" logoFile="logos/logo_9f4b2c10e8a1.dds">
-      <version>0.9.9</version>
-      <minVersion>0.9.9</minVersion>
+      <version>0.9.13</version>
+      <minVersion>0.9.10</minVersion>
       <latestVersion>1.0.0</latestVersion>
   </globalMarketOnline>
   ```
 * **Kern-Attribute & Knoten (Zweistufiges Versions- & Update-System):**
   * `globalMarketOnline#timestamp` (`int`, Pflicht): Aktueller UTC Unix-Timestamp in Sekunden (`SystemTime::now().duration_since(UNIX_EPOCH)`).
     * **Anti-Zombie-Regel (FS25 Sandbox-konform):** Da `os.time()` in der FS25-Lua-Sandbox `nil` ist, prüft Lua bei jedem Status-Poll (`2000 ms`), ob sich `timestamp` gegenüber dem zuletzt gelesenen Wert weiterbewegt. Bleibt `timestamp` länger als `10000 ms` unverändert (`self.exeStaleMs > 10000`), stuft Lua den Client als beendet/abgestürzt ein (`isExeRunningLocal = false`). Existiert beim allerersten Poll bereits eine alte `globalMarketOnline.xml` (z. B. nach einem früheren PC-Absturz), wartet Lua zwingend auf den ersten Timestamp-Fortschritt, bevor der Client als aktiv gilt.
-    * **Sauberer Shutdown:** Beim Stoppen der Bridge oder regulären Schließen des `GlobalMarketClient` wird `globalMarketOnline.xml` sofort per `cleanup_bridge_runtime_files` gelöscht, sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt.
+    * **Sauberer Shutdown & Umschalt-Toleranz (`EXE_SWITCH_GRACE_MS = 4500`):** Beim echten Beenden des `GlobalMarketClient`, beim Ausschalten der Online-Verbindung und beim Wechsel des Profilordners löscht der Client `globalMarketOnline.xml` sofort (`cleanup_bridge_runtime_files` → `remove_heartbeat_xml`), sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt. Bei einem internen Neustart mit gleichem Profilordner (Live-Markt-, Token- oder API-Key-Wechsel, `STOP_RESTART_PRESERVE_HEARTBEAT`) bleibt die Datei bestehen und wird vom neuen Handshake atomar überschrieben; geleert werden nur `read/` & `.staging/`. Damit ein solcher kurzer Reconnect auf Dedicated Servern keinen sofortigen Data-Host-Verlust an einen Standby-Spieler auslöst, hält `GlobalMarketSync.lua` eine bestehende Verbindung zusätzlich für bis zu `4500 ms` (2 Status-Polls) stabil; nur harte Pflicht-Versionssperren (`version < minVersion`) und echte Spiel-Disconnects (`onClientDisconnected`) greifen sofort ohne Verzögerung.
   * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
   * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Etappe 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
-  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.9` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
+  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.13` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
-    * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.9`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod, übernimmt Lua sofort die höhere Untergrenze, blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein.
+    * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.x`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod (Default-Baseline `GlobalMarket.DEFAULT_MIN_EXE_VERSION = "0.9.10"`), übernimmt Lua sofort die höhere Untergrenze, persistiert sie dauerhaft außerhalb der `.zip` in `modSettings/FS25_GlobalMarket/clientVersionState.xml` (nur Client/Host, niemals auf `g_dedicatedServer`), blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein. Nimmt das Backend eine Erhöhung später wieder zurück und bestätigt der Client eine aktive Verbindung (`isConnected="true"`), senkt Lua `self.minExeVersion` sowie `clientVersionState.xml` automatisch wieder auf `max(DEFAULT_MIN_EXE_VERSION, minVersion)` ab.
   * `globalMarketOnline.latestVersion` (`string`, Optional – **Stufe 2: Optional / Empfohlenes „Nice-to-have“-Update**): Wird vom Client genau dann geschrieben, wenn das Backend im Handshake (`/api/v1/meta/status`) zusätzlich `latest_exe_version` (bzw. Alias `recommended_exe_version`) ausliefert.
-    * **Zweck (Unterbrechungsfreie Update-Ankündigung):** Gilt `version >= minVersion`, aber `version < latestVersion`, bleibt `isConnected="true"` vollständig aktiv (kein Handelsabbruch!). Der `GlobalMarketClient` blendet ein dezentes, wegklickbares gelbes Empfehlungs-Banner ein (inkl. automatischem Check auf ein signiertes 1-Klick-Update) und reicht `<latestVersion>` an `globalMarketOnline.xml` durch, sodass auch der Lua-Mod im Spiel optional einen sanften Update-Hinweis anzeigen kann.
+    * **Zweck (Unterbrechungsfreie Update-Ankündigung):** Gilt `version >= minVersion`, aber `version < latestVersion`, bleibt `isConnected="true"` vollständig aktiv (kein Handelsabbruch!). Der `GlobalMarketClient` blendet ein dezentes, wegklickbares gelbes Empfehlungs-Banner ein (inkl. automatischem Check auf ein signiertes 1-Klick-Update) und reicht `<latestVersion>` an `globalMarketOnline.xml` durch, sodass der Lua-Mod einmalig pro Spielsitzung (gemerkt pro `latestVersion`) eine nicht-blockierende HUD-Info (`FSBaseMission.INGAME_NOTIFICATION_INFO`, L10N-Key `ui_gm_info_exe_update_optional`) anzeigt.
 
 * **3-Stufen Online-Markt-Branding (`FS25_GlobalMarket v0.9.9.22+` & `GlobalMarketClient`):**
   Über hinterlegte Markt-Schlüssel (`X-Market-Token`, lokal geschützt in `tokens.vault`) unterstützt die Bridge vier definierte Darstellungsstufen:
@@ -354,7 +356,7 @@ Bei aktiviertem **GM-Debug-Modus** (`GlobalMarketSettings.current.isDebugActive 
 
 ## 6. Rust-Referenzimplementierung (`GlobalMarketClient`)
 
-Die produktive Implementierung der XML-Bridge befindet sich im Repository `FS25_GlobalMarketExe` unter `src-tauri/src/` und nutzt `quick-xml` (Streaming-Reader & Escaping ohne DOM-Overhead) sowie `serde`.
+Die produktive Implementierung der XML-Bridge befindet sich im Repository `GlobalMarketClient` unter `src-tauri/src/` und nutzt `quick-xml` (Streaming-Reader & Escaping ohne DOM-Overhead) sowie `serde`.
 
 ### 6.1 Domain- & Bridge-Strukturen (`api/types.rs` & `bridge/xml.rs`)
 ```rust

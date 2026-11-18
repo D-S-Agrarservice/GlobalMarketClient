@@ -48,6 +48,7 @@ Because the GIANTS Engine Lua sandbox blocks direct outbound network connections
 | **True Cross-Platform & Multi-Edition Support** | Automatic profile discovery for **Windows** (including OneDrive), **macOS** (Universal Apple Silicon & Intel — Steam, GIANTS & Mac App Store), and **Linux / Steam Deck** (Steam Proton), ready for `FS25` and upcoming Farming Simulator editions (including custom `-profile` folders). |
 | **SP, MP Host & Dedicated Server Ready** | Works seamlessly in Singleplayer, hosted Multiplayer, and on Dedicated Servers via the mod's dynamic **Data-Host Token** failover system — **nothing needs to be installed on your rented Dedicated Server**, and **one connected player running the app is enough for everyone on the server to trade online**. |
 | **Community Markets & Custom Logos** | Optional key-based support for private community markets and custom community/creator header logos (including automatic pure-Rust WebP/PNG/JPG to GIANTS `DXT5` `.dds` conversion and 1-click live market switching in the header). |
+| **Cross-Server Contracts & Offers** | Relays supply contracts and `±10 %` direct offers of the mod (`FS25_GlobalMarket` v0.9.9.34+) between servers. The client only enables this once the online backend confirms support (`contractsSupported`), so older setups keep trading normally. |
 | **Lightweight System Tray App** | Built with **Rust + Tauri v2** for minimal RAM/CPU overhead, zero-gap live market handovers, `ETag` bandwidth caching, and optional *Great Demand* desktop notifications. |
 | **16 Built-In Languages** | Fully localized UI, system tray, desktop notifications, and live activity log (including all 200 official FS25 crop names) in **DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU, and UK**. |
 
@@ -104,7 +105,7 @@ GlobalMarketClient/
 │   │   ├── api/              # FastAPI HTTPS client (ETag, retry/IP-lock handling) & local Mock simulator
 │   │   ├── bridge/           # Coordinator, atomic UTF-8 XML I/O, pure-Rust DXT5 DDS encoder & path discovery
 │   │   ├── config/           # Persistent settings & OS-encrypted TokenVault (DPAPI)
-│   │   └── diagnostics.rs    # Privacy-redacted diagnostic report builder
+│   │   └── diagnostics/      # Privacy-redacted diagnostic report builder
 │   └── tests/bridge_suite.rs # End-to-end Rust integration test suite
 └── .github/workflows/        # Multi-OS CI & Draft Release pipelines (Windows, macOS Universal, Linux)
 ```

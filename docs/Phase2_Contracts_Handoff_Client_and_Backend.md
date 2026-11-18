@@ -1,7 +1,8 @@
 # Etappe 2 Handoff Specification: Cross-Server Supply Contracts (#25) & Direct Offers
 
 **Mod Baseline Ready:** `FS25_GlobalMarket v0.9.9.34` (`gm_floowy`)  
-**Client Baseline Ready:** `GlobalMarketClient v0.9.13-beta` (`develop_floowy` / `main`)  
+**Client Baseline Ready:** `GlobalMarketClient v0.9.13` (Beta, `develop_floowy` / `main`)  
+**Status (2026-11-18):** Mod side current at `v0.9.11.1` (later Etappe 2 changes: `v0.9.9.35` accepted `CANCEL_OFFER` returns unsold liters, `v0.9.9.37` cleanup on farm deletion), client at `v0.9.13`; the backend part (section 3, `GlobalMarketServer#25`) is still open. The XML formats themselves are specified in `External_Interface_Specification_FS25_GlobalMarket_Mod2EXE.md` (single source).  
 **Remaining Scope:** Backend API (`GlobalMarketServer` / `gm.bydora.de`, FastAPI)  
 **Tracked GitHub Issues:** Backend API & State Machine [`D-S-Agrarservice/GlobalMarketServer#25`](https://github.com/D-S-Agrarservice/GlobalMarketServer/issues/25) | Future Online NPCs [`D-S-Agrarservice/FS25_GlobalMarket#29`](https://github.com/D-S-Agrarservice/FS25_GlobalMarket/issues/29)
 
@@ -48,7 +49,7 @@ The FS25 Lua mod has already implemented the complete Etappe 2 foundation (`Glob
 
 ---
 
-## 2. `GlobalMarketClient` (Rust + Tauri v2) Implementation Status (`v0.9.13-beta` — Implemented)
+## 2. `GlobalMarketClient` (Rust + Tauri v2) Implementation Status (`v0.9.13` Beta — Implemented)
 
 ### 2.1 Handshake & Heartbeat (`api/types.rs` & `bridge/xml.rs`)
 1. Extend `ServerHandshake` (`MetaStatus` JSON) with:

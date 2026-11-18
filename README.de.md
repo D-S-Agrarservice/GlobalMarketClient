@@ -48,6 +48,7 @@ Da die Lua-Sandbox der GIANTS Engine aus Sicherheitsgründen keine direkten ausg
 | **Echter Multi-OS- & Multi-Versions-Support** | Automatische Profilerkennung für **Windows** (inkl. OneDrive), **macOS** (Universal für Apple Silicon & Intel – Steam, GIANTS & Mac App Store) und **Linux / Steam Deck** (Steam Proton), vorbereitet für `LS25` und kommende Serienteile (inkl. `-profile`-Ordner). |
 | **Singleplayer, MP-Host & Dedicated Server** | Unterstützt Einzelspieler, gehosteten Multiplayer sowie das dynamische **Data-Host-Token-System** auf Dedicated Servern: **Auf dem gemieteten Dedi-Server selbst muss nichts installiert werden** – sobald **ein einziger Spieler** auf dem Server die App offen hat, handeln alle Mitspieler live am selben Online-Markt mit. |
 | **Community-Märkte & eigene Logos** | Optionale Unterstützung für geschlossene Community-Märkte und individuelle Header-Logos per Schlüssel (inkl. automatischer Konvertierung von WebP/PNG/JPG in GIANTS-konformes `DXT5`-`.dds` und 1-Klick-Schnellumschalter oben im Header). |
+| **Serverübergreifende Verträge & Angebote** | Leitet Lieferverträge und `±10 %`-Direktangebote des Mods (`FS25_GlobalMarket` ab v0.9.9.34) zwischen Servern weiter. Der Client schaltet das erst frei, wenn das Online-Backend die Unterstützung bestätigt (`contractsSupported`), ältere Setups handeln also ganz normal weiter. |
 | **Leichtgewichtig im System-Tray** | Geschrieben in nativem **Rust + Tauri v2** – minimaler RAM-/CPU-Bedarf, unterbrechungsfreie Live-Marktwechsel, `ETag`-Caching und optionale Desktop-Benachrichtigungen bei *Großer Nachfrage*. |
 | **16 Sprachen ab Werk** | Vollständig lokalisierte Oberfläche, System-Tray, Desktop-Benachrichtigungen & Live-Protokoll (inkl. aller 200 offiziellen LS25-Fruchtnamen) in **DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU und UK**. |
 
@@ -104,7 +105,7 @@ GlobalMarketClient/
 │   │   ├── api/              # FastAPI HTTPS-Client (ETag, Retry-/IP-Lock-Handling) & lokaler Mock-Simulator
 │   │   ├── bridge/           # Coordinator, atomares UTF-8 XML-I/O, Pure-Rust DXT5-DDS-Konverter & Pfaderkennung
 │   │   ├── config/           # Persistente Einstellungen & BS-verschlüsselter TokenVault (DPAPI)
-│   │   └── diagnostics.rs    # Anonymisierter Diagnosebericht-Generator
+│   │   └── diagnostics/      # Anonymisierter Diagnosebericht-Generator
 │   └── tests/bridge_suite.rs # End-to-End Rust-Integrationstests
 └── .github/workflows/        # Multi-OS CI- & Draft-Release-Pipelines (Windows, macOS Universal, Linux)
 ```
