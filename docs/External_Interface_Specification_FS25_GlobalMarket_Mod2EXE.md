@@ -58,6 +58,8 @@ Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_
 | `read/gmContractSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="contractData"`):** Eingehende Online-Verträge, Direktangebote, Action-Acks (`actionResults`) und `settlements` (Etappe 2). Wird vom selben `1000 ms`-Poll gelesen & gelöscht. Separate Dateinamensklasse, damit `MAX_RETAINED_MARKET_SYNC_FILES` niemals ungelesene Quittungen verdrängt. |
 | `write/transaction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="transaction"`):** Ausgehende Kauf-/Verkaufstransaktion in ganzen Litern. **Client liest, überträgt idempotent ans Backend & löscht diese Datei.** |
 | `write/contractAction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="contractAction"`):** Ausgehende Etappe-2-Aktion (`CREATE_*`, `CANCEL_*`, `ACCEPT_CONTRACT`, `DELIVER_CONTRACT`, `BUY_OFFER`, `ACK_SETTLEMENT`, `REQUEST_SYNC`). **Client liest, sendet idempotent ans Backend & löscht diese Datei.** |
+| `read/gmVehicleSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="vehicleData"`, Etappe 3, spezifiziert):** Eingehende Online-Fahrzeugangebote, Action-Acks und `settlements` des Gebrauchtfahrzeugmarkts (siehe 3.6). Eigene Dateinamensklasse wie `gmContractSync_*`. |
+| `write/vehicleAction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="vehicleAction"`, Etappe 3, spezifiziert):** Ausgehende Fahrzeugmarkt-Aktion (`CREATE_LISTING`, `CANCEL_LISTING`, `BUY_LISTING`, `ACK_SETTLEMENT`, `REQUEST_SYNC`). **Client liest, sendet idempotent ans Backend & löscht diese Datei.** |
 
 ### 1.3 Verbindliche Datei-I/O-Regeln für Rust (`GlobalMarketClient`) & Lua
 1. **Atomares Schreiben über `.staging/` (Schutz vor Halb-Lese-Zugriffen & `getFiles`-Races):**
@@ -321,6 +323,55 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
    ```
    Unterstützte `settlement#type`-Werte: `CONTRACT_DELIVERY`, `CONTRACT_COMPLETED_ISSUER`, `CONTRACT_EXPIRED_OPEN`, `CONTRACT_DEFAULT_REFUND`, `CONTRACT_PENALTY_DEBIT` (`15 %` Strafe), `OFFER_SOLD`, `OFFER_RETURNED`. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
 
+### 3.6 Serverübergreifender Gebrauchtfahrzeugmarkt (Etappe 3: `vehicleAction` & `vehicleData`)
+
+> **Status:** Spezifiziert, noch nicht implementiert. Der lokale Gebrauchtfahrzeugmarkt (Stufe 1) ist im Mod ab `FS25_GlobalMarket v0.10.0.5` fertig (Mod-Issue `D-S-Agrarservice/FS25_GlobalMarket#16`). Online-Anbindung: Backend `D-S-Agrarservice/GlobalMarketServer#26` (nach `#25`), Client `D-S-Agrarservice/GlobalMarketClient#4`. Freischaltung über `globalMarketOnline#vehiclesSupported="true"` (gleiches Capability-Prinzip wie `contractsSupported`).
+
+* **Relative Preise:** `priceFactor` (`float`, `0.70..1.30`) bezogen auf den **lokalen Händlerwert** des Fahrzeugs (Basegame-Formel `Vehicle.calculateSellPrice` aus Neupreis, Alter, Stunden, Schaden, Verschleiß). Es werden **niemals** Euro-Beträge übertragen; jeder Server rechnet selbst.
+* **Fahrzeug-Abbild (`<vehicle>`):** `xmlFilename` in Netzwerkform (`data/...`, `$pdlcdir$...`, `$moddir$FS25_Name/...`), bei Mods `modName` + `modFileHash` (Datei-Hash aus `g_modManager`; ein umgebauter Mod mit gleichem Namen hat einen anderen Hash). Konfigurationen per `saveId` inkl. eigener Lackfarbe (`color="r g b"`, `materialTemplate`). Zustand: `ageMonths`, `operatingHours`, `damage` (`0..1`), `wear` (`0..1`). **Nicht** übertragen: Kennzeichen, Ladung, angehängte Geräte, Mod-Sonderzustand außerhalb der Konfigurationen.
+* **Filterung im Spiel:** Der Rust-Client reicht alle Angebote durch. Lua zeigt nur Angebote an, deren Store-Item lokal existiert, deren Mod-Hash übereinstimmt und deren `saveId`s exakt auflösen (kein Fallback auf ähnliche Konfigurationen).
+* **Treuhand & Nebenläufigkeit (wie Etappe 2):** Bei `CREATE_LISTING` entfernt Lua das Fahrzeug aus der Welt und hält den Snapshot lokal als `PENDING_CREATE`; bei `REJECTED`, Rückzug oder Ablauf wird es am Händler-Abholplatz wiederhergestellt. Bei `BUY_LISTING` belastet Lua den Käufer erst nach `ACCEPTED`; das `ACCEPTED`-Ergebnis enthält das vollständige `<vehicle>`, aus dem der Käufer-Server das Fahrzeug baut.
+* **Fristen:** ausgehend `durationHours` (`1..168`), eingehend `remainingSeconds` (Echtzeit, unabhängig von der Ingame-Monatslänge).
+
+1. **Ausgehende Aktionen (`write/vehicleAction_<date>_<seq>.xml`, `action="vehicleAction"`):**
+   ```xml
+   <?xml version="1.0" encoding="utf-8" standalone="no"?>
+   <gmDataSync action="vehicleAction">
+       <request subAction="CREATE_LISTING" actionId="a3f901c48b2e7d10_15000_1" serverId="a3f901c48b2e7d10" farmId="1" farmName="Hof Meier [Dedi EU]" saleMode="FIXED" priceFactor="1.10" durationHours="72">
+           <vehicle xmlFilename="$moddir$FS25_ExampleTractor/tractor.xml" modName="FS25_ExampleTractor" modFileHash="3f1c...e9" group="DRIVABLES" ageMonths="26" operatingHours="412.5" damage="0.18" wear="0.31">
+               <config name="wheel" saveId="3" isActive="true" isBought="true" />
+               <config name="baseColor" saveId="4" isActive="true" isBought="true" color="0.62 0.05 0.04" materialTemplate="" />
+           </vehicle>
+       </request>
+   </gmDataSync>
+   ```
+   Unterstützte `subAction`-Werte: `CREATE_LISTING` (mit `<vehicle>`), `CANCEL_LISTING` (`remoteId`), `BUY_LISTING` (`remoteId`), `ACK_SETTLEMENT` (`settlementIds="s1,s2"`), `REQUEST_SYNC`. `saleMode` ist vorerst immer `FIXED`; `AUCTION` ist für eine spätere Ausbaustufe reserviert.
+
+2. **Eingehender Sync (`read/gmVehicleSync_<ts>_<seq>.xml`, `action="vehicleData"`):**
+   ```xml
+   <?xml version="1.0" encoding="utf-8" standalone="no"?>
+   <gmDataSync action="vehicleData">
+       <listings>
+           <listing remoteId="v_301" saleMode="FIXED" sellerServerId="99aa..." sellerFarmId="1" sellerName="Nordhof" priceFactor="1.12" remainingSeconds="259200" status="OPEN">
+               <vehicle xmlFilename="data/vehicles/fendt/vario700/vario700.xml" group="DRIVABLES" ageMonths="14" operatingHours="230.0" damage="0.05" wear="0.12">
+                   <config name="motor" saveId="2" isActive="true" isBought="true" />
+               </vehicle>
+           </listing>
+       </listings>
+       <actionResults>
+           <result actionId="a3f901c48b2e7d10_15000_2" subAction="BUY_LISTING" status="ACCEPTED" reason="" remoteId="v_301">
+               <vehicle xmlFilename="data/vehicles/fendt/vario700/vario700.xml" group="DRIVABLES" ageMonths="14" operatingHours="230.0" damage="0.05" wear="0.12">
+                   <config name="motor" saveId="2" isActive="true" isBought="true" />
+               </vehicle>
+           </result>
+       </actionResults>
+       <settlements>
+           <settlement settlementId="vs_77" type="LISTING_SOLD" targetServerId="a3f901c48b2e7d10" targetFarmId="1" remoteId="v_288" priceFactor="1.05" buyerName="Südhof" />
+       </settlements>
+   </gmDataSync>
+   ```
+   Unterstützte `settlement#type`-Werte: `LISTING_SOLD` (Verkäufer-Server zahlt lokal `priceFactor × Händlerwert` aus), `LISTING_EXPIRED` (mit `<vehicle>`; Verkäufer-Server stellt das Fahrzeug wieder her). `CANCEL_LISTING`-Ergebnisse mit `status="ACCEPTED"` enthalten ebenfalls das `<vehicle>` zur Wiederherstellung. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
+
 ---
 
 ## 4. HUD-Status-Icon im Spiel (`GameInfoDisplay`)
@@ -481,4 +532,4 @@ Markt-Schlüssel (`X-Market-Token`) für Tier-1 bis Tier-3 werden **niemals** in
 
 Der XML-Parser in `GlobalMarketSync.lua` und der Streaming-Parser in `src-tauri/src/bridge/xml.rs` werten das Root-Attribut `<gmDataSync action="...">` polymorph aus. Unbekannte `action`-Werte werden im Rust-Client über `IncomingPacket::IgnoredUnknownAction` kommentarlos übersprungen und sauber aus `write/` aufgeräumt.
 
-Dadurch kann dieselbe `read/`- und `write/`-Ordnerstruktur in zukünftigen Ausbaustufen für weitere geplante Handelsbereiche (wie **Viehhandel (`animalData`)**, **Gebrauchtmaschinen (`usedVehicles`)** oder **Lieferverträge (`contractData`)**) genutzt werden, ohne den atomaren Dateitransport-Mechanismus ändern zu müssen.
+Dadurch kann dieselbe `read/`- und `write/`-Ordnerstruktur in zukünftigen Ausbaustufen für weitere geplante Handelsbereiche (wie **Viehhandel/Tierauktionen (`animalData`)**; Lieferverträge (`contractData`, 3.5) und Gebrauchtfahrzeuge (`vehicleData`, 3.6) sind bereits spezifiziert) genutzt werden, ohne den atomaren Dateitransport-Mechanismus ändern zu müssen.
