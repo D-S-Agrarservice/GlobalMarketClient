@@ -5,6 +5,7 @@
   "modeMockBadge": "MÍSTNÍ SIMULACE",
   "modeLiveBadge": "ONLINE TRH",
   "tierBadgeExtended": "ROZŠÍŘENÉ LADĚNÍ",
+  "tierBadgeRemaining": "zbývá {min} min",
   "tierBadgeDeveloper": "DEV / ÚDRŽBA",
   "tierNameUser": "Běžný uživatel",
   "tierNameExtended": "Rozšířené ladění",

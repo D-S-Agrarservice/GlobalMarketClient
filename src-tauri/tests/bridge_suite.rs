@@ -476,9 +476,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "0.9.13".to_string(),
+        exe_version: "0.9.14".to_string(),
         min_exe_version: "0.9.9".to_string(),
-        latest_exe_version: Some("0.9.14".to_string()),
+        latest_exe_version: Some("0.9.15".to_string()),
         contracts_supported: true,
         open_contracts_count: 2,
         open_offers_count: 3,
@@ -493,6 +493,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         last_heartbeat_unix: Some(1_729_512_002),
         last_sync_unix: Some(1_729_512_000),
         last_error: None,
+        extended_expires_unix: None,
     };
 
     let cfg = AppConfig {
@@ -519,8 +520,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
-    assert!(report.contains("app_version: \"0.9.13-beta (protocol 0.9.13)\""));
-    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.14)\""));
+    assert!(report.contains("app_version: \"0.9.14-beta (protocol 0.9.14)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.15)\""));
     assert!(report.contains("contracts_bridge: \"supported=true, open_contracts=2, open_offers=3\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
@@ -1517,7 +1518,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.14\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.15\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
                                 "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
@@ -1668,10 +1669,10 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
-    assert!(xml_a.contains("<version>0.9.13</version>"));
+    assert!(xml_a.contains("<version>0.9.14</version>"));
     assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
-    assert!(xml_a.contains("<latestVersion>0.9.14</latestVersion>"));
-    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.14"));
+    assert!(xml_a.contains("<latestVersion>0.9.15</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.15"));
     assert!(mgr
         .get_logs()
         .iter()

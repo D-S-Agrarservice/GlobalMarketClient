@@ -5,6 +5,7 @@
   "modeMockBadge": "ЛОКАЛЬНАЯ СИМУЛЯЦИЯ",
   "modeLiveBadge": "ОНЛАЙН-РЫНОК",
   "tierBadgeExtended": "РАСШИРЕННАЯ ОТЛАДКА",
+  "tierBadgeRemaining": "осталось {min} мин",
   "tierBadgeDeveloper": "DEV / ОБСЛУЖИВАНИЕ",
   "tierNameUser": "Стандартный пользователь",
   "tierNameExtended": "Расширенная отладка",

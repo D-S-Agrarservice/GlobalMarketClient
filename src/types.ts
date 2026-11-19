@@ -99,6 +99,8 @@ export interface BridgeSnapshot {
   lastHeartbeatUnix: number | null;
   lastSyncUnix: number | null;
   lastError: string | null;
+  /** Unix time (seconds) when the temporary Extended mode ends, `null` outside Extended mode. */
+  extendedExpiresUnix: number | null;
 }
 
 export interface HeartbeatTickPayload {
@@ -134,6 +136,9 @@ export const LOCAL_DEV_BACKEND_URL = "http://127.0.0.1:8000";
 
 /** Official D-S-Agrarservice Discord invite URL placeholder (to be replaced once dedicated channel/role is ready). */
 export const DSA_DISCORD_URL = "https://discord.gg/ds-agrarservice";
+
+/** Hosting partner website shown as "powered by bydora.de" in the header. */
+export const BYDORA_URL = "https://bydora.de";
 
 /** Official GitHub repository URL (D-S-Agrarservice). */
 export const GITHUB_REPO_URL =

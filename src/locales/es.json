@@ -5,6 +5,7 @@
   "modeMockBadge": "SIMULACIÓN LOCAL",
   "modeLiveBadge": "MERCADO ONLINE",
   "tierBadgeExtended": "DEBUG EXTENDIDO",
+  "tierBadgeRemaining": "{min} min restantes",
   "tierBadgeDeveloper": "DEV / MANTENIMIENTO",
   "tierNameUser": "Usuario estándar",
   "tierNameExtended": "Diagnóstico extendido",

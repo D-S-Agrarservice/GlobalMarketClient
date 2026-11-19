@@ -5,6 +5,7 @@
   "modeMockBadge": "HELYI SZIMULÁCIÓ",
   "modeLiveBadge": "ÉLŐ PIAC",
   "tierBadgeExtended": "BŐVÍTETT DEBUG",
+  "tierBadgeRemaining": "még {min} perc",
   "tierBadgeDeveloper": "DEV / KARBANTARTÁS",
   "tierNameUser": "Általános felhasználó",
   "tierNameExtended": "Bővített hibakeresés",

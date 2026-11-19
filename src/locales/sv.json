@@ -5,6 +5,7 @@
   "modeMockBadge": "LOKAL SIMULERING",
   "modeLiveBadge": "LIVE-MARKNAD",
   "tierBadgeExtended": "UTÖKAD DEBUG",
+  "tierBadgeRemaining": "{min} min kvar",
   "tierBadgeDeveloper": "DEV / UNDERHÅLL",
   "tierNameUser": "Standardanvändare",
   "tierNameExtended": "Utökad felsökning",

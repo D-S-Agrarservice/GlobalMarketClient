@@ -2,9 +2,17 @@
 //! Masks local OS usernames/home paths and never exposes private market tokens.
 
 use crate::bridge::coordinator::{BridgeConnectionState, BridgeSnapshot, LogEntry, LogLevel};
-use crate::config::{AppConfig, BackendMode};
+use crate::config::{AccessTier, AppConfig, BackendMode};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Number of trailing log lines in the standard report.
+const REPORT_LOG_LINES_STANDARD: usize = 15;
+/// Number of trailing log lines when Extended or Developer mode is active.
+const REPORT_LOG_LINES_EXTENDED: usize = 50;
+/// Number of most recent warnings/errors listed separately in Extended or Developer mode.
+const REPORT_RECENT_ERRORS: usize = 10;
 
 /// Scrubs user-identifying home directory prefixes and usernames from paths and log lines.
 pub fn mask_user_paths(input: &str) -> String {
@@ -184,26 +192,37 @@ pub fn build_diagnostic_report_with_secrets(
         "<short>".to_string()
     };
 
-    let mut last_err = snapshot
+    let cid_full = config.client_id.trim().to_string();
+    let scrub = |input: &str| -> String {
+        let mut out = mask_user_paths(input);
+        if !cid_full.is_empty() {
+            out = out.replace(&cid_full, "<CLIENT>");
+        }
+        if let Some(ref tok) = config.market_token {
+            let t = tok.trim();
+            if !t.is_empty() {
+                out = out.replace(t, "<REDACTED>");
+            }
+        }
+        for sec in vault_secrets {
+            let t = sec.trim();
+            if !t.is_empty() {
+                out = out.replace(t, "<REDACTED>");
+            }
+        }
+        out
+    };
+
+    let last_err = snapshot
         .last_error
         .as_deref()
-        .map(mask_user_paths)
+        .map(&scrub)
         .unwrap_or_else(|| "none".to_string());
-    if !cid_trimmed.is_empty() {
-        last_err = last_err.replace(cid_trimmed, "<CLIENT>");
-    }
-    if let Some(ref tok) = config.market_token {
-        let t = tok.trim();
-        if !t.is_empty() {
-            last_err = last_err.replace(t, "<REDACTED>");
-        }
-    }
-    for sec in vault_secrets {
-        let t = sec.trim();
-        if !t.is_empty() {
-            last_err = last_err.replace(t, "<REDACTED>");
-        }
-    }
+
+    let is_extended = matches!(
+        config.access_tier,
+        AccessTier::Extended | AccessTier::Developer
+    );
 
     let gd_str = if snapshot.active_great_demands.is_empty() {
         "none".to_string()
@@ -278,37 +297,71 @@ pub fn build_diagnostic_report_with_secrets(
     ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
+
+    if is_extended {
+        let fmt_unix = |secs: Option<u64>| -> String {
+            secs.map(|s| format_hms_utc(s * 1000))
+                .unwrap_or_else(|| "none".to_string())
+        };
+        let remaining = match snapshot.extended_expires_unix {
+            Some(deadline) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                format!("{} min", deadline.saturating_sub(now).div_ceil(60))
+            }
+            None => "n/a".to_string(),
+        };
+        report.push_str(&format!(
+            "api_version: \"{}\"\n",
+            snapshot.api_version.as_deref().unwrap_or("unknown")
+        ));
+        report.push_str(&format!(
+            "timing: \"last_sync={}, last_heartbeat={}, extended_remaining={remaining}\"\n",
+            fmt_unix(snapshot.last_sync_unix),
+            fmt_unix(snapshot.last_heartbeat_unix)
+        ));
+
+        report.push_str("recent_errors:\n");
+        let errors: Vec<&LogEntry> = logs
+            .iter()
+            .filter(|e| matches!(e.level, LogLevel::Warn | LogLevel::Error))
+            .collect();
+        if errors.is_empty() {
+            report.push_str("  - \"<none>\"\n");
+        } else {
+            let start = errors.len().saturating_sub(REPORT_RECENT_ERRORS);
+            for entry in &errors[start..] {
+                report.push_str(&format_log_line(entry, &scrub));
+            }
+        }
+    }
+
     report.push_str("recent_logs:\n");
 
-    let tail_start = logs.len().saturating_sub(15);
+    let line_count = if is_extended {
+        REPORT_LOG_LINES_EXTENDED
+    } else {
+        REPORT_LOG_LINES_STANDARD
+    };
+    let tail_start = logs.len().saturating_sub(line_count);
     if logs.is_empty() {
         report.push_str("  - \"<no log entries>\"\n");
     } else {
-        let cid = config.client_id.trim();
         for entry in &logs[tail_start..] {
-            let ts = format_hms_utc(entry.timestamp_ms);
-            let lvl = format_level(entry.level);
-            let mut msg = mask_user_paths(&entry.message);
-            if !cid.is_empty() {
-                msg = msg.replace(cid, "<CLIENT>");
-            }
-            if let Some(ref tok) = config.market_token {
-                let t = tok.trim();
-                if !t.is_empty() {
-                    msg = msg.replace(t, "<REDACTED>");
-                }
-            }
-            for sec in vault_secrets {
-                let t = sec.trim();
-                if !t.is_empty() {
-                    msg = msg.replace(t, "<REDACTED>");
-                }
-            }
-            let escaped = msg.replace('"', "'");
-            report.push_str(&format!("  - \"[{ts}] [{lvl}] {escaped}\"\n"));
+            report.push_str(&format_log_line(entry, &scrub));
         }
     }
 
     report.push_str("```");
     report
+}
+
+/// Formats one scrubbed log entry as a YAML list item.
+fn format_log_line(entry: &LogEntry, scrub: &dyn Fn(&str) -> String) -> String {
+    let ts = format_hms_utc(entry.timestamp_ms);
+    let lvl = format_level(entry.level);
+    let escaped = scrub(&entry.message).replace('"', "'");
+    format!("  - \"[{ts}] [{lvl}] {escaped}\"\n")
 }

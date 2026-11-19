@@ -138,6 +138,8 @@ pub struct BridgeSnapshot {
     pub last_heartbeat_unix: Option<u64>,
     pub last_sync_unix: Option<u64>,
     pub last_error: Option<String>,
+    /// Unix time (seconds) when the temporary Extended mode ends, `None` outside Extended mode.
+    pub extended_expires_unix: Option<u64>,
 }
 
 enum WorkerSignal {
@@ -269,6 +271,7 @@ impl BridgeManager {
             last_heartbeat_unix: None,
             last_sync_unix: None,
             last_error: None,
+            extended_expires_unix: None,
         };
 
         let mgr = Self {
@@ -791,6 +794,10 @@ impl BridgeManager {
                 AccessTier::Extended => Some(Instant::now() + extended_ttl),
                 AccessTier::User | AccessTier::Developer => None,
             };
+            guard.snapshot.extended_expires_unix = match tier {
+                AccessTier::Extended => Some(now_epoch_ms() / 1000 + extended_ttl.as_secs()),
+                AccessTier::User | AccessTier::Developer => None,
+            };
 
             if tier != AccessTier::Developer {
                 if guard.config.backend_mode != BackendMode::Live
@@ -846,6 +853,7 @@ impl BridgeManager {
                 || guard.config.backend_url != DEFAULT_OFFICIAL_BACKEND_URL;
 
             guard.extended_expires_at = None;
+            guard.snapshot.extended_expires_unix = None;
             guard.config.access_tier = AccessTier::User;
             guard.config.backend_mode = BackendMode::Live;
             guard.config.backend_url = DEFAULT_OFFICIAL_BACKEND_URL.to_string();
@@ -3157,6 +3165,7 @@ fn check_and_expire_extended_tier_shared(
                 .is_some_and(|deadline| Instant::now() >= deadline);
         if is_due {
             guard.extended_expires_at = None;
+            guard.snapshot.extended_expires_unix = None;
             guard.config.access_tier = AccessTier::User;
             guard.snapshot.access_tier = AccessTier::User;
             Some(guard.snapshot.clone())

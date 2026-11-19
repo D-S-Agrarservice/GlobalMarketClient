@@ -5,6 +5,7 @@
   "modeMockBadge": "YEREL SİMÜLASYON",
   "modeLiveBadge": "CANLI PAZAR",
   "tierBadgeExtended": "GELİŞMİŞ HATA AYIKLAMA",
+  "tierBadgeRemaining": "{min} dk kaldı",
   "tierBadgeDeveloper": "GELİŞTİRİCİ / BAKIM",
   "tierNameUser": "Standart Kullanıcı",
   "tierNameExtended": "Gelişmiş Hata Ayıklama",

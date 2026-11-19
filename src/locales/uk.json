@@ -5,6 +5,7 @@
   "modeMockBadge": "ЛОКАЛЬНА СИМУЛЯЦІЯ",
   "modeLiveBadge": "ОНЛАЙН-РИНОК",
   "tierBadgeExtended": "РОЗШИРЕНА ДІАГНОСТИКА",
+  "tierBadgeRemaining": "залишилось {min} хв",
   "tierBadgeDeveloper": "DEV / ОБСЛУГОВУВАННЯ",
   "tierNameUser": "Стандартний користувач",
   "tierNameExtended": "Розширена діагностика",

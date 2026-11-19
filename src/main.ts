@@ -31,6 +31,7 @@ import {
   CREDITS_ADVISORY,
   CREDITS_CORE_TEAM,
   CREDITS_FEEDBACK_TESTERS,
+  BYDORA_URL,
   DSA_DISCORD_URL,
   GITHUB_RELEASES_URL,
   GITHUB_REPO_URL,
@@ -76,8 +77,8 @@ interface UiState {
 
 const state: UiState = {
   info: {
-    appVersion: "0.9.13",
-    protocolVersion: "0.9.13",
+    appVersion: "0.9.14",
+    protocolVersion: "0.9.14",
     isBeta: true,
     platform: "desktop",
   },
@@ -111,7 +112,7 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "0.9.13",
+    exeVersion: "0.9.14",
     minExeVersion: "0.9.9",
     latestExeVersion: null,
     contractsSupported: false,
@@ -128,6 +129,7 @@ const state: UiState = {
     lastHeartbeatUnix: null,
     lastSyncUnix: null,
     lastError: null,
+    extendedExpiresUnix: null,
   },
   logs: [],
   activeModal: "none",
@@ -713,6 +715,36 @@ function renderLogEntryHtml(entry: LogEntry): string {
   `;
 }
 
+/** Minutes left in the temporary Extended mode (rounded up), or `null` when unknown. */
+function getExtendedRemainingMinutes(): number | null {
+  const expires = state.snapshot.extendedExpiresUnix;
+  if (expires == null) {
+    return null;
+  }
+  const secondsLeft = Math.max(0, expires - Math.floor(Date.now() / 1000));
+  return Math.ceil(secondsLeft / 60);
+}
+
+/** Extended badge label including the remaining time, e.g. "EXTENDED DEBUG · 23 min". */
+function formatExtendedBadgeText(): string {
+  const minutes = getExtendedRemainingMinutes();
+  if (minutes === null) {
+    return t("tierBadgeExtended");
+  }
+  return `${t("tierBadgeExtended")} · ${t("tierBadgeRemaining", { min: minutes })}`;
+}
+
+/** Updates the Extended badge countdown without re-rendering the dashboard. */
+function syncExtendedBadgeInPlace(): void {
+  if (getEffectiveTier() !== "extended") {
+    return;
+  }
+  const badge = document.querySelector<HTMLButtonElement>("#btn-open-access-badge");
+  if (badge) {
+    badge.textContent = formatExtendedBadgeText();
+  }
+}
+
 function renderDashboardHtml(): string {
   const conn = getConnectionVisuals(state.snapshot.state);
   const tier = getEffectiveTier();
@@ -734,7 +766,7 @@ function renderDashboardHtml(): string {
     tier === "developer"
       ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/35 hover:border-purple-400 transition cursor-pointer">${escapeHtml(t("tierBadgeDeveloper"))}</button>`
       : tier === "extended"
-        ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/35 hover:border-cyan-400 transition cursor-pointer">${escapeHtml(t("tierBadgeExtended"))}</button>`
+        ? `<button id="btn-open-access-badge" type="button" class="rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider uppercase bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/35 hover:border-cyan-400 transition cursor-pointer">${escapeHtml(formatExtendedBadgeText())}</button>`
         : "";
 
   const serverRecommendedVersion = getServerRecommendedUpdate();
@@ -1201,6 +1233,9 @@ function renderDashboardHtml(): string {
         <p class="text-xs text-zinc-300 truncate">${escapeHtml(t("appSubtitle"))}</p>
         <p class="text-[11px] text-zinc-500 truncate">
           D-S-Agrarservice &bull; <span data-secret-trigger="true" class="font-mono select-none">v${escapeHtml(state.info.protocolVersion)}${state.info.isBeta ? " Beta" : ""}</span>
+        </p>
+        <p class="text-[11px] text-zinc-500 truncate">
+          powered by <button id="btn-open-bydora" type="button" title="${escapeHtml(BYDORA_URL)}" class="text-zinc-400 hover:text-sky-300 hover:underline transition cursor-pointer">bydora.de</button>
         </p>
       </div>
 
@@ -2641,7 +2676,7 @@ function bindDashboardEvents(): void {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
       const targetVer = state.mockLockedMinVersion
         ? "9.9.9"
-        : state.info.protocolVersion || "0.9.13";
+        : state.info.protocolVersion || "0.9.14";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
@@ -2657,7 +2692,7 @@ function bindDashboardEvents(): void {
       if (state.mockOptionalUpdate) {
         state.dismissedOptionalVersion = null;
       }
-      const targetOpt = state.mockOptionalUpdate ? "0.9.14" : null;
+      const targetOpt = state.mockOptionalUpdate ? "0.9.15" : null;
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });
@@ -2776,6 +2811,10 @@ function bindDashboardEvents(): void {
   document
     .querySelector<HTMLButtonElement>("#btn-open-github")
     ?.addEventListener("click", () => void openExternalUrl(GITHUB_REPO_URL));
+
+  document
+    .querySelector<HTMLButtonElement>("#btn-open-bydora")
+    ?.addEventListener("click", () => void openExternalUrl(BYDORA_URL));
 
   document
     .querySelector<HTMLButtonElement>("#btn-open-credits")
@@ -3180,6 +3219,9 @@ async function bootstrap(): Promise<void> {
           if (snap.accessTier !== "extended") {
             applySnapshot(snap);
             renderAll();
+          } else {
+            state.snapshot.extendedExpiresUnix = snap.extendedExpiresUnix;
+            syncExtendedBadgeInPlace();
           }
         } catch {
           // Ignore transient IPC errors.

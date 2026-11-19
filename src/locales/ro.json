@@ -5,6 +5,7 @@
   "modeMockBadge": "SIMULARE LOCALĂ",
   "modeLiveBadge": "PIAȚĂ LIVE",
   "tierBadgeExtended": "DEBUG EXTINS",
+  "tierBadgeRemaining": "{min} min rămase",
   "tierBadgeDeveloper": "DEV / MENTENANȚĂ",
   "tierNameUser": "Utilizator standard",
   "tierNameExtended": "Debug extins",

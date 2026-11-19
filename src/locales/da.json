@@ -5,6 +5,7 @@
   "modeMockBadge": "LOKAL SIMULERING",
   "modeLiveBadge": "LIVE MARKED",
   "tierBadgeExtended": "UDVIDET DEBUG",
+  "tierBadgeRemaining": "{min} min tilbage",
   "tierBadgeDeveloper": "DEV / VEDLIGEHOLDELSE",
   "tierNameUser": "Standardbruger",
   "tierNameExtended": "Udvidet debug",

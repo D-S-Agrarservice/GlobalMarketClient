@@ -5,6 +5,7 @@
   "modeMockBadge": "LOKALE SIMULATION",
   "modeLiveBadge": "ONLINE-MARKT",
   "tierBadgeExtended": "DEBUG-ANSICHT",
+  "tierBadgeRemaining": "noch {min} Min.",
   "tierBadgeDeveloper": "DEV / WARTUNG",
   "tierNameUser": "Standard-Nutzer",
   "tierNameExtended": "Erweiterte Debug-Ansicht",

@@ -5,6 +5,7 @@
   "modeMockBadge": "LOKALE SIMULATIE",
   "modeLiveBadge": "LIVE MARKT",
   "tierBadgeExtended": "UITGEBREIDE DEBUG",
+  "tierBadgeRemaining": "nog {min} min",
   "tierBadgeDeveloper": "DEV / ONDERHOUD",
   "tierNameUser": "Standaardgebruiker",
   "tierNameExtended": "Uitgebreide debug",
