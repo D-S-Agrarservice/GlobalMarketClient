@@ -313,7 +313,7 @@ impl LocalMockBackend {
         }
     }
 
-    /// Enables or disables Etappe 2 `contracts_supported` in Mock mode.
+    /// Enables or disables Stage 2 `contracts_supported` in Mock mode.
     pub fn set_simulated_contracts_supported(&self, supported: bool) {
         if let Ok(mut guard) = self.state.lock() {
             guard.simulated_contracts_supported = supported;

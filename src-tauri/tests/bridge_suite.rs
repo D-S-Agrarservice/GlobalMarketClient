@@ -2612,7 +2612,7 @@ fn market_data_xml_with_branding_stamps_tier_and_logo_attributes() {
 }
 
 #[test]
-fn etappe2_contract_xml_roundtrip_and_pruning_isolation() {
+fn stage2_contract_xml_roundtrip_and_pruning_isolation() {
     let dir = env::temp_dir().join(format!("fs25_gm_contracts_xml_test_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let staging_dir = dir.join(".staging");
@@ -2791,7 +2791,7 @@ fn etappe2_contract_xml_roundtrip_and_pruning_isolation() {
 }
 
 #[test]
-fn etappe2_end_to_end_contracts_offers_settlements_and_fastapi_http() {
+fn stage2_end_to_end_contracts_offers_settlements_and_fastapi_http() {
     // Part A: FastAPI HTTP client ETag scoping per server_id & POST /api/v1/contracts/actions
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
     listener.set_nonblocking(true).unwrap();

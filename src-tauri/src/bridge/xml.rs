@@ -218,7 +218,7 @@ pub fn write_heartbeat_xml_with_latest(
 }
 
 /// Atomically writes `globalMarketOnline.xml` including `<latestVersion>`, 3-tier market branding,
-/// and the Etappe 2 `contractsSupported="true|false"` capability attribute.
+/// and the Stage 2 `contractsSupported="true|false"` capability attribute.
 #[allow(clippy::too_many_arguments)]
 pub fn write_heartbeat_xml_with_capabilities(
     staging_dir: &Path,

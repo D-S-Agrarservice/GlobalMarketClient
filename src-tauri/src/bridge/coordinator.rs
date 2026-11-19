@@ -2384,7 +2384,7 @@ fn run_bridge_worker(
             }
         }
 
-        // 5. Periodic Etappe 2 contract & direct-offer state poll (`GET /api/v1/contracts/state`).
+        // 5. Periodic Stage 2 contract & direct-offer state poll (`GET /api/v1/contracts/state`).
         if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }

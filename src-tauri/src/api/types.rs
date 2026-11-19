@@ -127,12 +127,12 @@ pub struct ServerHandshake {
     /// Optional custom logo URL returned by the backend when a valid Community/Logo `X-Market-Token` is active.
     #[serde(default)]
     pub market_logo_url: Option<String>,
-    /// Capability gate for Etappe 2 cross-server Supply Contracts & Direct Offers (`#25`).
+    /// Capability gate for Stage 2 cross-server Supply Contracts & Direct Offers (`#25`).
     #[serde(default)]
     pub contracts_supported: bool,
 }
 
-/// Outgoing Etappe 2 contract & direct-offer action types (`write/contractAction_*.xml` -> `POST /api/v1/contracts/actions`).
+/// Outgoing Stage 2 contract & direct-offer action types (`write/contractAction_*.xml` -> `POST /api/v1/contracts/actions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ContractSubAction {
@@ -178,7 +178,7 @@ impl ContractSubAction {
     }
 }
 
-/// Outgoing Etappe 2 action parsed from `write/contractAction_<date>_<seq>.xml`.
+/// Outgoing Stage 2 action parsed from `write/contractAction_<date>_<seq>.xml`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractActionRequest {
@@ -288,7 +288,7 @@ pub struct ContractSettlementDto {
     pub source_label: String,
 }
 
-/// Complete Etappe 2 contract & direct-offer state snapshot (`GET /api/v1/contracts/state` & `POST /api/v1/contracts/actions`).
+/// Complete Stage 2 contract & direct-offer state snapshot (`GET /api/v1/contracts/state` & `POST /api/v1/contracts/actions`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractStateResponse {

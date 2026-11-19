@@ -1,8 +1,8 @@
-# Etappe 2 Handoff Specification: Cross-Server Supply Contracts (#25) & Direct Offers
+# Stage 2 Handoff Specification: Cross-Server Supply Contracts (#25) & Direct Offers
 
 **Mod Baseline Ready:** `FS25_GlobalMarket v0.9.9.34` (`gm_floowy`)  
 **Client Baseline Ready:** `GlobalMarketClient v0.9.13` (Beta, `develop_floowy` / `main`)  
-**Status (2026-11-18):** Mod side current at `v0.9.11.1` (later Etappe 2 changes: `v0.9.9.35` accepted `CANCEL_OFFER` returns unsold liters, `v0.9.9.37` cleanup on farm deletion), client at `v0.9.13`; the backend part (section 3, `GlobalMarketServer#25`) is still open. The XML formats themselves are specified in `External_Interface_Specification_FS25_GlobalMarket_Mod2EXE.md` (single source).  
+**Status (2026-11-18):** Mod side current at `v0.9.11.1` (later Stage 2 changes: `v0.9.9.35` accepted `CANCEL_OFFER` returns unsold liters, `v0.9.9.37` cleanup on farm deletion), client at `v0.9.13`; the backend part (section 3, `GlobalMarketServer#25`) is still open. The XML formats themselves are specified in `External_Interface_Specification_FS25_GlobalMarket_Mod2EXE.md` (single source).  
 **Remaining Scope:** Backend API (`GlobalMarketServer` / `gm.bydora.de`, FastAPI)  
 **Tracked GitHub Issues:** Backend API & State Machine [`D-S-Agrarservice/GlobalMarketServer#25`](https://github.com/D-S-Agrarservice/GlobalMarketServer/issues/25) | Future Online NPCs [`D-S-Agrarservice/FS25_GlobalMarket#29`](https://github.com/D-S-Agrarservice/FS25_GlobalMarket/issues/29)
 
@@ -10,7 +10,7 @@
 
 ## 1. Overview & Non-Negotiable Architecture Invariants
 
-The FS25 Lua mod has already implemented the complete Etappe 2 foundation (`GlobalMarketContractsOnline.lua`, `GlobalMarketContractsOnlineSync.lua`, `ContractOnlineBridgeEvent.lua`, `ONLINE_CONTRACTS_MODE`, and Local vs. Online UI selectors). Both `GlobalMarketClient` and `GlobalMarketServer` can now implement their side against this finalized XML contract without needing any follow-up mod patches.
+The FS25 Lua mod has already implemented the complete Stage 2 foundation (`GlobalMarketContractsOnline.lua`, `GlobalMarketContractsOnlineSync.lua`, `ContractOnlineBridgeEvent.lua`, `ONLINE_CONTRACTS_MODE`, and Local vs. Online UI selectors). Both `GlobalMarketClient` and `GlobalMarketServer` can now implement their side against this finalized XML contract without needing any follow-up mod patches.
 
 ### 1.1 Capability Gate (`contractsSupported`)
 * Older `GlobalMarketClient` versions (`<= 0.9.11`) ignore and delete unknown `write/*.xml` actions (`IncomingPacket::IgnoredUnknownAction`).
@@ -18,7 +18,7 @@ The FS25 Lua mod has already implemented the complete Etappe 2 foundation (`Glob
   ```xml
   <globalMarketOnline timestamp="..." isConnected="true" contractsSupported="true" ...>
   ```
-* `GlobalMarketClient` should only emit `contractsSupported="true"` once both the local XML bridge implementation **and** the backend handshake (`MetaStatus.contracts_supported == true`) confirm Etappe 2 support.
+* `GlobalMarketClient` should only emit `contractsSupported="true"` once both the local XML bridge implementation **and** the backend handshake (`MetaStatus.contracts_supported == true`) confirm Stage 2 support.
 
 ### 1.2 Persistent Server Identity (`serverInstanceId`)
 * Each FS25 savegame generates and persists a 16-char lowercase hex `serverInstanceId` inside `<savegame>/globalMarket.xml` (for example `a3f901c48b2e7d10`).
