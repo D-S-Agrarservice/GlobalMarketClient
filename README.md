@@ -49,6 +49,7 @@ Because the GIANTS Engine Lua sandbox blocks direct outbound network connections
 | **SP, MP Host & Dedicated Server Ready** | Works seamlessly in Singleplayer, hosted Multiplayer, and on Dedicated Servers via the mod's dynamic **Data-Host Token** failover system — **nothing needs to be installed on your rented Dedicated Server**, and **one connected player running the app is enough for everyone on the server to trade online**. |
 | **Community Markets & Custom Logos** | Optional key-based support for private community markets and custom community/creator header logos (including automatic pure-Rust WebP/PNG/JPG to GIANTS `DXT5` `.dds` conversion and 1-click live market switching in the header). |
 | **Cross-Server Contracts & Offers** | Relays supply contracts and `±10 %` direct offers of the mod (`FS25_GlobalMarket` v0.9.9.34+) between servers. The client only enables this once the online backend confirms support (`contractsSupported`), so older setups keep trading normally. |
+| **Coming Next: Cross-Server Used Vehicle Market** | The mod's used vehicle market (`FS25_GlobalMarket` v0.10.0+) already runs between all farms on one server. Relaying listings between servers is specified and planned for an upcoming client release (enabled via `vehiclesSupported` once the backend supports it). |
 | **Lightweight System Tray App** | Built with **Rust + Tauri v2** for minimal RAM/CPU overhead, zero-gap live market handovers, `ETag` bandwidth caching, and optional *Great Demand* desktop notifications. |
 | **16 Built-In Languages** | Fully localized UI, system tray, desktop notifications, and live activity log (including all 200 official FS25 crop names) in **DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU, and UK**. |
 
@@ -98,14 +99,19 @@ Because `GlobalMarketClient` is a free community modding tool without paid comme
 
 ```text
 GlobalMarketClient/
-├── src/
+├── docs/                     # Mod <-> client interface spec (single source), backend handoff notes & openapi.json
+├── src/                      # TypeScript frontend (Vite): main.ts, i18n.ts, styles.css, types.ts
+│   ├── assets/               # Logo & UI images
 │   └── locales/              # 16 flat JSON UI dictionaries (DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU, UK)
 ├── src-tauri/
 │   ├── src/
 │   │   ├── api/              # FastAPI HTTPS client (ETag, retry/IP-lock handling) & local Mock simulator
 │   │   ├── bridge/           # Coordinator, atomic UTF-8 XML I/O, pure-Rust DXT5 DDS encoder & path discovery
 │   │   ├── config/           # Persistent settings & OS-encrypted TokenVault (DPAPI)
-│   │   └── diagnostics/      # Privacy-redacted diagnostic report builder
+│   │   ├── diagnostics/      # Privacy-redacted diagnostic report builder
+│   │   ├── commands.rs       # Tauri IPC commands between the TypeScript UI and the bridge
+│   │   ├── tray.rs           # System tray, close-to-tray handling & desktop notifications
+│   │   └── lib.rs / main.rs  # App setup & entry point
 │   └── tests/bridge_suite.rs # End-to-end Rust integration test suite
 └── .github/workflows/        # Multi-OS CI & Draft Release pipelines (Windows, macOS Universal, Linux)
 ```
@@ -134,7 +140,7 @@ npm run tauri build
 ### Credits, Origins & AI Transparency
 
 #### Project Team & Contributors
-* **Project Lead, GlobalMarket Mod & Companion Client:** **Floowy** (*D-S-Agrarservice*)
+* **Project Lead, GlobalMarket Mod & GlobalMarketClient:** **Floowy** (*D-S-Agrarservice*)
 * **Server Architecture & Online Backend (`FastAPI`):** **FGBxRamel** (*bydora.de*)
 * **Core Team & Project Support:** **Kastor** *(Modding Team Lead)*, **Murphy**, **DSA-Testteam**
 * **Concept Ideas & External Consulting:** **Tensuko** *(Concept Ideas)*, **Farmsim Tim** *(External Consulting)*
@@ -145,7 +151,7 @@ npm run tauri build
 * **Special Thanks & FS17/FS19 Milestone — `kevink98`:** Recognizing the FS15 roots in no way diminishes the outstanding work of **kevink98**, who brought **GlobalMarket** (along with its original companion client and his legendary **GlobalCompany** integration) to life in **FS17 and FS19** with a phenomenal implementation. Without his pioneering architecture, dedication, and inspiration, this project would never have been possible.
 
 #### Ground-Up Redevelopment & AI Transparency
-While **GlobalMarketClient** builds conceptually upon that proud modding heritage (`Susi` & `Wingi` in FS15, and `kevink98` in FS17/FS19), this cross-platform **Rust + Tauri v2 + TypeScript** application is a complete ground-up development built with massive hands-on assistance from **Antigravity (Google DeepMind AI)**.  
+While **GlobalMarketClient** builds conceptually upon that proud modding heritage (`Susi` & `Wingi` in FS15, and `kevink98` in FS17/FS19), this cross-platform **Rust + Tauri v2 + TypeScript** application is a complete ground-up development built with massive hands-on assistance from modern AI development tools (**Antigravity** and **Claude Code**).  
 Full transparency: just as nobody on the mod side claims to be a solo Lua scripting wizard, nobody here claims to be a solo Rust systems-programming god either. This client exists out of pure passion for Farming Simulator and its community — combining clear architectural goals, thorough real-world multiplayer/Dedi testing, and modern AI engineering to deliver a fast, safe, and reliable companion app for everyone.
 
 ---

@@ -49,6 +49,7 @@ Da die Lua-Sandbox der GIANTS Engine aus Sicherheitsgründen keine direkten ausg
 | **Singleplayer, MP-Host & Dedicated Server** | Unterstützt Einzelspieler, gehosteten Multiplayer sowie das dynamische **Data-Host-Token-System** auf Dedicated Servern: **Auf dem gemieteten Dedi-Server selbst muss nichts installiert werden** – sobald **ein einziger Spieler** auf dem Server die App offen hat, handeln alle Mitspieler live am selben Online-Markt mit. |
 | **Community-Märkte & eigene Logos** | Optionale Unterstützung für geschlossene Community-Märkte und individuelle Header-Logos per Schlüssel (inkl. automatischer Konvertierung von WebP/PNG/JPG in GIANTS-konformes `DXT5`-`.dds` und 1-Klick-Schnellumschalter oben im Header). |
 | **Serverübergreifende Verträge & Angebote** | Leitet Lieferverträge und `±10 %`-Direktangebote des Mods (`FS25_GlobalMarket` ab v0.9.9.34) zwischen Servern weiter. Der Client schaltet das erst frei, wenn das Online-Backend die Unterstützung bestätigt (`contractsSupported`), ältere Setups handeln also ganz normal weiter. |
+| **Als Nächstes: Serverübergreifender Gebrauchtfahrzeugmarkt** | Der Gebrauchtfahrzeugmarkt des Mods (`FS25_GlobalMarket` ab v0.10.0) läuft bereits zwischen allen Höfen eines Servers. Die Weitergabe von Angeboten zwischen Servern ist spezifiziert und für eine kommende Client-Version geplant (Freischaltung über `vehiclesSupported`, sobald das Backend es unterstützt). |
 | **Leichtgewichtig im System-Tray** | Geschrieben in nativem **Rust + Tauri v2** – minimaler RAM-/CPU-Bedarf, unterbrechungsfreie Live-Marktwechsel, `ETag`-Caching und optionale Desktop-Benachrichtigungen bei *Großer Nachfrage*. |
 | **16 Sprachen ab Werk** | Vollständig lokalisierte Oberfläche, System-Tray, Desktop-Benachrichtigungen & Live-Protokoll (inkl. aller 200 offiziellen LS25-Fruchtnamen) in **DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU und UK**. |
 
@@ -98,14 +99,19 @@ Da der `GlobalMarketClient` ein kostenloses Community-Projekt ohne kostenpflicht
 
 ```text
 GlobalMarketClient/
-├── src/
+├── docs/                     # Schnittstellen-Spezifikation Mod <-> Client (einzige Quelle), Backend-Übergabe & openapi.json
+├── src/                      # TypeScript-Frontend (Vite): main.ts, i18n.ts, styles.css, types.ts
+│   ├── assets/               # Logo & UI-Grafiken
 │   └── locales/              # 16 flache JSON-Sprachdateien (DE, EN, FR, ES, IT, PL, NL, CZ, PT, HU, DA, SV, RO, TR, RU, UK)
 ├── src-tauri/
 │   ├── src/
 │   │   ├── api/              # FastAPI HTTPS-Client (ETag, Retry-/IP-Lock-Handling) & lokaler Mock-Simulator
 │   │   ├── bridge/           # Coordinator, atomares UTF-8 XML-I/O, Pure-Rust DXT5-DDS-Konverter & Pfaderkennung
 │   │   ├── config/           # Persistente Einstellungen & BS-verschlüsselter TokenVault (DPAPI)
-│   │   └── diagnostics/      # Anonymisierter Diagnosebericht-Generator
+│   │   ├── diagnostics/      # Anonymisierter Diagnosebericht-Generator
+│   │   ├── commands.rs       # Tauri-IPC-Befehle zwischen TypeScript-Oberfläche und Brücke
+│   │   ├── tray.rs           # System-Tray, Schließen ins Tray & Desktop-Benachrichtigungen
+│   │   └── lib.rs / main.rs  # App-Aufbau & Einstiegspunkt
 │   └── tests/bridge_suite.rs # End-to-End Rust-Integrationstests
 └── .github/workflows/        # Multi-OS CI- & Draft-Release-Pipelines (Windows, macOS Universal, Linux)
 ```
@@ -134,7 +140,7 @@ npm run tauri build
 ### Credits, Entstehung & KI-Transparenz
 
 #### Projektteam & Mitwirkende
-* **Projektleitung, GlobalMarket-Mod & Begleit-Client:** **Floowy** (*D-S-Agrarservice*)
+* **Projektleitung, GlobalMarket-Mod & GlobalMarketClient:** **Floowy** (*D-S-Agrarservice*)
 * **Server-Architektur & Online-Backend (`FastAPI`):** **FGBxRamel** (*bydora.de*)
 * **Kernteam & Projektunterstützung:** **Kastor** *(Modding-Teamleitung)*, **Murphy**, **DSA-Testteam**
 * **Ideen & Externe Fachberatung:** **Tensuko** *(Konzeptideen)*, **Farmsim Tim** *(Externe Beratung)*
@@ -144,8 +150,8 @@ npm run tauri build
 * **Die allerersten Wurzeln im LS15 — `Susi` & `Wingi`:** Um historisch vollständig und fair zu bleiben: Die ganz ursprüngliche Geschichte des Globalen Marktes geht zurück auf **Susi** und **Wingi** im **Landwirtschafts-Simulator 15**. Auch wenn es damals technisch naturgemäß noch etwas holprig war – sie hatten das Konzept als Allererstes überhaupt am Laufen und haben damit den Ur-Grundstein gelegt.
 * **Besonderer Dank & Meilenstein im LS17/LS19 — `kevink98`:** Der Blick auf die LS15-Wurzeln schmälert in keiner Weise die großartige Arbeit von **kevink98**, der den **GlobalMarket** (samt damaligem Begleit-Client und der legendären **GlobalCompany**-Einbindung) im **LS17 und LS19** auf ein völlig neues Niveau gehoben und über Jahre geprägt hat. Ohne seine herausragende Umsetzung, seine Ideen und dieses Vorbild wäre dieses Projekt schlicht nicht möglich gewesen!
 
-#### Neuentwicklung & offener Umgang mit KI (Antigravity)
-Während der **GlobalMarketClient** konzeptionell an diese stolze Modding-Geschichte anknüpft (`Susi` & `Wingi` im LS15 sowie `kevink98` im LS17/LS19), ist diese plattformübergreifende **Rust + Tauri v2 + TypeScript**-Anwendung von Grund auf neu entwickelt worden – und mit massiver Unterstützung von **Antigravity (Google DeepMind AI)** entstanden.  
+#### Neuentwicklung & offener Umgang mit KI
+Während der **GlobalMarketClient** konzeptionell an diese stolze Modding-Geschichte anknüpft (`Susi` & `Wingi` im LS15 sowie `kevink98` im LS17/LS19), ist diese plattformübergreifende **Rust + Tauri v2 + TypeScript**-Anwendung von Grund auf neu entwickelt worden – und mit massiver Unterstützung moderner KI-Entwicklungswerkzeuge (**Antigravity** und **Claude Code**) entstanden.  
 Ganz offen und ehrlich: Genau wie sich beim Mod niemand als unfehlbarer „Lua-Script-Wizard“ hinstellen will, behauptet hier auch niemand, ein einsamer „Rust-Programmiergott“ zu sein. Dieses Projekt ist aus purer Leidenschaft für den Landwirtschafts-Simulator und die Community entstanden – durch die Kombination aus klarer Architektur-Vision, intensivem Praxis- und Dedi-Testing im Team sowie moderner KI-Entwicklung, um einen schnellen, sicheren und zeitgemäßen Client für alle bereitzustellen.
 
 ---
