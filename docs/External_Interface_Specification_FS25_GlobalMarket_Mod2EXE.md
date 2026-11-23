@@ -242,6 +242,60 @@ Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ lin
   * Danach übernimmt der bestehende Weg (`ExeStatusEvent` -> `updateActiveDataHostBranding`): Header, Whitelist-Export, Vertrags-Status und Preise. Kein neues MP-Event.
   * Laufende Auktionen sind nicht betroffen: lokale Auktionen liegen im Savegame, Online-Auktionen (Stage 4) sind marktübergreifend.
 
+
+### 3.1.3 Server-Hinweise & Wartung (`serverNotice` & `offlineReason` im Heartbeat, ab Client `0.9.16`, `FS25_GlobalMarket` TBD)
+Das Backend kann geplante Wartungen, kurze Neustarts und allgemeine Hinweise ankündigen. Der Client zeigt sie selbst an (Banner, OS-Benachrichtigung, Activity Log) und reicht sie an die Mod weiter, damit sie auch Spieler erreichen, die den Client nur im Tray haben. Fällt das Backend aus, meldet der Client zusätzlich den Grund (`offlineReason`), damit die Mod „Wartung“ statt nur „keine Verbindung“ anzeigen kann.
+
+* **Quelle (Backend -> Client, `GET /api/v1/meta/status`):** Optionales Objekt `notice` (fehlt oder `null` = kein Hinweis). Es gibt höchstens einen aktiven Hinweis; das Backend liefert den wichtigsten.
+  ```json
+  "notice": {
+    "id": "2026-12-01-maintenance",
+    "type": "maintenance",
+    "starts_at": 1764621000,
+    "ends_at": 1764624600,
+    "message": { "de": "Datenbank-Umzug", "en": "Database migration" }
+  }
+  ```
+  * `id` (`string`, Pflicht): Stabile ID (max. `64` Zeichen). Client und Mod merken sich angezeigte Hinweise pro `id`; eine geänderte Ankündigung braucht eine neue `id`.
+  * `type` (`string`, Pflicht): `maintenance` (geplante Downtime mit Zeitfenster), `restart` (kurzer Neustart, wenige Minuten) oder `info` (Hinweis ohne Downtime). Unbekannte Typen behandeln Client und Mod wie `info`.
+  * `starts_at` (`int`, Pflicht bei `maintenance`/`restart`): Beginn als UTC-Unix-Sekunden.
+  * `ends_at` (`int`, Optional): Voraussichtliches Ende als UTC-Unix-Sekunden. Fehlt es bei `restart`, rechnet der Client mit `starts_at + 600`.
+  * `message` (`object`, Optional): Kurzer Zusatztext pro Sprache (`de`, `en`, ...). Der eigentliche Hinweis kommt immer aus übersetzten Keys in Client und Mod; `message` ergänzt nur Details.
+* **Wartungsantwort (Backend -> Client, während der Wartung):** Solange das Backend noch antworten kann, beantwortet es alle Endpunkte mit `HTTP 503`, Header `Retry-After` und
+  ```json
+  { "detail": { "code": "MAINTENANCE", "notice_id": "2026-12-01-maintenance", "until": 1764624600 } }
+  ```
+  `notice_id` und `until` sind optional. Ist die App selbst gestoppt, sollte der Reverse-Proxy dieselbe Antwort statisch ausliefern (statt `502`).
+* **Verhalten des Clients:**
+  * Er merkt sich den letzten Hinweis dauerhaft (`config.json`), damit ein Neustart des Clients während der Wartung ihn nicht verliert. Abgelaufene Hinweise (`ends_at` + `30 min` vorbei) verwirft er.
+  * **Banner** wie beim empfohlenen Update, pro `id` wegklickbar; Zeiten in Ortszeit. Während der Wartung ersetzt ein nicht wegklickbares Banner die Ankündigung („Wartung läuft, voraussichtlich bis 23:30“).
+  * **OS-Benachrichtigung** einmal pro `id`, auch im Tray (nur bei `notifications_enabled`). **Activity Log:** Info-Eintrag beim ersten Empfang, Warnung beim Wechsel in den Wartungs-Status.
+  * **Einstufung eines Ausfalls:** `503` mit `MAINTENANCE` oder ein Netzwerkfehler im angekündigten Fenster (`starts_at - 5 min` bis `ends_at + 30 min`) gilt als `maintenance`, alles andere als `unreachable`. Während `maintenance` prüft der Client weiter im normalen Offline-Takt (`5 s`), loggt aber keine Fehler pro Versuch.
+  * Sprache von `message`: Spielsprache aus der letzten Whitelist-Datei (`lang`), sonst Client-Sprache, sonst `en`.
+* **Heartbeat-Erweiterung (Client -> Lua, `globalMarketOnline.xml`):**
+  ```xml
+  <globalMarketOnline timestamp="1764620000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
+      <version>0.9.16</version>
+      <minVersion>0.9.10</minVersion>
+      <serverNotice id="2026-12-01-maintenance" type="maintenance" startsAt="1764621000" endsAt="1764624600" message="Datenbank-Umzug" />
+  </globalMarketOnline>
+  ```
+  Während der Wartung:
+  ```xml
+  <globalMarketOnline timestamp="1764621300" isConnected="false" offlineReason="maintenance" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
+      <version>0.9.16</version>
+      <minVersion>0.9.10</minVersion>
+      <serverNotice id="2026-12-01-maintenance" type="maintenance" startsAt="1764621000" endsAt="1764624600" message="Datenbank-Umzug" />
+  </globalMarketOnline>
+  ```
+  * `globalMarketOnline#offlineReason` (`string`, Optional, nur bei `isConnected="false"`): `maintenance` oder `unreachable`. Fehlt es, gilt der bisherige Offline-Fall. Versionssperren laufen weiter über `minVersion`.
+  * `serverNotice` (Optional, höchstens einer): Wird geschrieben, solange ein nicht abgelaufener Hinweis bekannt ist, unabhängig von `isConnected`. Attribute wie im Backend (`startsAt`/`endsAt` in UTC-Unix-Sekunden). `message` wird wie `marketName` bereinigt, aber mit max. `120` UTF-8-Bytes.
+  * **Zeitrechnung in Lua:** `os.time()` ist in der Sandbox `nil`. Die Mod rechnet Restzeiten relativ zum `timestamp` derselben Datei (`startsAt - timestamp`) und zeigt nur relative Angaben („in 45 Min.“, „ca. 60 Min.“).
+* **Verhalten der Mod:**
+  * HUD-Info (`FSBaseMission.INGAME_NOTIFICATION_INFO`) beim ersten Lesen einer neuen `id`, plus eine Erinnerung, sobald `startsAt - timestamp <= 600`. Übersetzte Keys pro `type` (z. B. `ui_gm_notice_maintenance`, `ui_gm_notice_restart`, `ui_gm_notice_info`), `message` wird angehängt.
+  * Bei `offlineReason="maintenance"` zeigen Marktmenü und HUD-Tooltip „Wartung, voraussichtlich noch ca. X Min.“ statt des allgemeinen Offline-Texts. Die Offline-Simulation läuft wie bisher.
+  * Multiplayer: Jeder Spieler-PC mit eigenem Client liest seine eigene Datei. Optional verteilt der aktive Data-Host den Hinweis per `ExeStatusEvent` an alle Spieler, damit auch Spieler ohne Client ihn sehen.
+
 ---
 
 ### 3.2 Whitelist, Map-Discovery & Backend-Moderations-Workflow (`write/whitelist_<date>_<seq>.xml` & `server_whitelist.xml`)
