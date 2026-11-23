@@ -65,6 +65,7 @@ flowchart LR
 
 * **Dedicated-Server Data-Host-Relay:** Auf gemieteten Dedicated Servern laufen keine externen `.exe`-Programme. Sobald sich mindestens ein Spieler verbindet, auf dessen PC der `GlobalMarketClient` läuft, vergibt der LS25-Server diesem Spieler automatisch das **Data-Host-Token** (grünes HUD-Icon). Weitere Spieler mit geöffnetem Client bleiben automatisch im **Standby** (oranges HUD-Icon) für ein nahtloses Failover, während alle übrigen Mitspieler komplett ohne eigene App live mithandeln.
 * **Unterbrechungsfreier Live-Marktwechsel:** Beim Wechsel zwischen dem Offiziellen Globalen Markt und gespeicherten Community-/Logo-Profilen bleibt `globalMarketOnline.xml` durchgehend bestehen und wird nach dem Handshake atomar aktualisiert, sodass auf Dedicated Servern kein ungewollter Host-Wechsel ausgelöst wird.
+* **Marktwechsel im Spiel (ab FS25_GlobalMarket v0.11.0.22):** Der aktive Data-Host wählt den Offiziellen Globalen Markt oder ein gespeichertes Profil direkt im Marktmenü des Spiels (im Multiplayer nur als Admin und mit Bestätigung). Der Client gibt dafür nur Profil-IDs, Bezeichnungen und Marktnamen weiter (nie Schlüssel), prüft jede Anfrage gegen die gespeicherten Profile und nimmt höchstens einen Wechsel pro 30 Sekunden an (nur mit dem Live-Backend).
 
 ---
 

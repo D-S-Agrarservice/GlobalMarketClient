@@ -65,6 +65,7 @@ flowchart LR
 
 * **Dedicated Server Data-Host Relay:** Rented Dedicated Servers never run external `.exe` tools. As soon as at least one connected player runs `GlobalMarketClient` on their PC, the FS25 server assigns that player the **Data-Host Token** (green HUD icon). Additional players with an active client wait in **Standby** (orange HUD icon) for seamless automatic failover, while all other players on the server trade live without needing the app at all.
 * **Zero-Gap Live Market Switching:** Switching between the Official Global Market and saved Community/Logo profiles in the client header updates the active market at runtime without interrupting `globalMarketOnline.xml` heartbeats.
+* **In-Game Market Switch (FS25_GlobalMarket v0.11.0.22+):** The active Data-Host can pick the Official Global Market or a saved profile right from the in-game market menu (multiplayer: admins only, with confirmation). The client exports only profile ids, labels and market names (never keys), validates every request against the saved profiles and accepts at most one switch per 30 seconds (Live backend only).
 
 ---
 
