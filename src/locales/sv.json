@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Visar en systemavisering när en ny global Stor efterfrågan startar.",
   "settingsAutoScroll": "Rulla aktivitetsloggen automatiskt",
   "settingsAutoScrollDesc": "När avstängt behålls rullningspositionen så att händelser kan läsas i lugn och ro.",
+  "settingsShowOfficialLogo": "Visa officiell logotyp i spelet",
+  "settingsShowOfficialLogoDesc": "Visar D-S-Agrarservice-logotypen i marknadsmenyn i FS25 så länge ingen egen communitylogotyp är aktiv. Marknadsnamn och onlinestatus förblir oförändrade.",
   "settingsConnectionSection": "Marknadsanslutning",
   "settingsModeLabel": "Driftläge (Dev)",
   "settingsModeMock": "Lokal simulering (Mock – Testning i spelet)",

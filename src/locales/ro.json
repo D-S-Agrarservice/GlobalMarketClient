@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Afișează o notificare de sistem când începe o nouă Cerere mare globală.",
   "settingsAutoScroll": "Derulare automată a jurnalului de activitate",
   "settingsAutoScrollDesc": "Când este dezactivată, poziția de derulare rămâne fixă pentru citirea confortabilă a mesajelor.",
+  "settingsShowOfficialLogo": "Afișează logo-ul oficial în joc",
+  "settingsShowOfficialLogoDesc": "Afișează logo-ul D-S-Agrarservice în meniul pieței din FS25 cât timp nu este activ un logo propriu al comunității. Numele pieței și starea online rămân neschimbate.",
   "settingsConnectionSection": "Conexiune la piață",
   "settingsModeLabel": "Mod de operare (Dev)",
   "settingsModeMock": "Simulare locală (Mock – Testare în joc)",

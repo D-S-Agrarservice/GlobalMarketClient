@@ -254,12 +254,13 @@ pub fn build_diagnostic_report_with_secrets(
         std::env::consts::ARCH
     ));
     report.push_str(&format!(
-        "ui_settings: \"lang={}, tier={}, tray={}, notifications={}, auto_connect={}\"\n",
+        "ui_settings: \"lang={}, tier={}, tray={}, notifications={}, auto_connect={}, official_logo={}\"\n",
         config.language,
         config.access_tier.as_str(),
         config.minimize_to_tray,
         config.notifications_enabled,
-        config.auto_connect_on_launch
+        config.auto_connect_on_launch,
+        config.show_official_logo
     ));
     report.push_str(&format!("backend_mode: \"{mode_str}\"\n"));
     report.push_str(&format!(

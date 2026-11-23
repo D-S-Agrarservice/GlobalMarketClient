@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Zeigt einen System-Hinweis, sobald global eine neue Große Nachfrage startet.",
   "settingsAutoScroll": "Live-Aktivitätsprotokoll automatisch mitscrollen",
   "settingsAutoScrollDesc": "Bei Deaktivierung bleibt die Scroll-Position stehen, damit ungewöhnliche Meldungen in Ruhe gelesen werden können.",
+  "settingsShowOfficialLogo": "Offizielles Logo im Spiel anzeigen",
+  "settingsShowOfficialLogoDesc": "Zeigt das D-S-Agrarservice-Logo im Marktmenü von FS25, solange kein eigenes Community-Logo aktiv ist. Marktname und Online-Status bleiben unverändert.",
   "settingsConnectionSection": "Markt-Verbindung",
   "settingsModeLabel": "Betriebsmodus (Dev)",
   "settingsModeMock": "Lokale Simulation (Mock – zum Ingame-Testen)",

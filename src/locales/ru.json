@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Показывает системное уведомление при начале нового глобального высокого спроса.",
   "settingsAutoScroll": "Автоматическая прокрутка журнала активности",
   "settingsAutoScrollDesc": "При отключении журнал сохраняет текущую позицию прокрутки для удобного чтения событий.",
+  "settingsShowOfficialLogo": "Показывать официальный логотип в игре",
+  "settingsShowOfficialLogoDesc": "Показывает логотип D-S-Agrarservice в меню рынка FS25, пока не активен собственный логотип сообщества. Название рынка и онлайн-статус не меняются.",
   "settingsConnectionSection": "Подключение к рынку",
   "settingsModeLabel": "Режим работы (Dev)",
   "settingsModeMock": "Локальная симуляция (Mock – Тест в игре)",

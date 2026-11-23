@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Displays an OS notification when a new global Great Demand starts.",
   "settingsAutoScroll": "Auto-scroll Live Activity Log",
   "settingsAutoScrollDesc": "When disabled, the log stays at your current scroll position so unusual events remain readable.",
+  "settingsShowOfficialLogo": "Show official logo in game",
+  "settingsShowOfficialLogoDesc": "Shows the D-S-Agrarservice logo in the FS25 market menu while no custom community logo is active. Market name and online status stay unchanged.",
   "settingsConnectionSection": "Market Connection",
   "settingsModeLabel": "Operating Mode (Dev)",
   "settingsModeMock": "Local Simulation (Mock – In-Game Testing)",

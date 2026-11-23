@@ -59,6 +59,8 @@ export interface AppConfig {
   minimizeToTray: boolean;
   notificationsEnabled: boolean;
   logAutoScroll: boolean;
+  /** Official D-S-Agrarservice logo in the FS25 market menu (custom logos are unaffected). */
+  showOfficialLogo: boolean;
   autoConnectOnLaunch: boolean;
   backendMode: BackendMode;
   backendUrl: string;

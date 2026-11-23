@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Mostra una notifica di sistema quando inizia una nuova Grande richiesta globale.",
   "settingsAutoScroll": "Scorrimento automatico del registro attività",
   "settingsAutoScrollDesc": "Se disattivato, il registro mantiene la posizione di scorrimento attuale per leggere comodamente gli eventi.",
+  "settingsShowOfficialLogo": "Mostra il logo ufficiale nel gioco",
+  "settingsShowOfficialLogoDesc": "Mostra il logo D-S-Agrarservice nel menu del mercato di FS25 finché non è attivo un logo della community. Il nome del mercato e lo stato online restano invariati.",
   "settingsConnectionSection": "Connessione al mercato",
   "settingsModeLabel": "Modalità operativa (Dev)",
   "settingsModeMock": "Simulazione locale (Mock – Test in gioco)",

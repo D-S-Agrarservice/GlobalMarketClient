@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Wyświetla powiadomienie systemowe, gdy rozpocznie się nowy globalny duży popyt.",
   "settingsAutoScroll": "Automatyczne przewijanie dziennika aktywności",
   "settingsAutoScrollDesc": "Po wyłączeniu pozycja przewijania pozostaje nieruchoma, ułatwiając czytanie nietypowych wpisów.",
+  "settingsShowOfficialLogo": "Pokazuj oficjalne logo w grze",
+  "settingsShowOfficialLogoDesc": "Pokazuje logo D-S-Agrarservice w menu rynku FS25, dopóki nie jest aktywne własne logo społeczności. Nazwa rynku i status online pozostają bez zmian.",
   "settingsConnectionSection": "Połączenie z rynkiem",
   "settingsModeLabel": "Tryb pracy (Dev)",
   "settingsModeMock": "Symulacja lokalna (Mock – testy w grze)",

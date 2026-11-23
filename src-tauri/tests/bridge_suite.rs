@@ -1879,6 +1879,36 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     );
     assert!(is_valid_cached_logo_dds(&bridge_root.join(&default_dsa_rel)));
 
+    // 4b. Players can switch the official DSA logo off: no logo for FS25, name and status unchanged.
+    let mut cfg_no_logo = mgr.get_config();
+    cfg_no_logo.show_official_logo = false;
+    mgr.update_config(cfg_no_logo).unwrap();
+    assert!(
+        wait_for(&|| {
+            let s = mgr.get_snapshot();
+            s.state == BridgeConnectionState::Online
+                && s.market_logo_file.is_none()
+                && fs::read_to_string(&online_xml_path)
+                    .map(|x| {
+                        let root = heartbeat_root(&x);
+                        root.contains("brandingTier=\"0\"")
+                            && root.contains("isConnected=\"true\"")
+                            && !root.contains("logoFile=")
+                    })
+                    .unwrap_or(false)
+        }),
+        "Disabling the official logo should drop the DSA logoFile from the heartbeat without a reconnect"
+    );
+    let mut cfg_logo = mgr.get_config();
+    cfg_logo.show_official_logo = true;
+    mgr.update_config(cfg_logo).unwrap();
+    assert!(
+        wait_for(&|| {
+            mgr.get_snapshot().market_logo_file.as_deref() == Some(default_dsa_rel.as_str())
+        }),
+        "Re-enabling the official logo should restore the built-in DSA logo"
+    );
+
     // 5. Also verify Developer Mock mode Tier 0..3 simulation + DDS output
     let mut cfg_mock = mgr.get_config();
     cfg_mock.backend_mode = BackendMode::Mock;

@@ -90,6 +90,7 @@ const state: UiState = {
     minimizeToTray: true,
     notificationsEnabled: true,
     logAutoScroll: true,
+    showOfficialLogo: true,
     autoConnectOnLaunch: true,
     backendMode: "live",
     backendUrl: OFFICIAL_PROD_BACKEND_URL,
@@ -1837,6 +1838,19 @@ function renderSettingsModalHtml(): string {
                 <span class="block text-zinc-400 text-[11px]">${escapeHtml(t("settingsAutoScrollDesc"))}</span>
               </div>
             </label>
+
+            <label class="flex items-start gap-3 cursor-pointer">
+              <input
+                id="cfg-official-logo"
+                type="checkbox"
+                ${state.config.showOfficialLogo !== false ? "checked" : ""}
+                class="mt-0.5 h-4 w-4 accent-[#ff9600] rounded cursor-pointer"
+              />
+              <div>
+                <span class="block font-medium text-zinc-100">${escapeHtml(t("settingsShowOfficialLogo"))}</span>
+                <span class="block text-zinc-400 text-[11px]">${escapeHtml(t("settingsShowOfficialLogoDesc"))}</span>
+              </div>
+            </label>
           </div>
 
           <!-- Market Connection -->
@@ -2993,6 +3007,9 @@ function bindModalEvents(): void {
       const autoScrollVal =
         document.querySelector<HTMLInputElement>("#cfg-autoscroll")?.checked ??
         true;
+      const officialLogoVal =
+        document.querySelector<HTMLInputElement>("#cfg-official-logo")
+          ?.checked ?? true;
       const startupConnectVal =
         document.querySelector<HTMLSelectElement>("#cfg-startup-connect")
           ?.value ?? "auto";
@@ -3015,6 +3032,7 @@ function bindModalEvents(): void {
           minimizeToTray: trayVal,
           notificationsEnabled: notifyVal,
           logAutoScroll: autoScrollVal,
+          showOfficialLogo: officialLogoVal,
           autoConnectOnLaunch: startupConnectVal !== "disconnected",
           backendMode: modeVal,
           backendUrl: urlVal,
@@ -3125,6 +3143,7 @@ async function bootstrap(): Promise<void> {
     state.config = {
       ...config,
       theme: normalizeTheme(config.theme),
+      showOfficialLogo: config.showOfficialLogo !== false,
       autoConnectOnLaunch: config.autoConnectOnLaunch !== false,
     };
     applyThemeToDom(state.config.theme);

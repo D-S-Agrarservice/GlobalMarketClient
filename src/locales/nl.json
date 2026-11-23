@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Toont een systeemmelding zodra er wereldwijd een nieuwe Grote vraag start.",
   "settingsAutoScroll": "Live activiteitenlogboek automatisch meescrollen",
   "settingsAutoScrollDesc": "Indien uitgeschakeld blijft de scrollpositie behouden zodat je meldingen rustig kunt nalezen.",
+  "settingsShowOfficialLogo": "Officieel logo in het spel tonen",
+  "settingsShowOfficialLogoDesc": "Toont het D-S-Agrarservice-logo in het marktmenu van FS25 zolang er geen eigen communitylogo actief is. Marktnaam en onlinestatus blijven ongewijzigd.",
   "settingsConnectionSection": "Marktverbinding",
   "settingsModeLabel": "Bedrijfsmodus (Dev)",
   "settingsModeMock": "Lokale simulatie (Mock – In-game testen)",

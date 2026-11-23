@@ -90,6 +90,9 @@ pub struct AppConfig {
     pub notifications_enabled: bool,
     /// Automatically scroll the Live Activity Log to the newest entry as events arrive.
     pub log_auto_scroll: bool,
+    /// Supply the built-in official D-S-Agrarservice logo to FS25 whenever no custom Community/Logo
+    /// token logo is active (`true` by default). Market name and online status are unaffected.
+    pub show_official_logo: bool,
     /// Automatically connect to the last active market when launching the application (`true` by default).
     /// When `false`, the client starts in `Disconnected` mode until manually connected by the user.
     pub auto_connect_on_launch: bool,
@@ -118,6 +121,7 @@ impl Default for AppConfig {
             minimize_to_tray: true,
             notifications_enabled: true,
             log_auto_scroll: true,
+            show_official_logo: true,
             auto_connect_on_launch: true,
             backend_mode: BackendMode::Live,
             backend_url: DEFAULT_OFFICIAL_BACKEND_URL.to_string(),

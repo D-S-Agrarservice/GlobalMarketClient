@@ -433,7 +433,7 @@ impl BridgeManager {
         next.language = crate::config::normalize_language(&next.language);
         next.theme = crate::config::normalize_theme(&next.theme);
 
-        let (needs_worker_restart, lang_changed) = {
+        let (needs_worker_restart, lang_changed, logo_changed) = {
             let mut guard = self
                 .shared
                 .lock()
@@ -477,6 +477,7 @@ impl BridgeManager {
                 .and_then(|id| guard.token_vault.resolve_raw_token(id));
 
             let lang_diff = guard.config.language != next.language;
+            let logo_diff = guard.config.show_official_logo != next.show_official_logo;
             if guard.config.fs25_profile_path != next.fs25_profile_path {
                 guard.last_seen_server_id = None;
             }
@@ -499,15 +500,22 @@ impl BridgeManager {
 
             guard.config = next;
             guard.config.save_to_file(&guard.config_file)?;
-            (restart, lang_diff)
+            (restart, lang_diff, logo_diff)
         };
 
         if needs_worker_restart {
             self.restart_worker();
-        } else if lang_changed {
-            self.nudge_signal(WorkerSignal::RefreshLocalization);
         } else {
-            self.emit_current_snapshot();
+            if lang_changed {
+                self.nudge_signal(WorkerSignal::RefreshLocalization);
+            }
+            if logo_changed {
+                // Re-evaluate the heartbeat branding right away instead of on the next 10 s status check
+                self.nudge_signal(WorkerSignal::ForceSyncNow);
+            }
+            if !lang_changed && !logo_changed {
+                self.emit_current_snapshot();
+            }
         }
         Ok(self.get_snapshot())
     }
@@ -1806,10 +1814,22 @@ fn run_bridge_worker(
 
                     // Whenever no custom Community/Logo token is active (Tier 0 Official Market or Tier 2 Private Market,
                     // or if a custom logo is temporarily unavailable), automatically supply the built-in DSA logo `.dds`
-                    // so FS25 always renders the official DSA logo in-game without any server stream or mod patch.
+                    // so FS25 renders the official DSA logo in-game without any server stream or mod patch.
+                    // Players can switch the official logo off (`show_official_logo`); custom logos stay untouched.
+                    let show_official_logo = shared
+                        .lock()
+                        .map(|g| g.config.show_official_logo)
+                        .unwrap_or(true);
                     let effective_logo_rel = if next_connected {
                         custom_logo_rel.clone().or_else(|| {
-                            ensure_default_dsa_logo_dds(&paths.staging_dir, &paths.logos_dir)
+                            show_official_logo
+                                .then(|| {
+                                    ensure_default_dsa_logo_dds(
+                                        &paths.staging_dir,
+                                        &paths.logos_dir,
+                                    )
+                                })
+                                .flatten()
                         })
                     } else {
                         None

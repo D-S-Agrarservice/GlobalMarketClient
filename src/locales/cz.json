@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Zobrazí systémové upozornění, jakmile začne nová globální vysoká poptávka.",
   "settingsAutoScroll": "Automaticky posouvat živý protokol aktivit",
   "settingsAutoScrollDesc": "Při vypnutí zůstane pozice posunu zachována pro pohodlné čtení starších záznamů.",
+  "settingsShowOfficialLogo": "Zobrazovat oficiální logo ve hře",
+  "settingsShowOfficialLogoDesc": "Zobrazuje logo D-S-Agrarservice v nabídce trhu ve FS25, dokud není aktivní vlastní komunitní logo. Název trhu a online stav zůstávají beze změny.",
   "settingsConnectionSection": "Připojení k trhu",
   "settingsModeLabel": "Provozní režim (Dev)",
   "settingsModeMock": "Místní simulace (Mock – testování ve hře)",

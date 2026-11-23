@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Rendszerértesítést jelenít meg, amikor új globális Magas kereslet indul.",
   "settingsAutoScroll": "Élő tevékenységnapló automatikus görgetése",
   "settingsAutoScrollDesc": "Kikapcsolva a napló megtartja a jelenlegi pozíciót a bejegyzések nyugodt elolvasásához.",
+  "settingsShowOfficialLogo": "Hivatalos logó megjelenítése a játékban",
+  "settingsShowOfficialLogoDesc": "Megjeleníti a D-S-Agrarservice logót az FS25 piac menüjében, amíg nincs aktív saját közösségi logó. A piac neve és az online állapot változatlan marad.",
   "settingsConnectionSection": "Piaci kapcsolat",
   "settingsModeLabel": "Működési mód (Dev)",
   "settingsModeMock": "Helyi szimuláció (Mock – Játékon belüli tesztelés)",

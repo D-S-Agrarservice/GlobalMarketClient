@@ -105,6 +105,8 @@
   "settingsNotificationsDesc": "Yeni bir küresel Yüksek Talep başladığında sistem bildirimi gösterir.",
   "settingsAutoScroll": "Canlı Etkinlik Günlüğünü otomatik kaydır",
   "settingsAutoScrollDesc": "Kapatıldığında günlük mevcut konumunda kalır ve mesajlar rahatça okunabilir.",
+  "settingsShowOfficialLogo": "Oyunda resmi logoyu göster",
+  "settingsShowOfficialLogoDesc": "Kendi topluluk logosu etkin olmadığı sürece FS25 pazar menüsünde D-S-Agrarservice logosunu gösterir. Pazar adı ve çevrimiçi durum değişmez.",
   "settingsConnectionSection": "Pazar Bağlantısı",
   "settingsModeLabel": "Çalışma Modu (Dev)",
   "settingsModeMock": "Yerel Simülasyon (Mock – Oyun İçi Test)",
