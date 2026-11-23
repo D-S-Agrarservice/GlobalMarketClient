@@ -58,6 +58,7 @@ Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_
 | `read/gmDataSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="marketData"`):** Eingehende globale Marktdaten. Wird vom Data-Host alle `1000 ms` gepollt, chronologisch sortiert eingelesen und gelöscht. Der Rust-Client behält bei geschlossenem Spiel maximal die `3` neuesten Snapshots vor (`MAX_RETAINED_MARKET_SYNC_FILES = 3`) und räumt `read/` beim Beenden auf. |
 | `read/gmContractSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="contractData"`):** Eingehende Online-Verträge, Direktangebote, Action-Acks (`actionResults`) und `settlements` (Stage 2). Wird vom selben `1000 ms`-Poll gelesen & gelöscht. Separate Dateinamensklasse, damit `MAX_RETAINED_MARKET_SYNC_FILES` niemals ungelesene Quittungen verdrängt. |
 | `write/transaction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="transaction"`):** Ausgehende Kauf-/Verkaufstransaktion in ganzen Litern. **Client liest, überträgt idempotent ans Backend & löscht diese Datei.** |
+| `write/marketSwitch_<date>_<seq>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="selectMarket"`, siehe 3.1.2):** Ingame-Marktwechsel des aktiven Data-Hosts auf ein im Client gespeichertes Marktprofil. **Client liest, prüft die Profil-ID & löscht diese Datei.** |
 | `write/contractAction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="contractAction"`):** Ausgehende Stage-2-Aktion (`CREATE_*`, `CANCEL_*`, `ACCEPT_CONTRACT`, `DELIVER_CONTRACT`, `BUY_OFFER`, `ACK_SETTLEMENT`, `REQUEST_SYNC`). **Client liest, sendet idempotent ans Backend & löscht diese Datei.** |
 | `read/gmVehicleSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="vehicleData"`, Stage 3, spezifiziert):** Eingehende Online-Fahrzeugangebote, Action-Acks und `settlements` des Gebrauchtfahrzeugmarkts (siehe 3.6). Eigene Dateinamensklasse wie `gmContractSync_*`. |
 | `write/vehicleAction_<date>_<id>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="vehicleAction"`, Stage 3, spezifiziert):** Ausgehende Fahrzeugmarkt-Aktion (`CREATE_LISTING`, `CANCEL_LISTING`, `BUY_LISTING`, `ACK_SETTLEMENT`, `REQUEST_SYNC`). **Client liest, sendet idempotent ans Backend & löscht diese Datei.** |
@@ -159,6 +160,7 @@ sequenceDiagram
     * **Sauberer Shutdown & Umschalt-Toleranz (`EXE_SWITCH_GRACE_MS = 4500`):** Beim echten Beenden des `GlobalMarketClient`, beim Ausschalten der Online-Verbindung und beim Wechsel des Profilordners löscht der Client `globalMarketOnline.xml` sofort (`cleanup_bridge_runtime_files` → `remove_heartbeat_xml`), sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt. Bei einem internen Neustart mit gleichem Profilordner (Live-Markt-, Token- oder API-Key-Wechsel, `STOP_RESTART_PRESERVE_HEARTBEAT`) bleibt die Datei bestehen und wird vom neuen Handshake atomar überschrieben; geleert werden nur `read/` & `.staging/`. Damit ein solcher kurzer Reconnect auf Dedicated Servern keinen sofortigen Data-Host-Verlust an einen Standby-Spieler auslöst, hält `GlobalMarketSync.lua` eine bestehende Verbindung zusätzlich für bis zu `4500 ms` (2 Status-Polls) stabil; nur harte Pflicht-Versionssperren (`version < minVersion`) und echte Spiel-Disconnects (`onClientDisconnected`) greifen sofort ohne Verzögerung.
   * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
   * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
+  * `globalMarketOnline#marketSwitchSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für den Ingame-Marktwechsel (`FS25_GlobalMarket v0.11.0.22+`, siehe 3.1.2). Nur mit `"true"` und mindestens einem `<profile>` in `<marketProfiles>` zeigt die Mod den Button „Markt wechseln“; ältere Clients ohne Flag bleiben unberührt.
   * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.13` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
     * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.x`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod (Default-Baseline `GlobalMarket.DEFAULT_MIN_EXE_VERSION = "0.9.10"`), übernimmt Lua sofort die höhere Untergrenze, persistiert sie dauerhaft außerhalb der `.zip` in `modSettings/FS25_GlobalMarket/clientVersionState.xml` (nur Client/Host, niemals auf `g_dedicatedServer`), blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein. Nimmt das Backend eine Erhöhung später wieder zurück und bestätigt der Client eine aktive Verbindung (`isConnected="true"`), senkt Lua `self.minExeVersion` sowie `clientVersionState.xml` automatisch wieder auf `max(DEFAULT_MIN_EXE_VERSION, minVersion)` ab.
@@ -201,6 +203,42 @@ sequenceDiagram
 
 > [!IMPORTANT]
 > Ein selbst gemeldeter Hash ist eine Hürde, kein Beweis: Eine veränderte Mod kann den Originalwert schreiben. Der eigentliche Schutz sind die Plausibilitätsgrenzen im Backend.
+
+
+### 3.1.2 Ingame-Marktwechsel (`marketProfiles` im Heartbeat & `write/marketSwitch_<date>_<seq>.xml`, ab `FS25_GlobalMarket v0.11.0.22`)
+Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ links neben dem Kategorie-Button) zwischen dem offiziellen Global Market und den im Client gespeicherten Marktprofilen wechseln, ohne zum Client zu wechseln. Die Mod schreibt nur eine Anfrage; der eigentliche Wechsel läuft über denselben Weg wie der Schnell-Umschalter im Client (`select_active_market_token`).
+
+* **Heartbeat-Erweiterung (Client -> Lua, `globalMarketOnline.xml`):**
+  ```xml
+  <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="2" isPrivateMarket="true" marketName="WeekendFarmers" marketSwitchSupported="true">
+      <version>0.9.15</version>
+      <minVersion>0.9.10</minVersion>
+      <marketProfiles activeId="a1b2c3d4e5f6">
+          <profile id="a1b2c3d4e5f6" label="Wochenend-Server" marketName="WeekendFarmers" brandingTier="2" />
+          <profile id="0f9e8d7c6b5a" label="Testmarkt" />
+      </marketProfiles>
+  </globalMarketOnline>
+  ```
+  * `marketProfiles#activeId` (`string`): ID des aktiven Profils; leer oder fehlend = offizieller Global Market.
+  * `profile#id` (`string`, Pflicht): Profil-ID aus `tokens.vault` (Hex, max. `32` Zeichen; heute `12` Zeichen). Profile ohne gültige ID ignoriert die Mod. Die Mod liest höchstens `32` Profile.
+  * `profile#label` (`string`, Optional): Eigener Name des Profils im Client. Sanitizing wie `marketName` (max. `48` UTF-8-Bytes).
+  * `profile#marketName` (`string`, Optional): Erkannter Marktname aus dem letzten Handshake. Fehlt er, zeigt die Mod „(noch nicht verbunden)“ hinter dem Namen.
+  * `profile#brandingTier` (`int`, Optional): Nur informativ, die Mod wertet es derzeit nicht aus.
+  * **Keine Tokens, keine `maskedHint`:** Es gehen nur nicht-sensible Metadaten in die Datei.
+  * Der Client schreibt den Heartbeat sofort neu, wenn Profile hinzukommen, umbenannt oder gelöscht werden.
+* **Anfrage (Lua -> Client, `write/marketSwitch_<date>_<seq>.xml`):**
+  ```xml
+  <gmDataSync action="selectMarket" profileId="0f9e8d7c6b5a" />
+  ```
+  * `profileId` (`string`): Ziel-Profil; leer = offizieller Global Market.
+  * Der Client liest & löscht die Datei wie alle `write/`-Dateien, akzeptiert nur IDs aus `tokens.vault` (sonst loggen & ignorieren) und ruft `select_active_market_token` auf (interner Neustart mit erhaltenem Heartbeat, Branding-Update).
+  * Rate-Limit im Client: höchstens eine Anfrage je `30 s`.
+* **Verhalten der Mod:**
+  * Button sichtbar nur für den aktiven Data-Host, der ingame Admin ist (Singleplayer/Host immer), bei `marketSwitchSupported="true"` und mindestens einem Profil.
+  * Im Multiplayer Bestätigungsdialog („Der Markt wechselt für alle Spieler … offene Online-Aktionen verfallen“), im Singleplayer direkter Wechsel.
+  * Nach einer Anfrage `30 s` Sperre mit Restzeit auf dem Button. Meldet der Heartbeat innerhalb von `20 s` nicht das angeforderte `activeId`, zeigt die Mod einen Fehler (Dialog bei offenem Menü, sonst HUD).
+  * Danach übernimmt der bestehende Weg (`ExeStatusEvent` -> `updateActiveDataHostBranding`): Header, Whitelist-Export, Vertrags-Status und Preise. Kein neues MP-Event.
+  * Laufende Auktionen sind nicht betroffen: lokale Auktionen liegen im Savegame, Online-Auktionen (Stage 4) sind marktübergreifend.
 
 ---
 
