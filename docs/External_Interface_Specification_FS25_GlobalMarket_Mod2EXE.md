@@ -141,7 +141,7 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
-      <version>0.9.13</version>
+      <version>0.9.15</version>
       <minVersion>0.9.10</minVersion>
   </globalMarketOnline>
   ```
@@ -149,7 +149,7 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="3" isPrivateMarket="true" marketName="WeekendFarmers" hasCustomLogo="true" logoFile="logos/logo_9f4b2c10e8a1.dds">
-      <version>0.9.13</version>
+      <version>0.9.15</version>
       <minVersion>0.9.10</minVersion>
       <latestVersion>1.0.0</latestVersion>
   </globalMarketOnline>
@@ -162,7 +162,7 @@ sequenceDiagram
   * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
   * `globalMarketOnline#vehiclesSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 3 (serverübergreifender Gebrauchtfahrzeugmarkt, siehe 3.6, `FS25_GlobalMarket #36`). Nur mit `"true"` bietet der Mod den Umschalter „Online“ im Anbieten-Dialog an und schreibt `write/vehicleAction_*.xml`; ohne Flag bleibt der Fahrzeugmarkt rein lokal.
   * `globalMarketOnline#marketSwitchSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für den Ingame-Marktwechsel (`FS25_GlobalMarket v0.11.0.22+`, siehe 3.1.2). Nur mit `"true"` und mindestens einem `<profile>` in `<marketProfiles>` zeigt die Mod den Button „Markt wechseln“; ältere Clients ohne Flag bleiben unberührt.
-  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.13` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
+  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.15` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
     * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.x`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod (Default-Baseline `GlobalMarket.DEFAULT_MIN_EXE_VERSION = "0.9.10"`), übernimmt Lua sofort die höhere Untergrenze, persistiert sie dauerhaft außerhalb der `.zip` in `modSettings/FS25_GlobalMarket/clientVersionState.xml` (nur Client/Host, niemals auf `g_dedicatedServer`), blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein. Nimmt das Backend eine Erhöhung später wieder zurück und bestätigt der Client eine aktive Verbindung (`isConnected="true"`), senkt Lua `self.minExeVersion` sowie `clientVersionState.xml` automatisch wieder auf `max(DEFAULT_MIN_EXE_VERSION, minVersion)` ab.
   * `globalMarketOnline.latestVersion` (`string`, Optional – **Stufe 2: Optional / Empfohlenes „Nice-to-have“-Update**): Wird vom Client genau dann geschrieben, wenn das Backend im Handshake (`/api/v1/meta/status`) zusätzlich `latest_exe_version` (bzw. Alias `recommended_exe_version`) ausliefert.
