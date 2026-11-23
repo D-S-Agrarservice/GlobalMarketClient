@@ -143,7 +143,28 @@ pub enum IncomingPacket {
     UpdateWhitelist(WhitelistSyncRequest),
     Transactions(Vec<TransactionRequest>),
     ContractActions(Vec<ContractActionRequest>),
+    /// In-game market switch (`action="selectMarket"`, Spec Section 3.1.2): `None` = Official Global Market.
+    SelectMarket(Option<String>),
     IgnoredUnknownAction(String),
+}
+
+/// One saved market profile exported to `globalMarketOnline.xml` for the in-game market switch
+/// (Spec Section 3.1.2). Only non-sensitive metadata: never the raw token or its masked hint.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatMarketProfile {
+    pub id: String,
+    pub label: Option<String>,
+    pub market_name: Option<String>,
+    /// `None` until the profile completed its first handshake.
+    pub branding_tier: Option<u8>,
+}
+
+/// `<marketProfiles activeId="...">` block of `globalMarketOnline.xml` (`marketSwitchSupported="true"`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatMarketProfiles {
+    /// Active profile id, `None` = Official Global Market.
+    pub active_id: Option<String>,
+    pub profiles: Vec<HeartbeatMarketProfile>,
 }
 
 /// Compares SemVer (`MAJOR.MINOR.PATCH`) and 4-part (`MAJOR.MINOR.PATCH.BUILD`) version strings
@@ -230,6 +251,34 @@ pub fn write_heartbeat_xml_with_capabilities(
     branding: Option<&HeartbeatBranding>,
     contracts_supported: bool,
 ) -> Result<(), String> {
+    write_heartbeat_xml_with_market_profiles(
+        staging_dir,
+        online_xml_path,
+        is_connected,
+        exe_version,
+        min_version,
+        latest_version,
+        branding,
+        contracts_supported,
+        None,
+    )
+}
+
+/// Atomically writes `globalMarketOnline.xml` like [`write_heartbeat_xml_with_capabilities`] and, while
+/// connected, the saved market profiles for the in-game market switch (`marketSwitchSupported="true"`
+/// plus `<marketProfiles>`, Spec Section 3.1.2). `market_profiles == None` omits both.
+#[allow(clippy::too_many_arguments)]
+pub fn write_heartbeat_xml_with_market_profiles(
+    staging_dir: &Path,
+    online_xml_path: &Path,
+    is_connected: bool,
+    exe_version: &str,
+    min_version: &str,
+    latest_version: Option<&str>,
+    branding: Option<&HeartbeatBranding>,
+    contracts_supported: bool,
+    market_profiles: Option<&HeartbeatMarketProfiles>,
+) -> Result<(), String> {
     let timestamp = now_unix_secs();
     let connected_str = if is_connected { "true" } else { "false" };
     let contracts_str = if is_connected && contracts_supported {
@@ -287,15 +336,57 @@ pub fn write_heartbeat_xml_with_capabilities(
         }
     }
 
+    let profiles_block = match market_profiles.filter(|_| is_connected) {
+        Some(market) => {
+            root_attrs.push_str(" marketSwitchSupported=\"true\"");
+            format_market_profiles_block(market)
+        }
+        None => String::new(),
+    };
+
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n\
 <globalMarketOnline {root_attrs}>\n\
     <version>{ver_escaped}</version>\n\
     <minVersion>{min_escaped}</minVersion>\n\
-{latest_line}</globalMarketOnline>\n"
+{latest_line}{profiles_block}</globalMarketOnline>\n"
     );
 
     atomic_write_utf8_no_bom(staging_dir, online_xml_path, &xml)
+}
+
+/// Formats the `<marketProfiles>` block (Spec Section 3.1.2). Labels and market names follow the same
+/// sanitizing as `marketName` (48 UTF-8 bytes), so Lua never cuts a multi-byte character.
+fn format_market_profiles_block(market: &HeartbeatMarketProfiles) -> String {
+    let active_id = market
+        .active_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let mut block = format!("    <marketProfiles activeId=\"{}\">\n", escape(active_id));
+    for profile in &market.profiles {
+        let id = profile.id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let mut attrs = format!("id=\"{}\"", escape(id));
+        if let Some(label) = profile.label.as_deref().and_then(sanitize_market_name) {
+            attrs.push_str(&format!(" label=\"{}\"", escape(&label)));
+        }
+        if let Some(name) = profile
+            .market_name
+            .as_deref()
+            .and_then(sanitize_market_name)
+        {
+            attrs.push_str(&format!(" marketName=\"{}\"", escape(&name)));
+        }
+        if let Some(tier) = profile.branding_tier {
+            attrs.push_str(&format!(" brandingTier=\"{tier}\""));
+        }
+        block.push_str(&format!("        <profile {attrs} />\n"));
+    }
+    block.push_str("    </marketProfiles>\n");
+    block
 }
 
 /// Removes `globalMarketOnline.xml` immediately on clean shutdown so FS25 switches to Offline mode without a 10s delay.
@@ -678,6 +769,7 @@ pub fn parse_incoming_write_xml(
 
     let mut action: Option<String> = None;
     let mut lang = "en".to_string();
+    let mut profile_id: Option<String> = None;
     let mut whitelist_items = Vec::new();
     let mut transactions = Vec::new();
     let mut contract_actions = Vec::new();
@@ -702,6 +794,9 @@ pub fn parse_incoming_write_xml(
                                 "action" => action = Some(val),
                                 "lang" if !val.trim().is_empty() => {
                                     lang = val.trim().to_ascii_lowercase()
+                                }
+                                "profileId" if !val.trim().is_empty() => {
+                                    profile_id = Some(val.trim().to_string())
                                 }
                                 _ => {}
                             }
@@ -935,6 +1030,7 @@ pub fn parse_incoming_write_xml(
         })),
         Some("transaction") => Ok(IncomingPacket::Transactions(transactions)),
         Some("contractAction") => Ok(IncomingPacket::ContractActions(contract_actions)),
+        Some("selectMarket") => Ok(IncomingPacket::SelectMarket(profile_id)),
         Some(other) => Ok(IncomingPacket::IgnoredUnknownAction(other.to_string())),
         None => Err("XML does not contain a <gmDataSync action=\"...\"> root element.".to_string()),
     }

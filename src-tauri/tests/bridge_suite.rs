@@ -23,9 +23,10 @@ use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
     sanitize_market_name, write_contract_data_xml, write_heartbeat_xml,
-    write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest, write_market_data_xml,
-    write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket, MAX_MARKET_NAME_BYTES,
-    MAX_RETAINED_MARKET_SYNC_FILES,
+    write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest,
+    write_heartbeat_xml_with_market_profiles, write_market_data_xml,
+    write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatMarketProfile,
+    HeartbeatMarketProfiles, IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
@@ -201,6 +202,103 @@ fn parses_whitelist_transactions_and_ignores_unknown_future_actions() {
         parse_incoming_write_xml(future_xml, "future_1").unwrap(),
         IncomingPacket::IgnoredUnknownAction(act) if act == "livestockMarket"
     ));
+}
+
+#[test]
+fn parses_ingame_market_switch_requests() {
+    let to_profile = r#"<gmDataSync action="selectMarket" profileId=" a1b2c3d4e5f6 " />"#;
+    assert!(matches!(
+        parse_incoming_write_xml(to_profile, "marketSwitch_20261123_140000_1").unwrap(),
+        IncomingPacket::SelectMarket(Some(id)) if id == "a1b2c3d4e5f6"
+    ));
+
+    let to_official = r#"<gmDataSync action="selectMarket" profileId="" />"#;
+    assert!(matches!(
+        parse_incoming_write_xml(to_official, "marketSwitch_20261123_140000_2").unwrap(),
+        IncomingPacket::SelectMarket(None)
+    ));
+}
+
+#[test]
+fn heartbeat_xml_exports_market_profiles_only_while_connected() {
+    let dir = env::temp_dir().join(format!("fs25_gm_profiles_xml_test_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let staging = dir.join(".staging");
+    let online_file = dir.join("globalMarketOnline.xml");
+
+    let market = HeartbeatMarketProfiles {
+        active_id: Some("a1b2c3d4e5f6".to_string()),
+        profiles: vec![
+            HeartbeatMarketProfile {
+                id: "a1b2c3d4e5f6".to_string(),
+                label: Some("Wochenend <Server>".to_string()),
+                market_name: Some("WeekendFarmers".to_string()),
+                branding_tier: Some(2),
+            },
+            HeartbeatMarketProfile {
+                id: "0f9e8d7c6b5a".to_string(),
+                label: None,
+                market_name: None,
+                branding_tier: None,
+            },
+        ],
+    };
+
+    write_heartbeat_xml_with_market_profiles(
+        &staging,
+        &online_file,
+        true,
+        "1.0.0",
+        "1.0.0",
+        None,
+        None,
+        true,
+        Some(&market),
+    )
+    .unwrap();
+    let xml = fs::read_to_string(&online_file).unwrap();
+    assert!(xml.contains("marketSwitchSupported=\"true\""));
+    assert!(xml.contains("<marketProfiles activeId=\"a1b2c3d4e5f6\">"));
+    assert!(xml.contains(
+        "<profile id=\"a1b2c3d4e5f6\" label=\"Wochenend &lt;Server&gt;\" marketName=\"WeekendFarmers\" brandingTier=\"2\" />"
+    ));
+    assert!(xml.contains("<profile id=\"0f9e8d7c6b5a\" />"));
+    assert!(!xml.contains("masked"));
+
+    // Disconnected: neither the capability flag nor the profile list
+    write_heartbeat_xml_with_market_profiles(
+        &staging,
+        &online_file,
+        false,
+        "1.0.0",
+        "1.0.0",
+        None,
+        None,
+        true,
+        Some(&market),
+    )
+    .unwrap();
+    let offline_xml = fs::read_to_string(&online_file).unwrap();
+    assert!(!offline_xml.contains("marketSwitchSupported"));
+    assert!(!offline_xml.contains("<marketProfiles"));
+
+    // Older call path stays unchanged
+    write_heartbeat_xml_with_capabilities(
+        &staging,
+        &online_file,
+        true,
+        "1.0.0",
+        "1.0.0",
+        None,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(!fs::read_to_string(&online_file)
+        .unwrap()
+        .contains("marketSwitchSupported"));
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -476,9 +574,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         saved_tokens: Vec::new(),
         profile_path: Some(format!("{user_profile}\\Documents\\My Games\\FarmingSimulator2025")),
         bridge_path: None,
-        exe_version: "0.9.14".to_string(),
+        exe_version: "0.9.15".to_string(),
         min_exe_version: "0.9.9".to_string(),
-        latest_exe_version: Some("0.9.15".to_string()),
+        latest_exe_version: Some("0.9.16".to_string()),
         contracts_supported: true,
         open_contracts_count: 2,
         open_offers_count: 3,
@@ -520,8 +618,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         !report.contains("a3f901b842e7c10d"),
         "Must never leak full 16-char client_id in public Discord diagnostic report!"
     );
-    assert!(report.contains("app_version: \"0.9.14-beta (protocol 0.9.14)\""));
-    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.15)\""));
+    assert!(report.contains("app_version: \"0.9.15-beta (protocol 0.9.15)\""));
+    assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.16)\""));
     assert!(report.contains("contracts_bridge: \"supported=true, open_contracts=2, open_offers=3\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
@@ -1389,6 +1487,17 @@ fn heartbeat_xml_3_tier_branding_and_lua_sanitization_rules_work() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Returns the `<globalMarketOnline ...>` start tag of a heartbeat file (root attributes only).
+fn heartbeat_root(xml: &str) -> String {
+    xml.find("<globalMarketOnline")
+        .and_then(|start| {
+            xml[start..]
+                .find('>')
+                .map(|end| xml[start..=start + end].to_string())
+        })
+        .unwrap_or_default()
+}
+
 fn encode_test_webp(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
     let img = RgbaImage::from_pixel(width, height, Rgba(color));
     let mut buf = Vec::new();
@@ -1518,7 +1627,7 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                     if request_line.starts_with("GET /api/v1/meta/status ") {
                         let body = match token_hdr.as_deref() {
                             Some("token-alpha-tier3") => format!(
-                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.15\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
+                                "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"latest_exe_version\":\"0.9.16\",\"branding_tier\":3,\"is_private_market\":true,\"market_name\":\"LSMT Community Markt\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/lsmt.webp\"}}"
                             ),
                             Some("token-bravo-tier1") => format!(
                                 "{{\"status\":\"online\",\"version\":\"2.1.0\",\"min_exe_version\":\"0.9.9\",\"branding_tier\":1,\"is_private_market\":false,\"market_name\":\"Global Market\",\"has_custom_logo\":true,\"market_logo_url\":\"http://{addr}/logos/tier1.webp\"}}"
@@ -1669,10 +1778,10 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(xml_a.contains("marketName=\"LSMT Community Markt\""));
     assert!(xml_a.contains("hasCustomLogo=\"true\""));
     assert!(xml_a.contains(&format!("logoFile=\"{expected_rel_a}\"")));
-    assert!(xml_a.contains("<version>0.9.14</version>"));
+    assert!(xml_a.contains("<version>0.9.15</version>"));
     assert!(xml_a.contains("<minVersion>0.9.9</minVersion>"));
-    assert!(xml_a.contains("<latestVersion>0.9.15</latestVersion>"));
-    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.15"));
+    assert!(xml_a.contains("<latestVersion>0.9.16</latestVersion>"));
+    assert_eq!(snap_after_a.latest_exe_version.as_deref(), Some("0.9.16"));
     assert!(mgr
         .get_logs()
         .iter()
@@ -1709,11 +1818,13 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
     assert!(!prof_b.is_private_market);
 
     let xml_b = fs::read_to_string(&online_xml_path).unwrap();
-    assert!(xml_b.contains("brandingTier=\"1\""));
-    assert!(xml_b.contains("isPrivateMarket=\"false\""));
-    assert!(!xml_b.contains("marketName="));
-    assert!(xml_b.contains("hasCustomLogo=\"true\""));
-    assert!(xml_b.contains(&format!("logoFile=\"{expected_rel_b}\"")));
+    // Branding lives on the root element; `<marketProfiles>` may list other profiles' market names.
+    let root_b = heartbeat_root(&xml_b);
+    assert!(root_b.contains("brandingTier=\"1\""));
+    assert!(root_b.contains("isPrivateMarket=\"false\""));
+    assert!(!root_b.contains("marketName="));
+    assert!(root_b.contains("hasCustomLogo=\"true\""));
+    assert!(root_b.contains(&format!("logoFile=\"{expected_rel_b}\"")));
     assert!(!xml_b.contains("<latestVersion>"));
 
     // 3. Switch back to Token A via 1-click profile ID -> MUST reuse cached logos/logo_<hashA>.dds WITHOUT re-downloading!
@@ -1755,11 +1866,12 @@ fn multi_token_logo_dds_cache_and_live_xml_switch_work_end_to_end() {
                 && s.market_logo_file.as_deref() == Some(default_dsa_rel.as_str())
                 && fs::read_to_string(&online_xml_path)
                     .map(|x| {
-                        x.contains("brandingTier=\"1\"")
-                            && x.contains("isPrivateMarket=\"false\"")
-                            && !x.contains("marketName=")
-                            && x.contains("hasCustomLogo=\"true\"")
-                            && x.contains(&format!("logoFile=\"{default_dsa_rel}\""))
+                        let root = heartbeat_root(&x);
+                        root.contains("brandingTier=\"1\"")
+                            && root.contains("isPrivateMarket=\"false\"")
+                            && !root.contains("marketName=")
+                            && root.contains("hasCustomLogo=\"true\"")
+                            && root.contains(&format!("logoFile=\"{default_dsa_rel}\""))
                     })
                     .unwrap_or(false)
         }),

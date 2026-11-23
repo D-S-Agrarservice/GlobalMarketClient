@@ -1,6 +1,6 @@
 [package]
 name = "globalmarket-client"
-version = "0.9.14"
+version = "0.9.15"
 description = "Cross-Platform Companion Client for Farming Simulator GlobalMarket (D-S-Agrarservice)"
 authors = ["D-S-Agrarservice"]
 edition = "2021"

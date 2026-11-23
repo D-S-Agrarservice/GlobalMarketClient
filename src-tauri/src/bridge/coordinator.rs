@@ -21,8 +21,9 @@ use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, Bri
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
     is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
-    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_capabilities,
-    write_market_data_xml_with_branding, HeartbeatBranding, IncomingPacket,
+    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_market_profiles,
+    write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatMarketProfile,
+    HeartbeatMarketProfiles, IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -39,7 +40,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_ENTRIES: usize = 250;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(3500);
@@ -158,6 +159,8 @@ struct SharedState {
     snapshot: BridgeSnapshot,
     logs: VecDeque<LogEntry>,
     extended_expires_at: Option<Instant>,
+    /// Last accepted in-game market switch request (`write/marketSwitch_*.xml`), for the 30 s rate limit.
+    last_ingame_market_switch: Option<Instant>,
 }
 
 pub struct BridgeManager {
@@ -285,6 +288,7 @@ impl BridgeManager {
                 snapshot: initial_snapshot,
                 logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
                 extended_expires_at: None,
+                last_ingame_market_switch: None,
             })),
             mock_backend,
             live_backend,
@@ -1971,7 +1975,12 @@ fn run_bridge_worker(
         if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
             last_heartbeat = Instant::now();
             let hb_connected = is_connected && version_ok;
-            match write_heartbeat_xml_with_capabilities(
+            let market_profiles = if hb_connected {
+                heartbeat_market_profiles(&shared)
+            } else {
+                None
+            };
+            match write_heartbeat_xml_with_market_profiles(
                 &paths.staging_dir,
                 &paths.online_xml_file,
                 hb_connected,
@@ -1980,6 +1989,7 @@ fn run_bridge_worker(
                 latest_version.as_deref(),
                 hb_connected.then_some(&active_branding),
                 hb_connected && contracts_supported,
+                market_profiles.as_ref(),
             ) {
                 Ok(()) if hb_connected => {
                     let now_secs = SystemTime::now()
@@ -2317,6 +2327,10 @@ fn run_bridge_worker(
                     } else {
                         break;
                     }
+                }
+                Ok(IncomingPacket::SelectMarket(profile_id)) => {
+                    let _ = fs::remove_file(&xml_path);
+                    handle_ingame_market_switch(&shared, &app_handle, profile_id);
                 }
                 Ok(IncomingPacket::IgnoredUnknownAction(act)) => {
                     let _ = fs::remove_file(&xml_path);
@@ -2776,6 +2790,131 @@ fn handle_backend_io_error(
     });
 }
 
+/// Minimum interval between two accepted in-game market switch requests (Spec Section 3.1.2).
+const INGAME_MARKET_SWITCH_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Saved market profiles for the in-game market switch heartbeat block (Live mode only; in Mock mode
+/// a profile switch does not reconnect, so the mod gets no profiles and hides its button).
+fn heartbeat_market_profiles(shared: &Arc<Mutex<SharedState>>) -> Option<HeartbeatMarketProfiles> {
+    let guard = shared.lock().ok()?;
+    if guard.config.backend_mode != BackendMode::Live {
+        return None;
+    }
+    let profiles = guard
+        .token_vault
+        .list_profiles()
+        .into_iter()
+        .map(|p| HeartbeatMarketProfile {
+            market_name: p.detected_market_name.filter(|_| p.is_private_market),
+            id: p.id,
+            label: p.custom_label,
+            branding_tier: p.branding_tier,
+        })
+        .collect();
+    Some(HeartbeatMarketProfiles {
+        active_id: guard.config.active_token_id.clone(),
+        profiles,
+    })
+}
+
+/// Display text of a profile for log entries (label, market name or masked hint; never the token).
+fn market_profile_display(profile: &SavedTokenProfile) -> String {
+    profile
+        .custom_label
+        .clone()
+        .or_else(|| profile.detected_market_name.clone())
+        .unwrap_or_else(|| profile.masked_hint.clone())
+}
+
+/// Handles `write/marketSwitch_*.xml` (`action="selectMarket"`): validates the profile id against the
+/// vault, rate-limits to one switch per 30 s and runs [`BridgeManager::select_active_market_token`]
+/// on its own thread, because the switch restarts (and joins) this worker.
+fn handle_ingame_market_switch(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    profile_id: Option<String>,
+) {
+    let requested_label = {
+        let Ok(mut guard) = shared.lock() else {
+            return;
+        };
+        if guard.config.backend_mode != BackendMode::Live {
+            drop(guard);
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Warn,
+                "logIngameMarketSwitchUnavailable",
+                [],
+                "Ignored market switch from the game: only available with the live backend."
+                    .to_string(),
+            );
+            return;
+        }
+        let label = match profile_id.as_deref() {
+            Some(id) => match guard.token_vault.get_profile(id) {
+                Some(profile) => market_profile_display(&profile),
+                None => {
+                    drop(guard);
+                    push_i18n_log_shared(
+                        shared,
+                        app_handle,
+                        LogLevel::Warn,
+                        "logIngameMarketSwitchUnknownProfile",
+                        [("profile", id.to_string())],
+                        format!("Ignored market switch from the game: unknown profile '{id}'."),
+                    );
+                    return;
+                }
+            },
+            None => "Global Market".to_string(),
+        };
+        if guard.config.active_token_id == profile_id {
+            return;
+        }
+        if guard
+            .last_ingame_market_switch
+            .is_some_and(|last| last.elapsed() < INGAME_MARKET_SWITCH_MIN_INTERVAL)
+        {
+            drop(guard);
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Warn,
+                "logIngameMarketSwitchRateLimited",
+                [],
+                "Ignored market switch from the game: only one switch per 30 seconds.".to_string(),
+            );
+            return;
+        }
+        guard.last_ingame_market_switch = Some(Instant::now());
+        label
+    };
+
+    push_i18n_log_shared(
+        shared,
+        app_handle,
+        LogLevel::Info,
+        "logIngameMarketSwitchRequested",
+        [("profile", requested_label.clone())],
+        format!("Market switch requested from the game: {requested_label}"),
+    );
+
+    let Some(app) = app_handle.clone() else {
+        return;
+    };
+    let shared_clone = Arc::clone(shared);
+    let app_for_log = app_handle.clone();
+    thread::spawn(move || {
+        let Some(manager) = app.try_state::<BridgeManager>() else {
+            return;
+        };
+        if let Err(err) = manager.select_active_market_token(profile_id) {
+            push_raw_log_shared(&shared_clone, &app_for_log, LogLevel::Error, err);
+        }
+    });
+}
+
 fn list_sorted_write_xmls(write_dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(write_dir) else {
         return Vec::new();
@@ -2792,8 +2931,9 @@ fn list_sorted_write_xmls(write_dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
 
-    // Prioritize `whitelist_*.xml`, then `contractAction_*.xml`, then `transaction_*.xml`,
-    // sorting numeric sequence suffixes numerically so `_2.xml` always executes before `_10.xml`.
+    // Prioritize `whitelist_*.xml`, then `contractAction_*.xml`, then `transaction_*.xml`, and handle
+    // `marketSwitch_*.xml` last so actions written before the switch still reach the previous market.
+    // Numeric sequence suffixes sort numerically so `_2.xml` always executes before `_10.xml`.
     files.sort_by(|a, b| {
         let a_name = a.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let b_name = b.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -2810,6 +2950,8 @@ fn write_filename_sort_key(filename: &str) -> (u8, String, u64, String) {
         1
     } else if filename.starts_with("transaction_") {
         2
+    } else if filename.starts_with("marketSwitch_") {
+        4
     } else {
         3
     };

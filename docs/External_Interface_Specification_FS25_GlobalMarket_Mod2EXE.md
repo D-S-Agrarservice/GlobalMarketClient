@@ -205,7 +205,7 @@ sequenceDiagram
 > Ein selbst gemeldeter Hash ist eine Hürde, kein Beweis: Eine veränderte Mod kann den Originalwert schreiben. Der eigentliche Schutz sind die Plausibilitätsgrenzen im Backend.
 
 
-### 3.1.2 Ingame-Marktwechsel (`marketProfiles` im Heartbeat & `write/marketSwitch_<date>_<seq>.xml`, ab `FS25_GlobalMarket v0.11.0.22`)
+### 3.1.2 Ingame-Marktwechsel (`marketProfiles` im Heartbeat & `write/marketSwitch_<date>_<seq>.xml`, ab `FS25_GlobalMarket v0.11.0.22`, Client `0.9.15`)
 Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ links neben dem Kategorie-Button) zwischen dem offiziellen Global Market und den im Client gespeicherten Marktprofilen wechseln, ohne zum Client zu wechseln. Die Mod schreibt nur eine Anfrage; der eigentliche Wechsel läuft über denselben Weg wie der Schnell-Umschalter im Client (`select_active_market_token`).
 
 * **Heartbeat-Erweiterung (Client -> Lua, `globalMarketOnline.xml`):**
@@ -222,8 +222,8 @@ Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ lin
   * `marketProfiles#activeId` (`string`): ID des aktiven Profils; leer oder fehlend = offizieller Global Market.
   * `profile#id` (`string`, Pflicht): Profil-ID aus `tokens.vault` (Hex, max. `32` Zeichen; heute `12` Zeichen). Profile ohne gültige ID ignoriert die Mod. Die Mod liest höchstens `32` Profile.
   * `profile#label` (`string`, Optional): Eigener Name des Profils im Client. Sanitizing wie `marketName` (max. `48` UTF-8-Bytes).
-  * `profile#marketName` (`string`, Optional): Erkannter Marktname aus dem letzten Handshake. Fehlt er, zeigt die Mod „(noch nicht verbunden)“ hinter dem Namen.
-  * `profile#brandingTier` (`int`, Optional): Nur informativ, die Mod wertet es derzeit nicht aus.
+  * `profile#marketName` (`string`, Optional): Erkannter Marktname aus dem letzten Handshake (nur bei Privatmärkten, Tier 2/3).
+  * `profile#brandingTier` (`int`, Optional): Zuletzt bestätigte Branding-Stufe; fehlt, solange das Profil noch keinen Handshake hatte. Fehlen `brandingTier` und `marketName`, zeigt die Mod „(noch nicht verbunden)“ hinter dem Namen.
   * **Keine Tokens, keine `maskedHint`:** Es gehen nur nicht-sensible Metadaten in die Datei.
   * Der Client schreibt den Heartbeat sofort neu, wenn Profile hinzukommen, umbenannt oder gelöscht werden.
 * **Anfrage (Lua -> Client, `write/marketSwitch_<date>_<seq>.xml`):**
@@ -232,7 +232,7 @@ Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ lin
   ```
   * `profileId` (`string`): Ziel-Profil; leer = offizieller Global Market.
   * Der Client liest & löscht die Datei wie alle `write/`-Dateien, akzeptiert nur IDs aus `tokens.vault` (sonst loggen & ignorieren) und ruft `select_active_market_token` auf (interner Neustart mit erhaltenem Heartbeat, Branding-Update).
-  * Rate-Limit im Client: höchstens eine Anfrage je `30 s`.
+  * Rate-Limit im Client: höchstens eine Anfrage je `30 s`. Anfragen werden nach allen anderen `write/`-Dateien verarbeitet, damit vorher geschriebene Aktionen noch beim bisherigen Markt landen. Nur im Live-Backend; im Mock-Modus exportiert der Client keine Profile.
 * **Verhalten der Mod:**
   * Button sichtbar nur für den aktiven Data-Host, der ingame Admin ist (Singleplayer/Host immer), bei `marketSwitchSupported="true"` und mindestens einem Profil.
   * Im Multiplayer Bestätigungsdialog („Der Markt wechselt für alle Spieler … offene Online-Aktionen verfallen“), im Singleplayer direkter Wechsel.
