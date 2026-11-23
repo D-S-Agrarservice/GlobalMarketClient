@@ -52,6 +52,7 @@ Alle Pfade verstehen sich relativ zu `.../FarmingSimulator2025/modSettings/FS25_
 | `globalMarketOnline.xml` | **Client -> Lua** | **Persistente Statusdatei** (Heartbeat, Backend-Verbindungsstatus, Client-Version, `minVersion`, optionales `latestVersion` sowie 3-Stufen-Markt-Branding). Wird vom Rust-Client alle `3–5 s` atomar aktualisiert und von Lua alle `2000 ms` gelesen (**nicht von Lua gelöscht!**). Bei einem internen Live-Markt-/Token-Wechsel bleibt die Datei bis zum atomaren Überschreiben durch den neuen Handshake bestehen (nur `read/` & `.staging/` werden geleert); beim echten Beenden des Clients, beim Ausschalten der Online-Verbindung oder beim Profilordner-Wechsel löscht der Client die Datei sofort (`remove_heartbeat_xml`). |
 | `logos/logo_<hash12>.dds` | **Client -> Lua** | **Gecachte Branding-Textur:** Vom Rust-Client aus `.webp`/`.png`/`.jpg`/`.dds` erzeugte GIANTS-konforme `512x256` `BC3/DXT5`-Textur inkl. 10 Mipmaps (`174.928 Bytes`), referenziert über `logoFile` in `globalMarketOnline.xml`. |
 | `.staging/stage_<pid>_<seq>.tmp` | **Client intern** | **Temporärer Staging-Ordner** außerhalb von `read/`, in dem der Rust-Client neue XML- und `.dds`-Dateien vollständig schreibt und flusht, bevor sie per `std::fs::rename` atomar ans Ziel verschoben werden. |
+| `modInfo.xml` | **Lua -> Client** | **Persistente Statusdatei** (Mod-Version & Mod-Hash, siehe 3.1.1). Wird von Lua bei jedem Kartenstart auf jedem Spieler-PC neu geschrieben (nie auf `g_dedicatedServer`) und vom Client nur gelesen (**nicht vom Client gelöscht!**). |
 | `server_whitelist.xml` | **Lua (Server) -> Lokal** | Statische Referenzliste aller auf der geladenen Map registrierten FillTypes (wird beim Map-Start im Singleplayer bzw. auf dem Host/Dedicated Server erzeugt). |
 | `write/whitelist_<date>_<seq>.xml` | **Lua (Data-Host) -> Client** | **Transferdatei (`action="updateWhitelist"`):** Wird vom aktiven Data-Host geschrieben, sobald er vom Server den Data-Host-Token erhält oder im Client live den Markt wechselt. **Client liest & löscht diese Datei.** |
 | `read/gmDataSync_<ts>[_<seq>].xml` | **Client -> Lua (Data-Host)** | **Transferdatei (`action="marketData"`):** Eingehende globale Marktdaten. Wird vom Data-Host alle `1000 ms` gepollt, chronologisch sortiert eingelesen und gelöscht. Der Rust-Client behält bei geschlossenem Spiel maximal die `3` neuesten Snapshots vor (`MAX_RETAINED_MARKET_SYNC_FILES = 3`) und räumt `read/` beim Beenden auf. |
@@ -179,6 +180,27 @@ sequenceDiagram
     * Ziel-Canvas: `512 x 256` Pixel (`2:1`, transparent `[0, 0, 0, 0]`).
     * Skalierung & Ausrichtung: Proportionale premultiplied-alpha `Lanczos3`-Skalierung ohne Verzerrung, **unten links** verankert (`x = 0`, `y = 256 - scaled_height`), sodass sowohl breite Banner als auch quadratische Wappen im In-Game-Header (`240x120`) bündig über dem Markttitel sitzen.
     * Kodierung & Cache: Vollständige 10-stufige Mipmap-Kette (`512x256` bis `1x1`) im `BC3` / `DXT5`-Format (`174.928 Bytes`), deterministisch gecacht unter `logos/logo_<12char_sha256>.dds`. Auf Standby-MP-Clients wird ein lokales Logo nur eingeblendet, wenn ihr Client mit demselben Markt wie der aktive Data-Host verbunden ist.
+
+
+### 3.1.1 Mod-Version & Mod-Hash (`modInfo.xml`, ab `FS25_GlobalMarket v0.11.0.21`)
+* **Pfad:** `modSettings/FS25_GlobalMarket/modInfo.xml`
+* **Schreiber:** `GlobalMarketOnline.lua` (`GlobalMarket:writeModInfo()`), einmal bei jedem Kartenstart auf jedem Spieler-PC (Singleplayer, MP-Host und MP-Clients), **nie** auf einem Dedicated Server. Atomares Schreiben ist nicht nötig: Die Datei ändert sich nur beim Kartenstart.
+* **Leser:** `GlobalMarketClient` (geplant, D-S-Agrarservice/GlobalMarketClient#6). Die Datei wird vom Client **nicht** gelöscht.
+* **XML-Struktur:**
+  ```xml
+  <?xml version="1.0" encoding="utf-8" standalone="no"?>
+  <gmModInfo modName="FS25_GlobalMarket" modVersion="0.11.0.21" modHash="3f2a9c..." updatedAt="2026-11-23 14:05:12" />
+  ```
+* **Attribute:**
+  * `gmModInfo#modName` (`string`): Interner Mod-Name (`FS25_GlobalMarket`).
+  * `gmModInfo#modVersion` (`string`): `<version>` aus der `modDesc.xml` der geladenen Mod.
+  * `gmModInfo#modHash` (`string`): Datei-Hash des Mod-ZIPs aus dem ModManager der Engine (dieselbe Quelle wie die Mod-Hash-Prüfung beim MP-Beitritt und der Mod-Abgleich im Gebrauchtfahrzeugmarkt). Ein entpackter Mod-Ordner hat keinen Hash und meldet `dev`.
+  * `gmModInfo#updatedAt` (`string`): Lokale Zeit des Schreibens (`YYYY-MM-DD HH:MM:SS`), nur zur Diagnose.
+* **Verwendung im Client:** Der Client liest `modHash` und sendet ihn als `X-Mod-Hash` an das Backend. Fehlt die Datei (Spiel noch nie mit `v0.11.0.21+` gestartet) oder ist sie nicht lesbar, sendet der Client `dev`. Production lehnt `dev` später ab, der Dev-Server akzeptiert es (D-S-Agrarservice/GlobalMarketServer#27).
+* **Dedicated Server:** Der Data-Host ist immer ein Spieler-PC. Sein Hash stammt aus seinem lokalen Mod-ZIP, das dank Mod-Hash-Prüfung beim Beitritt mit dem des Servers identisch ist.
+
+> [!IMPORTANT]
+> Ein selbst gemeldeter Hash ist eine Hürde, kein Beweis: Eine veränderte Mod kann den Originalwert schreiben. Der eigentliche Schutz sind die Plausibilitätsgrenzen im Backend.
 
 ---
 
