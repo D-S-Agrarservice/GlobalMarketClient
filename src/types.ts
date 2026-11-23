@@ -103,6 +103,23 @@ export interface BridgeSnapshot {
   lastError: string | null;
   /** Unix time (seconds) when the temporary Extended mode ends, `null` outside Extended mode. */
   extendedExpiresUnix: number | null;
+  /** Current server notice (maintenance, restart or info; Spec Section 3.1.3). */
+  serverNotice: ServerNotice | null;
+  /** `maintenance` or `unreachable` while the backend is offline. */
+  offlineReason: OfflineReason | null;
+}
+
+export type ServerNoticeType = "maintenance" | "restart" | "info";
+export type OfflineReason = "maintenance" | "unreachable";
+
+/** Server notice from `/api/v1/meta/status` (Spec Section 3.1.3). Times are UTC unix seconds. */
+export interface ServerNotice {
+  id: string;
+  noticeType: ServerNoticeType;
+  startsAt: number | null;
+  endsAt: number | null;
+  /** Optional extra text per language code (`de`, `en`, ...). */
+  message: Record<string, string>;
 }
 
 export interface HeartbeatTickPayload {

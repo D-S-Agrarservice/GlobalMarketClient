@@ -26,6 +26,13 @@ pub enum ApiError {
     ClientIpLocked { retry_after_sec: u64 },
     #[error("Missing or invalid X-Client-Id header for market key")]
     ClientIdRequired,
+    /// `HTTP 503` with code `MAINTENANCE` (Spec Section 3.1.3).
+    #[error("Server maintenance in progress")]
+    Maintenance {
+        notice_id: Option<String>,
+        /// Expected end as UTC unix seconds (`until`, or derived from `Retry-After`).
+        until: Option<u64>,
+    },
     #[error("Internal error: {0}")]
     Internal(String),
 }

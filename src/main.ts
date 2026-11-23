@@ -6,6 +6,7 @@ import { open as openFolderDialog } from "@tauri-apps/plugin-dialog";
 import {
   isPermissionGranted,
   requestPermission,
+  sendNotification,
 } from "@tauri-apps/plugin-notification";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -43,6 +44,7 @@ import {
   OFFICIAL_PROD_BACKEND_URL,
   OPEN_SOURCE_PACKAGES,
   type SavedTokenProfile,
+  type ServerNotice,
   type ThemePreference,
 } from "./types";
 
@@ -65,7 +67,11 @@ interface UiState {
   mockSimulatedOffline: boolean;
   mockLockedMinVersion: boolean;
   mockOptionalUpdate: boolean;
+  /** Simulated maintenance: `0` = none, `1` = announced, `2` = running. */
+  mockNoticeStage: number;
   dismissedOptionalVersion: string | null;
+  /** Server notice id the user dismissed (kept in `localStorage`). */
+  dismissedNoticeId: string | null;
   copiedDiagFeedback: boolean;
   toastMessage: string | null;
   checkingForUpdate: boolean;
@@ -131,6 +137,8 @@ const state: UiState = {
     lastSyncUnix: null,
     lastError: null,
     extendedExpiresUnix: null,
+    serverNotice: null,
+    offlineReason: null,
   },
   logs: [],
   activeModal: "none",
@@ -140,7 +148,9 @@ const state: UiState = {
   mockSimulatedOffline: false,
   mockLockedMinVersion: false,
   mockOptionalUpdate: false,
+  mockNoticeStage: 0,
   dismissedOptionalVersion: null,
+  dismissedNoticeId: loadDismissedNoticeId(),
   copiedDiagFeedback: false,
   toastMessage: null,
   checkingForUpdate: false,
@@ -541,6 +551,159 @@ function getServerRecommendedUpdate(): string | null {
   return isSemverSufficient(state.snapshot.exeVersion, latest) ? null : latest;
 }
 
+// ---- Server notices & maintenance (Spec Section 3.1.3) ----
+
+function loadDismissedNoticeId(): string | null {
+  try {
+    return window.localStorage.getItem("gm.dismissedServerNoticeId");
+  } catch {
+    return null;
+  }
+}
+
+function saveDismissedNoticeId(id: string): void {
+  try {
+    window.localStorage.setItem("gm.dismissedServerNoticeId", id);
+  } catch {
+    // Storage unavailable: the dismissal only lasts for this session.
+  }
+}
+
+function noticeLocaleTag(): string {
+  const locale = getLocale();
+  return locale === "cz" ? "cs" : locale;
+}
+
+function isSameLocalDay(aUnix: number, bUnix: number): boolean {
+  return new Date(aUnix * 1000).toDateString() === new Date(bUnix * 1000).toDateString();
+}
+
+/** Formats UTC unix seconds in local time, with weekday and date unless `timeOnly`. */
+function formatNoticeTime(unix: number, timeOnly = false): string {
+  const opts: Intl.DateTimeFormatOptions = timeOnly
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" };
+  try {
+    return new Date(unix * 1000).toLocaleString(noticeLocaleTag(), opts);
+  } catch {
+    return new Date(unix * 1000).toLocaleString();
+  }
+}
+
+/** End shown to the user: `endsAt`, or `startsAt + 600` for a restart without an end. */
+function noticeDisplayEnd(notice: ServerNotice): number | null {
+  if (notice.endsAt) return notice.endsAt;
+  if (notice.noticeType === "restart" && notice.startsAt) return notice.startsAt + 600;
+  return null;
+}
+
+/** Extra text in the UI language, then English, then any language. */
+function noticeMessage(notice: ServerNotice): string | null {
+  const messages = notice.message ?? {};
+  const locale = getLocale();
+  const candidates = locale === "cz" ? ["cs", "cz", "en"] : [locale, "en"];
+  for (const lang of candidates) {
+    const text = messages[lang]?.trim();
+    if (text) return text;
+  }
+  const first = Object.values(messages).find((v) => v.trim());
+  return first?.trim() ?? null;
+}
+
+function describeServerNotice(notice: ServerNotice): { title: string; desc: string } {
+  const start = notice.startsAt;
+  const end = noticeDisplayEnd(notice);
+  const startText = start ? formatNoticeTime(start) : "";
+  const endText = end ? formatNoticeTime(end, Boolean(start && isSameLocalDay(start, end))) : "";
+  switch (notice.noticeType) {
+    case "maintenance":
+      return {
+        title: t("noticeMaintenanceTitle"),
+        desc: end
+          ? t("noticeMaintenanceDesc", { start: startText, end: endText })
+          : t("noticeMaintenanceDescNoEnd", { start: startText }),
+      };
+    case "restart":
+      return {
+        title: t("noticeRestartTitle"),
+        desc: t("noticeRestartDesc", { start: startText }),
+      };
+    default:
+      return { title: t("noticeInfoTitle"), desc: "" };
+  }
+}
+
+function isMaintenanceActive(): boolean {
+  return (
+    state.snapshot.state === "backendOffline" && state.snapshot.offlineReason === "maintenance"
+  );
+}
+
+function renderServerNoticeBannerHtml(): string {
+  const notice = state.snapshot.serverNotice;
+  const message = notice ? noticeMessage(notice) : null;
+  const messageHtml = message
+    ? `<p class="text-zinc-300 mt-0.5">${escapeHtml(message)}</p>`
+    : "";
+
+  if (isMaintenanceActive()) {
+    const end = notice ? noticeDisplayEnd(notice) : null;
+    const desc = end
+      ? t("noticeMaintenanceActiveDesc", { end: formatNoticeTime(end) })
+      : t("noticeMaintenanceActiveDescNoEnd");
+    return `
+      <div class="rounded-lg border border-sky-500/45 bg-sky-500/10 px-3.5 py-2.5 text-xs">
+        <p class="font-semibold text-sky-300">🛠 ${escapeHtml(t("noticeMaintenanceActiveTitle"))}</p>
+        <p class="text-zinc-300 mt-0.5">${escapeHtml(desc)}</p>
+        ${messageHtml}
+      </div>
+    `;
+  }
+
+  if (!notice || state.dismissedNoticeId === notice.id) return "";
+  const end = noticeDisplayEnd(notice);
+  if (end && Date.now() / 1000 > end) return "";
+
+  const { title, desc } = describeServerNotice(notice);
+  const descHtml = desc ? `<p class="text-zinc-300 mt-0.5">${escapeHtml(desc)}</p>` : "";
+  const icon = notice.noticeType === "info" ? "ℹ" : "🛠";
+  return `
+    <div class="rounded-lg border border-sky-500/45 bg-sky-500/10 px-3.5 py-2.5 text-xs">
+      <div class="flex items-start justify-between gap-3">
+        <div class="min-w-0">
+          <p class="font-semibold text-sky-300">${icon} ${escapeHtml(title)}</p>
+          ${descHtml}
+          ${messageHtml}
+        </div>
+        <button
+          id="btn-dismiss-server-notice"
+          type="button"
+          title="${escapeHtml(t("noticeDismissTitle"))}"
+          class="rounded px-1.5 py-1 text-zinc-400 hover:text-zinc-100 transition cursor-pointer shrink-0"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+/** Toast plus native OS notification (if enabled) for a newly announced server notice. */
+async function announceServerNotice(notice: ServerNotice): Promise<void> {
+  const { title, desc } = describeServerNotice(notice);
+  const message = noticeMessage(notice);
+  const body = [desc, message].filter(Boolean).join(" ");
+  showToast(body ? `${title}: ${body}` : title);
+  if (!state.config.notificationsEnabled) return;
+  try {
+    if (await isPermissionGranted()) {
+      sendNotification({ title: `${getBrandTitle()} – ${title}`, body: body || title });
+    }
+  } catch {
+    // Outside the Tauri runtime or without notification support.
+  }
+}
+
 function syncDocumentTitle(): void {
   const suffix = state.info.isBeta ? " (Beta)" : "";
   document.title = `${getBrandTitle()} – D-S-Agrarservice${suffix}`;
@@ -596,6 +759,13 @@ function getConnectionVisuals(conn: BridgeConnectionState): {
       };
     case "backendOffline":
     default:
+      if (isMaintenanceActive()) {
+        return {
+          label: t("stateMaintenance"),
+          dotClass: "bg-sky-400 animate-pulse",
+          pillClass: "border-sky-500/40 bg-sky-500/10 text-sky-300",
+        };
+      }
       return {
         label: t("stateBackendOffline"),
         dotClass: "bg-red-500",
@@ -1114,6 +1284,23 @@ function renderDashboardHtml(): string {
             >
               🔔 ${escapeHtml(state.mockOptionalUpdate ? t("mockBtnOptVerOff") : t("mockBtnOptVerOn"))}
             </button>
+            <button
+              id="btn-mock-notice"
+              type="button"
+              class="rounded border px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
+                state.mockNoticeStage > 0
+                  ? "bg-sky-500 text-zinc-950 border-sky-300 font-semibold"
+                  : "bg-zinc-800 border-zinc-700 text-zinc-300 hover:border-zinc-500"
+              }"
+            >
+              🛠 ${escapeHtml(
+                state.mockNoticeStage === 0
+                  ? t("mockBtnNoticeAnnounce")
+                  : state.mockNoticeStage === 1
+                    ? t("mockBtnNoticeStart")
+                    : t("mockBtnNoticeClear"),
+              )}
+            </button>
             <select
               id="sel-mock-tier"
               aria-label="Mock Branding Tier"
@@ -1361,6 +1548,8 @@ function renderDashboardHtml(): string {
     </header>
 
     ${outdatedBannerHtml}
+
+    ${renderServerNoticeBannerHtml()}
 
     <!-- Farming Simulator Path & Market Counters Card -->
     <section class="rounded-lg border border-zinc-800 bg-[#252528] p-3 space-y-2 shrink-0">
@@ -2583,6 +2772,17 @@ function bindDashboardEvents(): void {
       }
     });
 
+  document
+    .querySelector<HTMLButtonElement>("#btn-dismiss-server-notice")
+    ?.addEventListener("click", () => {
+      const id = state.snapshot.serverNotice?.id;
+      if (id) {
+        state.dismissedNoticeId = id;
+        saveDismissedNoticeId(id);
+        renderDashboardOnly();
+      }
+    });
+
   const switchDevEnvironment = async (
     nextMode: BackendMode,
     nextUrl?: string,
@@ -2710,6 +2910,18 @@ function bindDashboardEvents(): void {
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
+  document
+    .querySelector<HTMLButtonElement>("#btn-mock-notice")
+    ?.addEventListener("click", async () => {
+      state.mockNoticeStage = (state.mockNoticeStage + 1) % 3;
+      renderDashboardOnly();
+      try {
+        await invoke("mock_set_server_notice_stage", { stage: state.mockNoticeStage });
       } catch (err) {
         showToast(String(err));
       }
@@ -3217,6 +3429,10 @@ async function bootstrap(): Promise<void> {
 
     await listen<LogEntry>("bridge://log", (event) => {
       appendLogInPlace(event.payload);
+    });
+
+    await listen<ServerNotice>("bridge://server-notice", (event) => {
+      void announceServerNotice(event.payload);
     });
 
     await listen<GreatDemandNotification>("bridge://great-demand", (event) => {

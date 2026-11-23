@@ -8,7 +8,7 @@
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto,
-    OnlineDirectOfferDto, ServerHandshake, TransactionRequest, TransactionType,
+    OnlineDirectOfferDto, ServerHandshake, ServerNotice, TransactionRequest, TransactionType,
     WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
@@ -53,6 +53,10 @@ struct MockState {
     simulated_contracts_supported: bool,
     simulated_min_version: String,
     simulated_latest_version: Option<String>,
+    /// Simulated maintenance notice (Spec Section 3.1.3), `None` = no notice.
+    simulated_notice: Option<ServerNotice>,
+    /// Answer the status check with `503 MAINTENANCE` while `true`.
+    simulate_maintenance: bool,
     simulated_branding_tier: u8,
     simulated_private_market_name: String,
     simulated_logo_url: Option<String>,
@@ -146,6 +150,8 @@ impl Default for MockState {
             simulated_contracts_supported: true,
             simulated_min_version: "0.9.12".to_string(),
             simulated_latest_version: None,
+            simulated_notice: None,
+            simulate_maintenance: false,
             simulated_branding_tier: 0,
             simulated_private_market_name: DEFAULT_MOCK_PRIVATE_MARKET_NAME.to_string(),
             simulated_logo_url: None,
@@ -201,6 +207,50 @@ impl LocalMockBackend {
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty());
         }
+    }
+
+    /// Steps the simulated maintenance (Spec Section 3.1.3): `0` = none, `1` = maintenance announced
+    /// (starts in 15 min, lasts 60 min), `2` = maintenance running (`503 MAINTENANCE`).
+    /// Returns the notice that is now active.
+    pub fn set_simulated_notice_stage(&self, stage: u8) -> Option<ServerNotice> {
+        let Ok(mut guard) = self.state.lock() else {
+            return None;
+        };
+        let now = unix_now_secs();
+        match stage {
+            0 => {
+                guard.simulated_notice = None;
+                guard.simulate_maintenance = false;
+            }
+            1 => {
+                let message = BTreeMap::from([
+                    ("de".to_string(), "Simulierte Wartung (Mock)".to_string()),
+                    ("en".to_string(), "Simulated maintenance (Mock)".to_string()),
+                ]);
+                guard.simulated_notice = Some(ServerNotice {
+                    id: format!("mock-maintenance-{now}"),
+                    notice_type: "maintenance".to_string(),
+                    starts_at: Some(now + 900),
+                    ends_at: Some(now + 900 + 3600),
+                    message,
+                });
+                guard.simulate_maintenance = false;
+            }
+            _ => {
+                let mut notice = guard.simulated_notice.take().unwrap_or_else(|| ServerNotice {
+                    id: format!("mock-maintenance-{now}"),
+                    notice_type: "maintenance".to_string(),
+                    starts_at: None,
+                    ends_at: None,
+                    message: BTreeMap::new(),
+                });
+                notice.starts_at = Some(now);
+                notice.ends_at = Some(now + 3600);
+                guard.simulated_notice = Some(notice);
+                guard.simulate_maintenance = true;
+            }
+        }
+        guard.simulated_notice.clone()
     }
 
     /// Set or clear a simulated Community Logo (`data:image/...;base64,...` + raw image bytes) in Mock mode.
@@ -701,6 +751,13 @@ impl BackendService for LocalMockBackend {
                 "Simulated connection outage (Mock mode)".to_string(),
             ));
         }
+        if guard.simulate_maintenance {
+            let notice = guard.simulated_notice.as_ref();
+            return Err(ApiError::Maintenance {
+                notice_id: notice.map(|n| n.id.clone()),
+                until: notice.and_then(|n| n.ends_at),
+            });
+        }
 
         let tier = guard.simulated_branding_tier.min(3);
         let is_private_market = matches!(tier, 2 | 3);
@@ -726,6 +783,7 @@ impl BackendService for LocalMockBackend {
             is_private_market,
             market_logo_url,
             contracts_supported: guard.simulated_contracts_supported,
+            notice: guard.simulated_notice.clone(),
         })
     }
 
@@ -1497,4 +1555,8 @@ fn now_unix_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn unix_now_secs() -> u64 {
+    now_unix_secs().max(0) as u64
 }

@@ -394,6 +394,27 @@ export function formatLogEntryMessage(entry: LogEntry): string {
   if (vars.tier) {
     vars.tier = formatAccessTierName(vars.tier);
   }
+  // Server notice times arrive as UTC unix seconds (`startUnix` / `endUnix`) and show in local time.
+  for (const [unixKey, target] of [
+    ["startUnix", "start"],
+    ["endUnix", "end"],
+  ] as const) {
+    const secs = Number(vars[unixKey]);
+    if (vars[unixKey] && Number.isFinite(secs) && secs > 0) {
+      const locale = activeLocale === "cz" ? "cs" : activeLocale;
+      try {
+        vars[target] = new Date(secs * 1000).toLocaleString(locale, {
+          weekday: "short",
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+      } catch {
+        vars[target] = new Date(secs * 1000).toLocaleString();
+      }
+    }
+  }
   if (vars.market) {
     const mLower = vars.market.trim().toLowerCase();
     if (

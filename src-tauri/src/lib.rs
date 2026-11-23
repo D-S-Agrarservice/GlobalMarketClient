@@ -100,6 +100,7 @@ pub fn run() {
             commands::mock_set_offline,
             commands::mock_set_min_version,
             commands::mock_set_latest_version,
+            commands::mock_set_server_notice_stage,
             commands::mock_set_community_logo,
             commands::mock_set_branding_tier,
             commands::mock_simulate_contract_activity,

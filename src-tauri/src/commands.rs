@@ -176,6 +176,11 @@ pub fn mock_set_latest_version(latest_version: Option<String>, bridge: State<'_,
 }
 
 #[tauri::command]
+pub fn mock_set_server_notice_stage(stage: u8, bridge: State<'_, BridgeManager>) {
+    bridge.mock_set_server_notice_stage(stage);
+}
+
+#[tauri::command]
 pub fn mock_set_community_logo(
     path: Option<String>,
     bridge: State<'_, BridgeManager>,

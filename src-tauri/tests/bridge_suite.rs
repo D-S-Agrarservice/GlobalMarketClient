@@ -1,17 +1,21 @@
 //! Comprehensive integration & unit test suite for the FS25 GlobalMarket Rust Core (Phases 2–4 & 3.5).
 
 use globalmarket_client_lib::api::fastapi::{
-    derive_handshake_branding, resolve_safe_logo_url, FastApiBackend,
+    derive_handshake_branding, parse_maintenance_error, resolve_safe_logo_url, FastApiBackend,
 };
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
-    TransactionRequest, TransactionType, WhitelistItemDto, WhitelistSyncRequest,
+    ServerNotice, TransactionRequest, TransactionType, WhitelistItemDto, WhitelistSyncRequest,
 };
 use globalmarket_client_lib::api::{ApiError, BackendService};
 use globalmarket_client_lib::bridge::coordinator::{
-    encode_base64, BridgeConnectionState, BridgeManager,
+    encode_base64, format_unix_utc, BridgeConnectionState, BridgeManager,
+};
+use globalmarket_client_lib::bridge::notice::{
+    classify_outage, message_languages, notice_for_maintenance_error, OfflineReason,
+    StoredServerNotice,
 };
 use globalmarket_client_lib::bridge::dds::{
     convert_logo_bytes_to_dds_bytes, decode_dds_to_rgba8, default_dsa_logo_rel_path,
@@ -24,9 +28,11 @@ use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
     sanitize_market_name, write_contract_data_xml, write_heartbeat_xml,
     write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest,
-    write_heartbeat_xml_with_market_profiles, write_market_data_xml,
-    write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatMarketProfile,
-    HeartbeatMarketProfiles, IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_RETAINED_MARKET_SYNC_FILES,
+    write_heartbeat_xml_with_extras, write_heartbeat_xml_with_market_profiles,
+    write_market_data_xml, write_market_data_xml_with_branding, HeartbeatBranding,
+    HeartbeatExtras, HeartbeatMarketProfile, HeartbeatMarketProfiles, HeartbeatNotice,
+    IncomingPacket, MAX_MARKET_NAME_BYTES, MAX_NOTICE_MESSAGE_BYTES,
+    MAX_RETAINED_MARKET_SYNC_FILES,
 };
 use globalmarket_client_lib::config::vault::{
     compute_token_profile_id, seal_vault_bytes, unseal_vault_bytes, TokenVault,
@@ -592,6 +598,14 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         last_sync_unix: Some(1_729_512_000),
         last_error: None,
         extended_expires_unix: None,
+        server_notice: Some(ServerNotice {
+            id: "2025-12-01-maintenance".to_string(),
+            notice_type: "maintenance".to_string(),
+            starts_at: Some(1_764_621_000),
+            ends_at: Some(1_764_624_600),
+            message: Default::default(),
+        }),
+        offline_reason: Some("maintenance".to_string()),
     };
 
     let cfg = AppConfig {
@@ -627,6 +641,9 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
     assert!(report.contains("game_edition: \"FS25\""));
     assert!(report.contains("tier=developer"));
     assert!(report.contains("approved=10, pending=2, rejected=0"));
+    assert!(report.contains(
+        "server_notice: \"id=2025-12-01-maintenance, type=maintenance, starts=2025-12-01 20:30 UTC, ends=2025-12-01 21:30 UTC, offline_reason=maintenance\""
+    ));
     if env::var("USERPROFILE").is_ok() {
         assert!(
             !report.contains(&user_profile),
@@ -3316,4 +3333,445 @@ fn all_16_locale_files_have_100_percent_key_and_placeholder_parity() {
             }
         }
     }
+}
+
+// ---- Server notices & maintenance (Spec Section 3.1.3) ----
+
+fn test_notice(notice_type: &str, starts_at: Option<u64>, ends_at: Option<u64>) -> ServerNotice {
+    ServerNotice {
+        id: "n-1".to_string(),
+        notice_type: notice_type.to_string(),
+        starts_at,
+        ends_at,
+        message: Default::default(),
+    }
+}
+
+#[test]
+fn server_notice_wire_parsing_is_lenient_and_windows_are_correct() {
+    let parsed = ServerNotice::from_wire(&serde_json::json!({
+        "id": "  2026-12-01-maintenance ",
+        "type": "MAINTENANCE",
+        "starts_at": 1_764_621_000u64,
+        "ends_at": 1_764_624_600u64,
+        "message": { "DE": "  Datenbank-Umzug ", "en": "Database migration", "fr": "" }
+    }))
+    .expect("valid notice");
+    assert_eq!(parsed.id, "2026-12-01-maintenance");
+    assert_eq!(parsed.notice_type, "maintenance");
+    assert_eq!(parsed.starts_at, Some(1_764_621_000));
+    assert_eq!(parsed.ends_at, Some(1_764_624_600));
+    assert_eq!(parsed.message.get("de").map(String::as_str), Some("Datenbank-Umzug"));
+    assert!(!parsed.message.contains_key("fr"), "empty texts are dropped");
+
+    // Unknown types and downtime notices without a start degrade to `info`.
+    let unknown = ServerNotice::from_wire(&serde_json::json!({ "id": "x", "type": "party" })).unwrap();
+    assert_eq!(unknown.notice_type, "info");
+    let no_start =
+        ServerNotice::from_wire(&serde_json::json!({ "id": "x", "type": "restart" })).unwrap();
+    assert_eq!(no_start.notice_type, "info");
+    // An end before the start is ignored.
+    let bad_end = ServerNotice::from_wire(&serde_json::json!({
+        "id": "x", "type": "maintenance", "starts_at": 2000, "ends_at": 1000
+    }))
+    .unwrap();
+    assert_eq!(bad_end.ends_at, None);
+    // Missing id or a non-object notice is rejected.
+    assert!(ServerNotice::from_wire(&serde_json::json!({ "type": "info" })).is_none());
+    assert!(ServerNotice::from_wire(&serde_json::json!({ "id": "   " })).is_none());
+    assert!(ServerNotice::from_wire(&serde_json::json!("maintenance")).is_none());
+    let long_id = ServerNotice::from_wire(&serde_json::json!({ "id": "a".repeat(200) })).unwrap();
+    assert_eq!(long_id.id.len(), 64);
+
+    // Restart without end lasts 600 s; outages count from 300 s before the start until 1800 s after the end.
+    let restart = test_notice("restart", Some(10_000), None);
+    assert_eq!(restart.display_end(), Some(10_600));
+    assert!(!restart.covers_outage_at(9_699));
+    assert!(restart.covers_outage_at(9_700));
+    assert!(restart.covers_outage_at(12_400));
+    assert!(!restart.covers_outage_at(12_401));
+    assert!(restart.is_expired(12_401));
+
+    // Open-ended maintenance shows no end but still expires after the 6 h fallback.
+    let open = test_notice("maintenance", Some(10_000), None);
+    assert_eq!(open.display_end(), None);
+    assert!(open.covers_outage_at(10_000 + 6 * 3600));
+    assert!(!open.covers_outage_at(10_000 + 6 * 3600 + 1801));
+
+    // Info notices never cover an outage and only expire with an explicit end.
+    let info = test_notice("info", None, None);
+    assert!(!info.covers_outage_at(10_000));
+    assert!(!info.is_expired(u64::MAX / 2));
+
+    let mut texts = test_notice("info", None, None);
+    texts.message.insert("cs".to_string(), "Údržba".to_string());
+    texts.message.insert("en".to_string(), "Maintenance".to_string());
+    assert_eq!(texts.message_for(&["cs"]).as_deref(), Some("Údržba"));
+    assert_eq!(texts.message_for(&["de"]).as_deref(), Some("Maintenance"));
+    assert_eq!(
+        message_languages(Some("CZ"), "de"),
+        vec!["cs".to_string(), "cz".to_string(), "de".to_string()]
+    );
+    assert_eq!(message_languages(None, "en"), vec!["en".to_string()]);
+
+    assert_eq!(format_unix_utc(0), "1970-01-01 00:00 UTC");
+    assert_eq!(format_unix_utc(951_782_400), "2000-02-29 00:00 UTC");
+    assert_eq!(format_unix_utc(1_764_621_000), "2025-12-01 20:30 UTC");
+    assert_eq!(format_unix_utc(4_102_444_799), "2099-12-31 23:59 UTC");
+}
+
+#[test]
+fn maintenance_errors_are_classified_and_merged_into_notices() {
+    let detail = serde_json::json!({
+        "detail": { "code": "MAINTENANCE", "notice_id": "n-1", "until": 20_000 }
+    });
+    match parse_maintenance_error(&detail, Some(60)) {
+        Some(ApiError::Maintenance { notice_id, until }) => {
+            assert_eq!(notice_id.as_deref(), Some("n-1"));
+            assert_eq!(until, Some(20_000), "explicit `until` wins over Retry-After");
+        }
+        other => panic!("expected Maintenance, got {other:?}"),
+    }
+    match parse_maintenance_error(&serde_json::json!({ "detail": "maintenance" }), Some(120)) {
+        Some(ApiError::Maintenance {
+            notice_id: None,
+            until: Some(until),
+        }) => {
+            assert!(until > 1_700_000_000, "Retry-After is converted to an absolute time");
+        }
+        other => panic!("expected Maintenance from Retry-After, got {other:?}"),
+    }
+    assert!(
+        parse_maintenance_error(&serde_json::json!({ "detail": { "code": "OTHER" } }), None)
+            .is_none()
+    );
+
+    let window = test_notice("maintenance", Some(10_000), Some(13_600));
+    let maintenance = ApiError::Maintenance {
+        notice_id: None,
+        until: None,
+    };
+    let network = ApiError::Network("connection refused".to_string());
+    assert_eq!(classify_outage(&maintenance, None, 1), Some(OfflineReason::Maintenance));
+    assert_eq!(
+        classify_outage(&network, Some(&window), 11_000),
+        Some(OfflineReason::Maintenance)
+    );
+    assert_eq!(
+        classify_outage(&network, Some(&window), 5_000),
+        Some(OfflineReason::Unreachable)
+    );
+    assert_eq!(classify_outage(&network, None, 11_000), Some(OfflineReason::Unreachable));
+    assert_eq!(classify_outage(&ApiError::Unauthorized, Some(&window), 11_000), None);
+    assert_eq!(OfflineReason::Maintenance.as_str(), "maintenance");
+
+    // A matching announced notice is kept and gets the newer end.
+    let merged = notice_for_maintenance_error(Some(&window), Some("n-1"), Some(15_000), 11_000);
+    assert_eq!(
+        (merged.id.as_str(), merged.starts_at, merged.ends_at),
+        ("n-1", Some(10_000), Some(15_000))
+    );
+    // Without `until` the announced end stays.
+    let kept = notice_for_maintenance_error(Some(&window), None, None, 11_000);
+    assert_eq!(kept.ends_at, Some(13_600));
+    // Another id or no known notice creates a maintenance notice that starts now.
+    let other = notice_for_maintenance_error(Some(&window), Some("n-2"), Some(15_000), 11_000);
+    assert_eq!(
+        (other.id.as_str(), other.starts_at, other.ends_at),
+        ("n-2", Some(11_000), Some(15_000))
+    );
+    let synthetic = notice_for_maintenance_error(None, None, Some(15_000), 11_000);
+    assert_eq!(synthetic.id, "maintenance-15000");
+    assert_eq!(synthetic.notice_type, "maintenance");
+    // An `until` in the past is ignored.
+    let past = notice_for_maintenance_error(None, None, Some(100), 11_000);
+    assert_eq!(past.ends_at, None);
+}
+
+#[test]
+fn heartbeat_xml_writes_server_notice_and_offline_reason() {
+    let dir = env::temp_dir().join(format!("gm_hb_notice_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let staging = dir.join(".staging");
+    let online = dir.join("globalMarketOnline.xml");
+    fs::create_dir_all(&staging).unwrap();
+
+    let long_text = format!("Wartung <DB> & \"Umzug\" {}", "ä".repeat(100));
+    let notice = HeartbeatNotice {
+        id: "2026-12-01-maintenance".to_string(),
+        notice_type: "maintenance".to_string(),
+        starts_at: Some(1_764_621_000),
+        ends_at: Some(1_764_624_600),
+        message: Some(long_text),
+    };
+    let write = |connected: bool, notice: Option<&HeartbeatNotice>, reason: Option<&str>| {
+        write_heartbeat_xml_with_extras(
+            &staging,
+            &online,
+            connected,
+            "0.9.16",
+            "0.9.10",
+            None,
+            None,
+            false,
+            HeartbeatExtras {
+                market_profiles: None,
+                server_notice: notice,
+                offline_reason: reason,
+            },
+        )
+        .unwrap();
+        fs::read_to_string(&online).unwrap()
+    };
+
+    let online_xml = write(true, Some(&notice), Some("maintenance"));
+    assert!(
+        !heartbeat_root(&online_xml).contains("offlineReason"),
+        "no reason while connected"
+    );
+    let line = online_xml
+        .lines()
+        .find(|l| l.contains("<serverNotice"))
+        .expect("serverNotice line");
+    assert!(line.starts_with(
+        "    <serverNotice id=\"2026-12-01-maintenance\" type=\"maintenance\" startsAt=\"1764621000\" endsAt=\"1764624600\" message=\"Wartung &lt;DB&gt; &amp; &quot;Umzug&quot; "
+    ));
+    assert!(line.ends_with(" />"));
+    let raw_message = line
+        .split("message=\"")
+        .nth(1)
+        .unwrap()
+        .trim_end_matches("\" />");
+    let unescaped = raw_message
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&");
+    assert!(
+        unescaped.len() <= MAX_NOTICE_MESSAGE_BYTES,
+        "message is capped at 120 UTF-8 bytes"
+    );
+    assert!(unescaped.ends_with('ä'), "truncation keeps whole UTF-8 characters");
+    assert!(online_xml.find("<serverNotice").unwrap() > online_xml.find("<minVersion>").unwrap());
+
+    let offline_xml = write(false, Some(&notice), Some("maintenance"));
+    let root = heartbeat_root(&offline_xml);
+    assert!(root.contains("isConnected=\"false\""));
+    assert!(root.contains("offlineReason=\"maintenance\""));
+    assert!(
+        offline_xml.contains("<serverNotice id=\"2026-12-01-maintenance\""),
+        "notice stays while offline"
+    );
+
+    let unreachable_xml = write(false, None, Some("unreachable"));
+    assert!(heartbeat_root(&unreachable_xml).contains("offlineReason=\"unreachable\""));
+    assert!(!unreachable_xml.contains("<serverNotice"));
+
+    let unknown_reason_xml = write(false, None, Some("banana"));
+    assert!(!unknown_reason_xml.contains("offlineReason"));
+
+    let info = HeartbeatNotice {
+        id: "info-1".to_string(),
+        notice_type: "something-new".to_string(),
+        starts_at: None,
+        ends_at: None,
+        message: None,
+    };
+    let info_xml = write(true, Some(&info), None);
+    assert!(info_xml.contains("    <serverNotice id=\"info-1\" type=\"info\" />\n"));
+
+    let no_id = HeartbeatNotice {
+        id: "  ".to_string(),
+        ..info
+    };
+    assert!(!write(true, Some(&no_id), None).contains("<serverNotice"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stored_server_notice_persists_and_drops_expired_notices() {
+    let dir = env::temp_dir().join(format!("gm_notice_store_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = StoredServerNotice::path_for_config(&dir.join("settings.json"));
+    assert_eq!(path.file_name().unwrap(), "server_notice.json");
+
+    assert_eq!(StoredServerNotice::load(&path, 0), StoredServerNotice::default());
+
+    let stored = StoredServerNotice {
+        notice: Some(test_notice("maintenance", Some(10_000), Some(13_600))),
+        notified_id: Some("n-1".to_string()),
+    };
+    stored.save(&path).unwrap();
+    assert_eq!(StoredServerNotice::load(&path, 12_000), stored);
+
+    let expired = StoredServerNotice::load(&path, 13_600 + 1801);
+    assert_eq!(expired.notice, None, "expired notices are dropped on load");
+    assert_eq!(expired.notified_id.as_deref(), Some("n-1"), "the announced id is kept");
+
+    fs::write(&path, "not json").unwrap();
+    assert_eq!(StoredServerNotice::load(&path, 0), StoredServerNotice::default());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fastapi_parses_status_notice_and_503_maintenance() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_thread = thread::spawn(move || {
+        let responses = [
+            (
+                "200 OK",
+                r#"{"online":true,"min_exe_version":"0.9.9","market_name":"Global Market","notice":{"id":"n-7","type":"restart","starts_at":1764621000,"message":{"en":"Kernel update"}}}"#,
+                "",
+            ),
+            (
+                "200 OK",
+                r#"{"online":true,"min_exe_version":"0.9.9","market_name":"Global Market","notice":{"type":"broken"}}"#,
+                "",
+            ),
+            (
+                "503 Service Unavailable",
+                r#"{"detail":{"code":"MAINTENANCE","notice_id":"n-7","until":1764624600}}"#,
+                "Retry-After: 600\r\n",
+            ),
+            ("503 Service Unavailable", "<html>Bad Gateway</html>", ""),
+        ];
+        for (status, body, extra_headers) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            drop(reader);
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    let backend = FastApiBackend::new(
+        format!("http://{addr}"),
+        None,
+        "a1b2c3d4e5f60718".to_string(),
+    )
+    .expect("client");
+
+    let hs = backend.check_status().expect("status with notice");
+    let notice = hs.notice.expect("notice parsed");
+    assert_eq!(notice.id, "n-7");
+    assert_eq!(notice.notice_type, "restart");
+    assert_eq!(notice.display_end(), Some(1_764_621_600));
+    assert_eq!(notice.message_for(&[]).as_deref(), Some("Kernel update"));
+
+    let hs_broken = backend
+        .check_status()
+        .expect("malformed notice must not fail the handshake");
+    assert!(hs_broken.notice.is_none());
+
+    match backend.check_status() {
+        Err(ApiError::Maintenance { notice_id, until }) => {
+            assert_eq!(notice_id.as_deref(), Some("n-7"));
+            assert_eq!(until, Some(1_764_624_600));
+        }
+        other => panic!("expected Maintenance, got {other:?}"),
+    }
+
+    match backend.check_status() {
+        Err(ApiError::Network(msg)) => assert!(msg.contains("503")),
+        other => panic!("plain 503 must stay a network error, got {other:?}"),
+    }
+
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn mock_maintenance_flow_updates_heartbeat_snapshot_and_logs_end_to_end() {
+    let test_dir = env::temp_dir().join(format!("fs25_gm_notice_e2e_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&test_dir);
+    let profile_dir = test_dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+
+    let config_file = test_dir.join("config").join("settings.json");
+    AppConfig {
+        access_tier: AccessTier::Developer,
+        backend_mode: BackendMode::Mock,
+        language: "en".to_string(),
+        fs25_profile_path: Some(profile_dir.to_string_lossy().into_owned()),
+        ..AppConfig::default()
+    }
+    .save_to_file(&config_file)
+    .unwrap();
+
+    let manager = BridgeManager::new(config_file.clone(), None);
+    let online_file = profile_dir
+        .join("modSettings")
+        .join("FS25_GlobalMarket")
+        .join("globalMarketOnline.xml");
+    let wait_for = |what: &str, pred: &dyn Fn(&str) -> bool| -> String {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let xml = fs::read_to_string(&online_file).unwrap_or_default();
+            if pred(&xml) {
+                return xml;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; last heartbeat:\n{xml}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+    };
+
+    wait_for("online heartbeat", &|xml| xml.contains("isConnected=\"true\""));
+
+    // 1. Maintenance announced: notice in heartbeat and snapshot, still online.
+    manager.mock_set_server_notice_stage(1);
+    let announced = wait_for("serverNotice", &|xml| xml.contains("<serverNotice"));
+    assert!(heartbeat_root(&announced).contains("isConnected=\"true\""));
+    assert!(announced.contains("type=\"maintenance\""));
+    assert!(announced.contains("message=\"Simulated maintenance (Mock)\""));
+    let snap = manager.get_snapshot();
+    let notice_id = snap.server_notice.as_ref().expect("snapshot notice").id.clone();
+    assert_eq!(snap.offline_reason, None);
+    let stored = StoredServerNotice::load(&StoredServerNotice::path_for_config(&config_file), 0);
+    assert_eq!(stored.notified_id.as_deref(), Some(notice_id.as_str()));
+
+    // 2. Maintenance running: offline with reason, notice kept.
+    manager.mock_set_server_notice_stage(2);
+    let running = wait_for("offlineReason", &|xml| {
+        xml.contains("offlineReason=\"maintenance\"")
+    });
+    assert!(heartbeat_root(&running).contains("isConnected=\"false\""));
+    assert!(running.contains(&format!("<serverNotice id=\"{notice_id}\"")));
+    let snap = manager.get_snapshot();
+    assert_eq!(snap.state, BridgeConnectionState::BackendOffline);
+    assert_eq!(snap.offline_reason.as_deref(), Some("maintenance"));
+
+    // 3. Maintenance over: back online, notice and reason gone.
+    manager.mock_set_server_notice_stage(0);
+    let restored = wait_for("reconnect", &|xml| {
+        xml.contains("isConnected=\"true\"") && !xml.contains("<serverNotice")
+    });
+    assert!(!restored.contains("offlineReason"));
+    let snap = manager.get_snapshot();
+    assert_eq!(snap.server_notice, None);
+    assert_eq!(snap.offline_reason, None);
+
+    let logs = manager.get_logs();
+    let count = |key: &str| logs.iter().filter(|l| l.key.as_deref() == Some(key)).count();
+    assert_eq!(count("logServerNoticeMaintenance"), 1, "a notice is announced once per id");
+    assert_eq!(count("logServerMaintenanceActive"), 1, "maintenance start is logged once");
+
+    manager.shutdown();
+    let _ = fs::remove_dir_all(&test_dir);
 }

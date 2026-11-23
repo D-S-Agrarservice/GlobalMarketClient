@@ -130,6 +130,151 @@ pub struct ServerHandshake {
     /// Capability gate for Stage 2 cross-server Supply Contracts & Direct Offers (`#25`).
     #[serde(default)]
     pub contracts_supported: bool,
+    /// Optional maintenance / restart / info notice (Spec Section 3.1.3).
+    #[serde(default)]
+    pub notice: Option<ServerNotice>,
+}
+
+/// Assumed duration of a `restart` notice without `ends_at`.
+pub const NOTICE_RESTART_DEFAULT_SECS: u64 = 600;
+/// Assumed duration of a `maintenance` notice without `ends_at`, used only to expire it.
+pub const NOTICE_MAINTENANCE_FALLBACK_SECS: u64 = 6 * 3600;
+/// A downtime notice stays relevant this long after its (expected) end.
+pub const NOTICE_EXPIRY_GRACE_SECS: u64 = 1800;
+/// Outages this long before `starts_at` already count as the announced downtime.
+pub const NOTICE_WINDOW_LEAD_SECS: u64 = 300;
+const NOTICE_MAX_ID_CHARS: usize = 64;
+const NOTICE_MAX_MESSAGE_CHARS: usize = 500;
+const NOTICE_MAX_MESSAGES: usize = 32;
+
+/// Server notice from `GET /api/v1/meta/status` (`notice`, Spec Section 3.1.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerNotice {
+    /// Stable id; client and mod announce each id only once.
+    pub id: String,
+    /// `maintenance`, `restart` or `info` (unknown backend types are stored as `info`).
+    pub notice_type: String,
+    /// Start as UTC unix seconds (always set for `maintenance` / `restart`).
+    #[serde(default)]
+    pub starts_at: Option<u64>,
+    /// Expected end as UTC unix seconds, as sent by the backend.
+    #[serde(default)]
+    pub ends_at: Option<u64>,
+    /// Optional short extra text per language code (`de`, `en`, ...).
+    #[serde(default)]
+    pub message: std::collections::BTreeMap<String, String>,
+}
+
+impl ServerNotice {
+    /// Parses the backend `notice` object leniently. Returns `None` for missing or invalid notices, so a
+    /// malformed notice never breaks the status handshake.
+    pub fn from_wire(value: &serde_json::Value) -> Option<Self> {
+        let obj = value.as_object()?;
+        let id: String = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(NOTICE_MAX_ID_CHARS)
+            .collect();
+        let starts_at = obj.get("starts_at").and_then(wire_unix_secs);
+        let ends_at = obj
+            .get("ends_at")
+            .and_then(wire_unix_secs)
+            .filter(|end| starts_at.map_or(true, |start| *end >= start));
+        let raw_type = obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        // Downtime notices without a start are useless for planning, so they degrade to plain info.
+        let notice_type = match raw_type.as_str() {
+            "maintenance" | "restart" if starts_at.is_some() => raw_type,
+            _ => "info".to_string(),
+        };
+        let message = obj
+            .get("message")
+            .and_then(|v| v.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(lang, text)| {
+                        let lang = lang.trim().to_ascii_lowercase();
+                        let text: String = text
+                            .as_str()?
+                            .trim()
+                            .chars()
+                            .take(NOTICE_MAX_MESSAGE_CHARS)
+                            .collect();
+                        (!lang.is_empty() && !text.is_empty()).then_some((lang, text))
+                    })
+                    .take(NOTICE_MAX_MESSAGES)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Self {
+            id,
+            notice_type,
+            starts_at,
+            ends_at,
+            message,
+        })
+    }
+
+    /// `true` for `maintenance` and `restart`, which announce a downtime.
+    pub fn is_downtime(&self) -> bool {
+        matches!(self.notice_type.as_str(), "maintenance" | "restart")
+    }
+
+    /// End shown to players: `ends_at`, or `starts_at + 600` for a `restart` without an end.
+    pub fn display_end(&self) -> Option<u64> {
+        self.ends_at.or_else(|| match self.notice_type.as_str() {
+            "restart" => self.starts_at.map(|s| s + NOTICE_RESTART_DEFAULT_SECS),
+            _ => None,
+        })
+    }
+
+    /// End used for expiry; an open-ended `maintenance` expires after a fallback duration.
+    fn expiry_end(&self) -> Option<u64> {
+        self.display_end().or_else(|| match self.notice_type.as_str() {
+            "maintenance" => self.starts_at.map(|s| s + NOTICE_MAINTENANCE_FALLBACK_SECS),
+            _ => None,
+        })
+    }
+
+    /// `true` once the notice is no longer relevant (end plus grace period passed).
+    pub fn is_expired(&self, now_unix: u64) -> bool {
+        self.expiry_end()
+            .is_some_and(|end| now_unix > end + NOTICE_EXPIRY_GRACE_SECS)
+    }
+
+    /// `true` while an outage at `now_unix` falls into this announced downtime window.
+    pub fn covers_outage_at(&self, now_unix: u64) -> bool {
+        self.is_downtime()
+            && self
+                .starts_at
+                .is_some_and(|start| now_unix + NOTICE_WINDOW_LEAD_SECS >= start)
+            && !self.is_expired(now_unix)
+    }
+
+    /// Extra text in the first available language of `langs`, then English, then any language.
+    pub fn message_for(&self, langs: &[&str]) -> Option<String> {
+        langs
+            .iter()
+            .map(|l| l.trim().to_ascii_lowercase())
+            .chain(std::iter::once("en".to_string()))
+            .find_map(|l| self.message.get(&l).cloned())
+            .or_else(|| self.message.values().next().cloned())
+    }
+}
+
+fn wire_unix_secs(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64))
+        .filter(|secs| *secs > 0)
 }
 
 /// Outgoing Stage 2 contract & direct-offer action types (`write/contractAction_*.xml` -> `POST /api/v1/contracts/actions`).

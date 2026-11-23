@@ -91,6 +91,12 @@ impl HeartbeatBranding {
 /// while truncating on a valid UTF-8 codepoint boundary (`<= 48` UTF-8 bytes) so Lua `string.sub(1, 48)`
 /// can never split multi-byte characters (such as German umlauts).
 pub fn sanitize_market_name(raw: &str) -> Option<String> {
+    sanitize_xml_text(raw, MAX_MARKET_NAME_BYTES)
+}
+
+/// Removes control characters, collapses whitespace and truncates to `max_bytes` UTF-8 bytes on a
+/// codepoint boundary (shared by `marketName`, profile labels and the server notice `message`).
+pub fn sanitize_xml_text(raw: &str, max_bytes: usize) -> Option<String> {
     let without_ctrl: String = raw
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -102,8 +108,8 @@ pub fn sanitize_market_name(raw: &str) -> Option<String> {
     if collapsed.is_empty() {
         return None;
     }
-    if collapsed.len() > MAX_MARKET_NAME_BYTES {
-        let mut end = MAX_MARKET_NAME_BYTES;
+    if collapsed.len() > max_bytes {
+        let mut end = max_bytes;
         while end > 0 && !collapsed.is_char_boundary(end) {
             end -= 1;
         }
@@ -165,6 +171,32 @@ pub struct HeartbeatMarketProfiles {
     /// Active profile id, `None` = Official Global Market.
     pub active_id: Option<String>,
     pub profiles: Vec<HeartbeatMarketProfile>,
+}
+
+/// Max. UTF-8 bytes of `serverNotice#message` (Spec Section 3.1.3).
+pub const MAX_NOTICE_MESSAGE_BYTES: usize = 120;
+
+/// `<serverNotice>` element of `globalMarketOnline.xml` (Spec Section 3.1.3).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeartbeatNotice {
+    pub id: String,
+    /// `maintenance`, `restart` or `info`.
+    pub notice_type: String,
+    pub starts_at: Option<u64>,
+    pub ends_at: Option<u64>,
+    /// Extra text, already in the preferred language.
+    pub message: Option<String>,
+}
+
+/// Optional parts of `globalMarketOnline.xml` beyond version and branding.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeartbeatExtras<'a> {
+    /// In-game market switch profiles (Spec Section 3.1.2), only written while connected.
+    pub market_profiles: Option<&'a HeartbeatMarketProfiles>,
+    /// Server notice (Spec Section 3.1.3), written online and offline.
+    pub server_notice: Option<&'a HeartbeatNotice>,
+    /// `maintenance` or `unreachable`, only written while not connected.
+    pub offline_reason: Option<&'a str>,
 }
 
 /// Compares SemVer (`MAJOR.MINOR.PATCH`) and 4-part (`MAJOR.MINOR.PATCH.BUILD`) version strings
@@ -279,6 +311,36 @@ pub fn write_heartbeat_xml_with_market_profiles(
     contracts_supported: bool,
     market_profiles: Option<&HeartbeatMarketProfiles>,
 ) -> Result<(), String> {
+    write_heartbeat_xml_with_extras(
+        staging_dir,
+        online_xml_path,
+        is_connected,
+        exe_version,
+        min_version,
+        latest_version,
+        branding,
+        contracts_supported,
+        HeartbeatExtras {
+            market_profiles,
+            ..Default::default()
+        },
+    )
+}
+
+/// Atomically writes `globalMarketOnline.xml` with all optional parts: market switch profiles
+/// (Spec Section 3.1.2), `<serverNotice>` and `offlineReason` (Spec Section 3.1.3).
+#[allow(clippy::too_many_arguments)]
+pub fn write_heartbeat_xml_with_extras(
+    staging_dir: &Path,
+    online_xml_path: &Path,
+    is_connected: bool,
+    exe_version: &str,
+    min_version: &str,
+    latest_version: Option<&str>,
+    branding: Option<&HeartbeatBranding>,
+    contracts_supported: bool,
+    extras: HeartbeatExtras<'_>,
+) -> Result<(), String> {
     let timestamp = now_unix_secs();
     let connected_str = if is_connected { "true" } else { "false" };
     let contracts_str = if is_connected && contracts_supported {
@@ -336,7 +398,7 @@ pub fn write_heartbeat_xml_with_market_profiles(
         }
     }
 
-    let profiles_block = match market_profiles.filter(|_| is_connected) {
+    let profiles_block = match extras.market_profiles.filter(|_| is_connected) {
         Some(market) => {
             root_attrs.push_str(" marketSwitchSupported=\"true\"");
             format_market_profiles_block(market)
@@ -344,15 +406,50 @@ pub fn write_heartbeat_xml_with_market_profiles(
         None => String::new(),
     };
 
+    if !is_connected {
+        if let Some(reason @ ("maintenance" | "unreachable")) = extras.offline_reason {
+            root_attrs.push_str(&format!(" offlineReason=\"{reason}\""));
+        }
+    }
+
+    let notice_line = extras
+        .server_notice
+        .and_then(format_server_notice_line)
+        .unwrap_or_default();
+
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n\
 <globalMarketOnline {root_attrs}>\n\
     <version>{ver_escaped}</version>\n\
     <minVersion>{min_escaped}</minVersion>\n\
-{latest_line}{profiles_block}</globalMarketOnline>\n"
+{latest_line}{profiles_block}{notice_line}</globalMarketOnline>\n"
     );
 
     atomic_write_utf8_no_bom(staging_dir, online_xml_path, &xml)
+}
+
+/// Formats the `<serverNotice />` line (Spec Section 3.1.3). Returns `None` for a notice without id.
+fn format_server_notice_line(notice: &HeartbeatNotice) -> Option<String> {
+    let id = sanitize_xml_text(&notice.id, 64)?;
+    let notice_type = match notice.notice_type.as_str() {
+        t @ ("maintenance" | "restart") => t,
+        _ => "info",
+    };
+    let mut attrs = format!("id=\"{}\" type=\"{notice_type}\"", escape(&id));
+    if let Some(start) = notice.starts_at {
+        attrs.push_str(&format!(" startsAt=\"{start}\""));
+    }
+    if let Some(end) = notice.ends_at {
+        attrs.push_str(&format!(" endsAt=\"{end}\""));
+    }
+    if let Some(message) = notice
+        .message
+        .as_deref()
+        .and_then(|m| sanitize_xml_text(m, MAX_NOTICE_MESSAGE_BYTES))
+    {
+        attrs.push_str(&format!(" message=\"{}\"", escape(&message)));
+    }
+    Some(format!("    <serverNotice {attrs} />\n"))
 }
 
 /// Formats the `<marketProfiles>` block (Spec Section 3.1.2). Labels and market names follow the same

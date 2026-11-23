@@ -298,6 +298,27 @@ pub fn build_diagnostic_report_with_secrets(
     ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
+    let notice_str = snapshot
+        .server_notice
+        .as_ref()
+        .map(|n| {
+            let fmt = |secs: Option<u64>| {
+                secs.map(crate::bridge::coordinator::format_unix_utc)
+                    .unwrap_or_else(|| "none".to_string())
+            };
+            format!(
+                "id={}, type={}, starts={}, ends={}",
+                n.id,
+                n.notice_type,
+                fmt(n.starts_at),
+                fmt(n.display_end())
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+    report.push_str(&format!(
+        "server_notice: \"{notice_str}, offline_reason={}\"\n",
+        snapshot.offline_reason.as_deref().unwrap_or("none")
+    ));
 
     if is_extended {
         let fmt_unix = |secs: Option<u64>| -> String {

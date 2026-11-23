@@ -267,10 +267,10 @@ Das Backend kann geplante Wartungen, kurze Neustarts und allgemeine Hinweise ank
   ```
   `notice_id` und `until` sind optional. Ist die App selbst gestoppt, sollte der Reverse-Proxy dieselbe Antwort statisch ausliefern (statt `502`).
 * **Verhalten des Clients:**
-  * Er merkt sich den letzten Hinweis dauerhaft (`config.json`), damit ein Neustart des Clients während der Wartung ihn nicht verliert. Abgelaufene Hinweise (`ends_at` + `30 min` vorbei) verwirft er.
+  * Er merkt sich den letzten Hinweis und die bereits angekündigte `id` dauerhaft (`server_notice.json` neben `settings.json`), damit ein Neustart des Clients während der Wartung ihn nicht verliert und nicht erneut ankündigt. Abgelaufene Hinweise (Ende + `30 min` vorbei; ohne `ends_at` gilt bei `restart` `starts_at + 10 min`, bei `maintenance` `starts_at + 6 h`) verwirft er.
   * **Banner** wie beim empfohlenen Update, pro `id` wegklickbar; Zeiten in Ortszeit. Während der Wartung ersetzt ein nicht wegklickbares Banner die Ankündigung („Wartung läuft, voraussichtlich bis 23:30“).
   * **OS-Benachrichtigung** einmal pro `id`, auch im Tray (nur bei `notifications_enabled`). **Activity Log:** Info-Eintrag beim ersten Empfang, Warnung beim Wechsel in den Wartungs-Status.
-  * **Einstufung eines Ausfalls:** `503` mit `MAINTENANCE` oder ein Netzwerkfehler im angekündigten Fenster (`starts_at - 5 min` bis `ends_at + 30 min`) gilt als `maintenance`, alles andere als `unreachable`. Während `maintenance` prüft der Client weiter im normalen Offline-Takt (`5 s`), loggt aber keine Fehler pro Versuch.
+  * **Einstufung eines Ausfalls:** `503` mit `MAINTENANCE` oder ein Netzwerkfehler im angekündigten Fenster (`starts_at - 5 min` bis `ends_at + 30 min`) gilt als `maintenance`, ein anderer Netzwerkfehler als `unreachable`. Andere Fehler (z. B. ein abgelehnter Key) setzen kein `offlineReason`. Antwortet ein 503 mit `MAINTENANCE` ohne bekannten Hinweis, legt der Client selbst einen `maintenance`-Hinweis an (Start jetzt, Ende aus `until`). Während `maintenance` prüft der Client weiter im normalen Offline-Takt (`5 s`), loggt aber keine Fehler pro Versuch.
   * Sprache von `message`: Spielsprache aus der letzten Whitelist-Datei (`lang`), sonst Client-Sprache, sonst `en`.
 * **Heartbeat-Erweiterung (Client -> Lua, `globalMarketOnline.xml`):**
   ```xml

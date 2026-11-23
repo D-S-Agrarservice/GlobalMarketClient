@@ -8,7 +8,7 @@ use crate::api::fastapi::FastApiBackend;
 use crate::api::mock::LocalMockBackend;
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
-    FillTypeStatus, MarketItemDto, ServerHandshake,
+    FillTypeStatus, MarketItemDto, ServerHandshake, ServerNotice,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::{
@@ -17,13 +17,17 @@ use crate::bridge::dds::{
     logo_rel_path_for_hash, MAX_LOGO_RAW_BYTES,
 };
 use crate::bridge::l10n::localize_fill_type;
+use crate::bridge::notice::{
+    classify_outage, message_languages, notice_for_maintenance_error, OfflineReason,
+    StoredServerNotice,
+};
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
     is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
-    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_market_profiles,
-    write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatMarketProfile,
-    HeartbeatMarketProfiles, IncomingPacket,
+    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_extras,
+    write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatExtras,
+    HeartbeatMarketProfile, HeartbeatMarketProfiles, HeartbeatNotice, IncomingPacket,
 };
 use crate::config::{
     qualify_transaction_id, verify_access_key, AccessTier, AppConfig, BackendMode,
@@ -141,6 +145,10 @@ pub struct BridgeSnapshot {
     pub last_error: Option<String>,
     /// Unix time (seconds) when the temporary Extended mode ends, `None` outside Extended mode.
     pub extended_expires_unix: Option<u64>,
+    /// Current server notice (maintenance, restart or info; Spec Section 3.1.3).
+    pub server_notice: Option<ServerNotice>,
+    /// `maintenance` or `unreachable` while the backend is offline, otherwise `None`.
+    pub offline_reason: Option<String>,
 }
 
 enum WorkerSignal {
@@ -161,6 +169,9 @@ struct SharedState {
     extended_expires_at: Option<Instant>,
     /// Last accepted in-game market switch request (`write/marketSwitch_*.xml`), for the 30 s rate limit.
     last_ingame_market_switch: Option<Instant>,
+    /// Last server notice, persisted in `server_notice.json` (Spec Section 3.1.3).
+    server_notice: StoredServerNotice,
+    notice_file: PathBuf,
 }
 
 pub struct BridgeManager {
@@ -233,6 +244,9 @@ impl BridgeManager {
         );
         let mock_backend = Arc::new(LocalMockBackend::new());
 
+        let notice_file = StoredServerNotice::path_for_config(&config_file);
+        let server_notice = StoredServerNotice::load(&notice_file, unix_now());
+
         let initial_snapshot = BridgeSnapshot {
             state: if initial_connection_enabled {
                 BridgeConnectionState::PathMissing
@@ -275,6 +289,8 @@ impl BridgeManager {
             last_sync_unix: None,
             last_error: None,
             extended_expires_unix: None,
+            server_notice: server_notice.notice.clone(),
+            offline_reason: None,
         };
 
         let mgr = Self {
@@ -289,6 +305,8 @@ impl BridgeManager {
                 logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
                 extended_expires_at: None,
                 last_ingame_market_switch: None,
+                server_notice,
+                notice_file,
             })),
             mock_backend,
             live_backend,
@@ -1004,6 +1022,23 @@ impl BridgeManager {
         self.nudge_signal(WorkerSignal::ForceSyncNow);
     }
 
+    /// Steps the simulated server maintenance in Developer Mock mode (Spec Section 3.1.3):
+    /// `0` = no notice, `1` = maintenance announced (in 15 min), `2` = maintenance running (`503`).
+    pub fn mock_set_server_notice_stage(&self, stage: u8) {
+        if self.get_config().access_tier != AccessTier::Developer {
+            return;
+        }
+        let stage = stage.min(2);
+        self.mock_backend.set_simulated_notice_stage(stage);
+        let (key, fallback) = match stage {
+            0 => ("logMockNoticeCleared", "Simulation: Server notice cleared."),
+            1 => ("logMockNoticeAnnounced", "Simulation: Maintenance announced."),
+            _ => ("logMockMaintenanceStarted", "Simulation: Maintenance started."),
+        };
+        self.push_i18n_log(LogLevel::Info, key, [], fallback.to_string());
+        self.nudge_signal(WorkerSignal::ForceSyncNow);
+    }
+
     /// Loads (or clears when `None`) a local `.png` / `.webp` / `.jpg` / `.dds` image as a simulated
     /// Community Market logo in Developer Mock mode.
     pub fn mock_set_community_logo(
@@ -1610,6 +1645,11 @@ fn run_bridge_worker(
     let mut is_connected = false;
     let mut version_ok = true;
     let mut contracts_supported = false;
+    let mut server_notice: Option<ServerNotice> = shared
+        .lock()
+        .ok()
+        .and_then(|g| g.server_notice.notice.clone());
+    let mut offline_reason: Option<OfflineReason> = None;
 
     let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
     let mut last_market_poll = Instant::now() - Duration::from_secs(60);
@@ -1721,6 +1761,23 @@ fn run_bridge_worker(
                     poll_interval = Duration::from_secs(hs.poll_interval_sec.clamp(2, 120));
                     version_ok = is_version_sufficient(PROTOCOL_EXE_VERSION, &min_version);
                     let next_connected = hs.online && version_ok;
+
+                    let now = unix_now();
+                    let changed_notice = apply_server_notice(
+                        &shared,
+                        &app_handle,
+                        &mut server_notice,
+                        hs.notice.clone().filter(|n| !n.is_expired(now)),
+                    );
+                    // A backend that answers but reports `online: false` inside an announced window is in maintenance.
+                    let next_offline_reason = (!next_connected
+                        && version_ok
+                        && server_notice
+                            .as_ref()
+                            .is_some_and(|n| n.covers_outage_at(now)))
+                    .then_some(OfflineReason::Maintenance);
+                    let changed_reason = offline_reason != next_offline_reason;
+                    offline_reason = next_offline_reason;
 
                     let prev_state = shared.lock().ok().map(|g| g.snapshot.state);
                     let next_state = if !version_ok {
@@ -1923,12 +1980,18 @@ fn run_bridge_worker(
                         } else {
                             None
                         };
+                        snap.offline_reason = offline_reason.map(|r| r.as_str().to_string());
                     });
 
                     if changed_branding && next_connected {
                         pending_branding_sync = true;
                     }
-                    if changed_conn || changed_branding || changed_versions || changed_contracts_sup
+                    if changed_conn
+                        || changed_branding
+                        || changed_versions
+                        || changed_contracts_sup
+                        || changed_notice
+                        || changed_reason
                     {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
@@ -1946,14 +2009,40 @@ fn run_bridge_worker(
                     active_branding = HeartbeatBranding::default();
                     let err_msg = err.to_string();
 
-                    let should_log = shared
-                        .lock()
-                        .ok()
-                        .map(|g| {
-                            g.snapshot.state != BridgeConnectionState::BackendOffline
-                                || g.snapshot.last_error.as_deref() != Some(err_msg.as_str())
-                        })
-                        .unwrap_or(true);
+                    let now = unix_now();
+                    let next_notice = match &err {
+                        ApiError::Maintenance { notice_id, until } => {
+                            Some(notice_for_maintenance_error(
+                                server_notice.as_ref(),
+                                notice_id.as_deref(),
+                                *until,
+                                now,
+                            ))
+                        }
+                        _ => server_notice.clone().filter(|n| !n.is_expired(now)),
+                    };
+                    let changed_notice =
+                        apply_server_notice(&shared, &app_handle, &mut server_notice, next_notice);
+                    let next_offline_reason = classify_outage(&err, server_notice.as_ref(), now);
+                    let entering_maintenance = next_offline_reason
+                        == Some(OfflineReason::Maintenance)
+                        && offline_reason != Some(OfflineReason::Maintenance);
+                    let changed_reason = offline_reason != next_offline_reason;
+                    offline_reason = next_offline_reason;
+                    if entering_maintenance {
+                        log_maintenance_started(&shared, &app_handle, server_notice.as_ref());
+                    }
+
+                    // During maintenance every retry fails; the single maintenance entry above is enough.
+                    let should_log = offline_reason != Some(OfflineReason::Maintenance)
+                        && shared
+                            .lock()
+                            .ok()
+                            .map(|g| {
+                                g.snapshot.state != BridgeConnectionState::BackendOffline
+                                    || g.snapshot.last_error.as_deref() != Some(err_msg.as_str())
+                            })
+                            .unwrap_or(true);
 
                     if should_log {
                         emit_classified_backend_error(
@@ -1977,9 +2066,10 @@ fn run_bridge_worker(
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = Some(err_msg);
+                        snap.offline_reason = offline_reason.map(|r| r.as_str().to_string());
                     });
 
-                    if was_online {
+                    if was_online || changed_notice || changed_reason {
                         last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                     }
                 }
@@ -2000,7 +2090,12 @@ fn run_bridge_worker(
             } else {
                 None
             };
-            match write_heartbeat_xml_with_market_profiles(
+            let hb_notice = server_notice.as_ref().map(|n| {
+                let langs =
+                    message_languages(whitelist_lang.as_deref(), &active_ui_language(&shared));
+                heartbeat_notice(n, &langs)
+            });
+            match write_heartbeat_xml_with_extras(
                 &paths.staging_dir,
                 &paths.online_xml_file,
                 hb_connected,
@@ -2009,7 +2104,13 @@ fn run_bridge_worker(
                 latest_version.as_deref(),
                 hb_connected.then_some(&active_branding),
                 hb_connected && contracts_supported,
-                market_profiles.as_ref(),
+                HeartbeatExtras {
+                    market_profiles: market_profiles.as_ref(),
+                    server_notice: hb_notice.as_ref(),
+                    offline_reason: offline_reason
+                        .filter(|_| !hb_connected)
+                        .map(OfflineReason::as_str),
+                },
             ) {
                 Ok(()) if hb_connected => {
                     let now_secs = SystemTime::now()
@@ -2835,6 +2936,192 @@ fn heartbeat_market_profiles(shared: &Arc<Mutex<SharedState>>) -> Option<Heartbe
         active_id: guard.config.active_token_id.clone(),
         profiles,
     })
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Formats UTC unix seconds as `YYYY-MM-DD HH:MM UTC` for English fallback log texts and diagnostics
+/// (the UI formats the `*Unix` log parameters in local time).
+pub fn format_unix_utc(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hour, minute) = (rem / 3600, (rem % 3600) / 60);
+    // Civil-from-days conversion (proleptic Gregorian calendar).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
+/// Converts a server notice into the `<serverNotice>` heartbeat element (Spec Section 3.1.3).
+fn heartbeat_notice(notice: &ServerNotice, langs: &[String]) -> HeartbeatNotice {
+    let lang_refs: Vec<&str> = langs.iter().map(String::as_str).collect();
+    HeartbeatNotice {
+        id: notice.id.clone(),
+        notice_type: notice.notice_type.clone(),
+        starts_at: notice.starts_at,
+        ends_at: notice.display_end(),
+        message: notice.message_for(&lang_refs),
+    }
+}
+
+/// Stores `next` as the current server notice (memory, `server_notice.json`, snapshot). Announces a
+/// notice id seen for the first time (log entry + `bridge://server-notice` event for the toast and the
+/// OS notification). Returns `true` when the notice changed.
+fn apply_server_notice(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    current: &mut Option<ServerNotice>,
+    next: Option<ServerNotice>,
+) -> bool {
+    if *current == next {
+        return false;
+    }
+    *current = next.clone();
+
+    let mut announce: Option<ServerNotice> = None;
+    let mut ui_lang = "en".to_string();
+    if let Ok(mut guard) = shared.lock() {
+        guard.server_notice.notice = next.clone();
+        if let Some(ref notice) = next {
+            if guard.server_notice.notified_id.as_deref() != Some(notice.id.as_str()) {
+                guard.server_notice.notified_id = Some(notice.id.clone());
+                announce = Some(notice.clone());
+            }
+        }
+        let notice_file = guard.notice_file.clone();
+        let _ = guard.server_notice.save(&notice_file);
+        ui_lang = guard.config.language.clone();
+    }
+    emit_snapshot_update(shared, app_handle, |snap| snap.server_notice = next);
+
+    if let Some(notice) = announce {
+        log_server_notice(shared, app_handle, &notice, &ui_lang);
+        if let Some(app) = app_handle {
+            let _ = app.emit("bridge://server-notice", &notice);
+        }
+    }
+    true
+}
+
+/// Writes the Activity Log entry for a newly announced server notice.
+fn log_server_notice(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    notice: &ServerNotice,
+    ui_lang: &str,
+) {
+    let langs = message_languages(None, ui_lang);
+    let lang_refs: Vec<&str> = langs.iter().map(String::as_str).collect();
+    let text = notice.message_for(&lang_refs);
+    let note = text.as_ref().map(|t| format!(" – {t}")).unwrap_or_default();
+    let start = notice.starts_at.unwrap_or_default();
+    let end = notice.display_end();
+
+    match (notice.notice_type.as_str(), end) {
+        ("maintenance", Some(end)) => push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Warn,
+            "logServerNoticeMaintenance",
+            [
+                ("startUnix", start.to_string()),
+                ("start", format_unix_utc(start)),
+                ("endUnix", end.to_string()),
+                ("end", format_unix_utc(end)),
+                ("note", note.clone()),
+            ],
+            format!(
+                "Planned maintenance announced: {} – {}.{note}",
+                format_unix_utc(start),
+                format_unix_utc(end)
+            ),
+        ),
+        ("maintenance", None) => push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Warn,
+            "logServerNoticeMaintenanceNoEnd",
+            [
+                ("startUnix", start.to_string()),
+                ("start", format_unix_utc(start)),
+                ("note", note.clone()),
+            ],
+            format!(
+                "Planned maintenance announced from {}.{note}",
+                format_unix_utc(start)
+            ),
+        ),
+        ("restart", _) => push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Warn,
+            "logServerNoticeRestart",
+            [
+                ("startUnix", start.to_string()),
+                ("start", format_unix_utc(start)),
+                ("note", note.clone()),
+            ],
+            format!(
+                "Short server restart announced: {}.{note}",
+                format_unix_utc(start)
+            ),
+        ),
+        _ => {
+            let text = text.unwrap_or_else(|| "–".to_string());
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Info,
+                "logServerNoticeInfo",
+                [("text", text.clone())],
+                format!("Notice from the server: {text}"),
+            )
+        }
+    }
+}
+
+/// Writes the single Activity Log entry when an outage is classified as maintenance.
+fn log_maintenance_started(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    notice: Option<&ServerNotice>,
+) {
+    match notice.and_then(ServerNotice::display_end) {
+        Some(end) => push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Warn,
+            "logServerMaintenanceActive",
+            [
+                ("endUnix", end.to_string()),
+                ("end", format_unix_utc(end)),
+            ],
+            format!(
+                "Server maintenance in progress, expected end: {}. The client reconnects automatically.",
+                format_unix_utc(end)
+            ),
+        ),
+        None => push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Warn,
+            "logServerMaintenanceActiveNoEnd",
+            [],
+            "Server maintenance in progress. The client reconnects automatically.".to_string(),
+        ),
+    }
 }
 
 /// Display text of a profile for log entries (label, market name or masked hint; never the token).

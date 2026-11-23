@@ -13,7 +13,7 @@
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
-    ServerHandshake, TransactionRequest, WhitelistSyncRequest,
+    ServerHandshake, ServerNotice, TransactionRequest, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::MAX_LOGO_RAW_BYTES;
@@ -214,6 +214,9 @@ struct WireMetaStatus {
     market_logo_url: Option<String>,
     #[serde(default, alias = "contractsSupported")]
     contracts_supported: bool,
+    /// Parsed leniently via [`ServerNotice::from_wire`], so a malformed notice never fails the handshake.
+    #[serde(default)]
+    notice: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -660,6 +663,18 @@ fn format_reqwest_error(err: &reqwest::Error) -> String {
 
 async fn map_error_response(resp: reqwest::Response, treat_4xx_as_validation: bool) -> ApiError {
     let status = resp.status();
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        let retry_after_hdr = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let body = resp.bytes().await.ok();
+        return body
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|json_val| parse_maintenance_error(&json_val, retry_after_hdr))
+            .unwrap_or_else(|| ApiError::Network(format!("HTTP {status}")));
+    }
     if status == StatusCode::UNAUTHORIZED
         || status == StatusCode::FORBIDDEN
         || status == StatusCode::TOO_MANY_REQUESTS
@@ -769,6 +784,7 @@ impl BackendService for FastApiBackend {
                 is_private_market,
                 market_logo_url,
                 contracts_supported: parsed.contracts_supported,
+                notice: parsed.notice.as_ref().and_then(ServerNotice::from_wire),
             })
         })
     }
@@ -1285,6 +1301,53 @@ fn clean_version_opt(raw: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+/// Classifies a `503` body with code `MAINTENANCE` (Spec Section 3.1.3), either as
+/// `{"detail": {"code": "MAINTENANCE", "notice_id": "...", "until": 1764624600}}` or as plain
+/// `{"detail": "MAINTENANCE"}`. Without `until`, the end is derived from the `Retry-After` header.
+pub fn parse_maintenance_error(
+    root: &serde_json::Value,
+    retry_after_hdr: Option<u64>,
+) -> Option<ApiError> {
+    let from_retry_after = || {
+        retry_after_hdr.map(|secs| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                + secs.min(7 * 86_400)
+        })
+    };
+    for candidate in [root.get("detail"), Some(root)].into_iter().flatten() {
+        match candidate {
+            serde_json::Value::Object(obj) => {
+                let code = obj.get("code").and_then(|v| v.as_str()).unwrap_or("");
+                if code.trim().eq_ignore_ascii_case("MAINTENANCE") {
+                    let notice_id = obj
+                        .get("notice_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.chars().filter(|c| !c.is_control()).take(64).collect());
+                    let until = obj
+                        .get("until")
+                        .and_then(|v| v.as_u64())
+                        .filter(|secs| *secs > 0)
+                        .or_else(from_retry_after);
+                    return Some(ApiError::Maintenance { notice_id, until });
+                }
+            }
+            serde_json::Value::String(s) if s.trim().eq_ignore_ascii_case("MAINTENANCE") => {
+                return Some(ApiError::Maintenance {
+                    notice_id: None,
+                    until: from_retry_after(),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Classifies structured 403/429 key-slot & client-binding error codes from the FastAPI backend:
