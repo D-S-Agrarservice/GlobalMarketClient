@@ -160,6 +160,7 @@ sequenceDiagram
     * **Sauberer Shutdown & Umschalt-Toleranz (`EXE_SWITCH_GRACE_MS = 4500`):** Beim echten Beenden des `GlobalMarketClient`, beim Ausschalten der Online-Verbindung und beim Wechsel des Profilordners löscht der Client `globalMarketOnline.xml` sofort (`cleanup_bridge_runtime_files` → `remove_heartbeat_xml`), sodass das Spiel ohne 10s-Wartezeit unmittelbar in den Offline-Modus wechselt. Bei einem internen Neustart mit gleichem Profilordner (Live-Markt-, Token- oder API-Key-Wechsel, `STOP_RESTART_PRESERVE_HEARTBEAT`) bleibt die Datei bestehen und wird vom neuen Handshake atomar überschrieben; geleert werden nur `read/` & `.staging/`. Damit ein solcher kurzer Reconnect auf Dedicated Servern keinen sofortigen Data-Host-Verlust an einen Standby-Spieler auslöst, hält `GlobalMarketSync.lua` eine bestehende Verbindung zusätzlich für bis zu `4500 ms` (2 Status-Polls) stabil; nur harte Pflicht-Versionssperren (`version < minVersion`) und echte Spiel-Disconnects (`onClientDisconnected`) greifen sofort ohne Verzögerung.
   * `globalMarketOnline#isConnected` (`bool`, Pflicht, `"true"` / `"false"`): Gibt an, ob der Client eine aktive Verbindung zum Online-Backend hat. Bei `"false"` wird das HUD-Icon im Spiel **Rot**, Branding-Attribute werden auf Standard zurückgesetzt und der Markt nutzt die lokale Offline-Simulation.
   * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
+  * `globalMarketOnline#vehiclesSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 3 (serverübergreifender Gebrauchtfahrzeugmarkt, siehe 3.6, `FS25_GlobalMarket #36`). Nur mit `"true"` bietet der Mod den Umschalter „Online“ im Anbieten-Dialog an und schreibt `write/vehicleAction_*.xml`; ohne Flag bleibt der Fahrzeugmarkt rein lokal.
   * `globalMarketOnline#marketSwitchSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für den Ingame-Marktwechsel (`FS25_GlobalMarket v0.11.0.22+`, siehe 3.1.2). Nur mit `"true"` und mindestens einem `<profile>` in `<marketProfiles>` zeigt die Mod den Button „Markt wechseln“; ältere Clients ohne Flag bleiben unberührt.
   * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.13` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
@@ -385,13 +386,22 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
 
 ### 3.6 Serverübergreifender Gebrauchtfahrzeugmarkt (Stage 3: `vehicleAction` & `vehicleData`)
 
-> **Status:** Spezifiziert, noch nicht implementiert. Der lokale Gebrauchtfahrzeugmarkt (Stufe 1) ist im Mod ab `FS25_GlobalMarket v0.10.0.5` fertig (Mod-Issue `D-S-Agrarservice/FS25_GlobalMarket#16`). Online-Anbindung: Backend `D-S-Agrarservice/GlobalMarketServer#26` (nach `#25`), Client `D-S-Agrarservice/GlobalMarketClient#4`. Freischaltung über `globalMarketOnline#vehiclesSupported="true"` (gleiches Capability-Prinzip wie `contractsSupported`).
+> **Status:** Spezifiziert; Mod-Seite in Arbeit (`D-S-Agrarservice/FS25_GlobalMarket#36`, getestet per Mock-Konsolenbefehl). Der lokale Gebrauchtfahrzeugmarkt (Stufe 1) ist im Mod ab `FS25_GlobalMarket v0.10.0.5` fertig (Mod-Issue `D-S-Agrarservice/FS25_GlobalMarket#16`). Online-Anbindung: Backend `D-S-Agrarservice/GlobalMarketServer#26` (nach `#25`), Client `D-S-Agrarservice/GlobalMarketClient#4`. Freischaltung über `globalMarketOnline#vehiclesSupported="true"` (gleiches Capability-Prinzip wie `contractsSupported`).
 
 * **Relative Preise:** `priceFactor` (`float`, `0.70..1.30`) bezogen auf den **lokalen Händlerwert** des Fahrzeugs (Basegame-Formel `Vehicle.calculateSellPrice` aus Neupreis, Alter, Stunden, Schaden, Verschleiß). Es werden **niemals** Euro-Beträge übertragen; jeder Server rechnet selbst.
 * **Fahrzeug-Abbild (`<vehicle>`):** `xmlFilename` in Netzwerkform (`data/...`, `$pdlcdir$...`, `$moddir$FS25_Name/...`), bei Mods `modName` + `modFileHash` (Datei-Hash aus `g_modManager`; ein umgebauter Mod mit gleichem Namen hat einen anderen Hash). Konfigurationen per `saveId` inkl. eigener Lackfarbe (`color="r g b"`, `materialTemplate`). Zustand: `ageMonths`, `operatingHours`, `damage` (`0..1`), `wear` (`0..1`). **Nicht** übertragen: Kennzeichen, Ladung, angehängte Geräte, Mod-Sonderzustand außerhalb der Konfigurationen.
 * **Filterung im Spiel:** Der Rust-Client reicht alle Angebote durch. Lua zeigt nur Angebote an, deren Store-Item lokal existiert, deren Mod-Hash übereinstimmt und deren `saveId`s exakt auflösen (kein Fallback auf ähnliche Konfigurationen).
 * **Treuhand & Nebenläufigkeit (wie Stage 2):** Bei `CREATE_LISTING` entfernt Lua das Fahrzeug aus der Welt und hält den Snapshot lokal als `PENDING_CREATE`; bei `REJECTED`, Rückzug oder Ablauf wird es am Händler-Abholplatz wiederhergestellt. Bei `BUY_LISTING` belastet Lua den Käufer erst nach `ACCEPTED`; das `ACCEPTED`-Ergebnis enthält das vollständige `<vehicle>`, aus dem der Käufer-Server das Fahrzeug baut.
 * **Fristen:** ausgehend `durationHours` (`1..168`), eingehend `remainingSeconds` (Echtzeit, unabhängig von der Ingame-Monatslänge).
+* **Ein Pool für alle Märkte:** Fahrzeugangebote sind wie Stage 2 unabhängig vom `X-Market-Token`; der offizielle Markt und alle privaten Märkte teilen einen Pool. Ein Marktwechsel (3.1.2) lässt Angebote, Treuhand und offene Abrechnungen unberührt.
+* **Lokal oder online:** Der Spieler wählt beim Anbieten „Lokal“ (nur dieser Server, Ingame-Monate, kein Bridge-Verkehr) oder „Online“ (dieses Kapitel). Eigene Online-Angebote kommen im Snapshot zurück und werden auch Höfen desselben Servers nur über `BUY_LISTING` verkauft. Lokale NPC-Händler fassen Online-Angebote nie an.
+* **Feld-Zuordnung im Mod:** `ageMonths` = `Vehicle.age` (Monate), `operatingHours` = `operatingTime / 3 600 000`, `materialTemplate` = `materialTemplateName` der Konfiguration.
+* **Keine Rückgabe ohne Backend-Bestätigung (`PENDING_CREATE`):** Ein eingestelltes Fahrzeug bleibt ohne Zeitlimit in der Treuhand des Verkäufer-Servers (auch über Speichern/Laden und Data-Host-Wechsel), bis das Backend über das Schicksal entschieden hat:
+  * `CREATE_LISTING` → `ACCEPTED` (mit `remoteId`): Angebot läuft. `REJECTED`: Lua stellt das Fahrzeug aus dem lokalen Snapshot wieder her.
+  * Jedes Angebot im Snapshot trägt `createActionId` (die `actionId` seiner `CREATE_LISTING`-Anfrage). Fehlt das `actionResult`, ordnet Lua ein `PENDING_CREATE` darüber seinem `remoteId` zu.
+  * Bleibt ein `PENDING_CREATE` nach einem `REQUEST_SYNC` ohne Ergebnis und ohne Angebot, sendet Lua `CANCEL_LISTING` mit `createActionId` statt `remoteId`. Das Backend storniert ein offenes Angebot (`ACCEPTED` mit `<vehicle>`) oder sperrt die `createActionId` dauerhaft, falls es nie angelegt wurde (`ACCEPTED`, `reason="NOT_CREATED"`, eine verspätete `CREATE_LISTING` wird dann abgelehnt). Erst danach gibt Lua das Fahrzeug zurück. Ist das Angebot schon verkauft: `REJECTED`, `reason="LISTING_SOLD"`, die Auszahlung folgt als `LISTING_SOLD`-Abrechnung.
+* **Kauf nur über Abrechnung (`LISTING_BOUGHT`):** Auf `BUY_LISTING` antwortet das Backend mit einem `actionResult` (`ACCEPTED`/`REJECTED`, nur Rückmeldung für die UI) **und** bei Erfolg mit einer Abrechnung `LISTING_BOUGHT` an den Käufer-Server (mit `<vehicle>`, `priceFactor`, `buyActionId`). Lua belastet den Käufer und baut das Fahrzeug **ausschließlich** über diese Abrechnung; sie wird bis zum `ACK_SETTLEMENT` erneut ausgeliefert und geht deshalb bei Ausfällen nicht verloren. Bis dahin reserviert Lua den Kaufpreis gegen weitere Käufe desselben Hofs. Fehlt am Händler der Platz, liefert der Käufer-Server später nach (Lua-intern, die Abrechnung wird trotzdem sofort quittiert).
+* **Ablehnungsgründe (`reason`, Auswahl):** `LISTING_NOT_FOUND`, `LISTING_SOLD`, `LISTING_BUSY` (bereits reserviert), `OWN_LISTING` (gleicher Server und Hof), `LIMIT_REACHED`, `INVALID_REQUEST`, `NOT_CREATED` (nur bei `CANCEL_LISTING` mit `createActionId`, Status `ACCEPTED`).
 
 1. **Ausgehende Aktionen (`write/vehicleAction_<date>_<seq>.xml`, `action="vehicleAction"`):**
    ```xml
@@ -405,14 +415,14 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
        </request>
    </gmDataSync>
    ```
-   Unterstützte `subAction`-Werte: `CREATE_LISTING` (mit `<vehicle>`), `CANCEL_LISTING` (`remoteId`), `BUY_LISTING` (`remoteId`), `ACK_SETTLEMENT` (`settlementIds="s1,s2"`), `REQUEST_SYNC`. `saleMode` ist vorerst immer `FIXED`; `AUCTION` ist für eine spätere Ausbaustufe reserviert.
+   Unterstützte `subAction`-Werte: `CREATE_LISTING` (mit `<vehicle>`), `CANCEL_LISTING` (`remoteId`, oder `createActionId` beim Abgleich eines `PENDING_CREATE`), `BUY_LISTING` (`remoteId`), `ACK_SETTLEMENT` (`settlementIds="s1,s2"`), `REQUEST_SYNC`. `saleMode` ist vorerst immer `FIXED`; `AUCTION` ist für eine spätere Ausbaustufe reserviert.
 
 2. **Eingehender Sync (`read/gmVehicleSync_<ts>_<seq>.xml`, `action="vehicleData"`):**
    ```xml
    <?xml version="1.0" encoding="utf-8" standalone="no"?>
    <gmDataSync action="vehicleData">
        <listings>
-           <listing remoteId="v_301" saleMode="FIXED" sellerServerId="99aa..." sellerFarmId="1" sellerName="Nordhof" priceFactor="1.12" remainingSeconds="259200" status="OPEN">
+           <listing remoteId="v_301" createActionId="99aa..._8000_4" saleMode="FIXED" sellerServerId="99aa..." sellerFarmId="1" sellerName="Nordhof" priceFactor="1.12" remainingSeconds="259200" status="OPEN">
                <vehicle xmlFilename="data/vehicles/fendt/vario700/vario700.xml" group="DRIVABLES" ageMonths="14" operatingHours="230.0" damage="0.05" wear="0.12">
                    <config name="motor" saveId="2" isActive="true" isBought="true" />
                </vehicle>
@@ -427,10 +437,15 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
        </actionResults>
        <settlements>
            <settlement settlementId="vs_77" type="LISTING_SOLD" targetServerId="a3f901c48b2e7d10" targetFarmId="1" remoteId="v_288" priceFactor="1.05" buyerName="Südhof" />
+           <settlement settlementId="vs_78" type="LISTING_BOUGHT" targetServerId="a3f901c48b2e7d10" targetFarmId="2" remoteId="v_301" buyActionId="a3f901c48b2e7d10_15000_2" priceFactor="1.12" sellerName="Nordhof">
+               <vehicle xmlFilename="data/vehicles/fendt/vario700/vario700.xml" group="DRIVABLES" ageMonths="14" operatingHours="230.0" damage="0.05" wear="0.12">
+                   <config name="motor" saveId="2" isActive="true" isBought="true" />
+               </vehicle>
+           </settlement>
        </settlements>
    </gmDataSync>
    ```
-   Unterstützte `settlement#type`-Werte: `LISTING_SOLD` (Verkäufer-Server zahlt lokal `priceFactor × Händlerwert` aus), `LISTING_EXPIRED` (mit `<vehicle>`; Verkäufer-Server stellt das Fahrzeug wieder her). `CANCEL_LISTING`-Ergebnisse mit `status="ACCEPTED"` enthalten ebenfalls das `<vehicle>` zur Wiederherstellung. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
+   Unterstützte `settlement#type`-Werte: `LISTING_SOLD` (Verkäufer-Server zahlt lokal `priceFactor × Händlerwert` aus), `LISTING_EXPIRED` (mit `<vehicle>`; Verkäufer-Server stellt das Fahrzeug wieder her), `LISTING_BOUGHT` (mit `<vehicle>`; Käufer-Server belastet `priceFactor × Händlerwert` und baut das Fahrzeug). `CANCEL_LISTING`-Ergebnisse mit `status="ACCEPTED"` enthalten ebenfalls das `<vehicle>` zur Wiederherstellung. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
 
 ---
 
