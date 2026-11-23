@@ -436,7 +436,7 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
            </result>
        </actionResults>
        <settlements>
-           <settlement settlementId="vs_77" type="LISTING_SOLD" targetServerId="a3f901c48b2e7d10" targetFarmId="1" remoteId="v_288" priceFactor="1.05" buyerName="Südhof" />
+           <settlement settlementId="vs_77" type="LISTING_SOLD" targetServerId="a3f901c48b2e7d10" targetFarmId="1" remoteId="v_288" createActionId="a3f901c48b2e7d10_9000_3" priceFactor="1.05" buyerName="Südhof" />
            <settlement settlementId="vs_78" type="LISTING_BOUGHT" targetServerId="a3f901c48b2e7d10" targetFarmId="2" remoteId="v_301" buyActionId="a3f901c48b2e7d10_15000_2" priceFactor="1.12" sellerName="Nordhof">
                <vehicle xmlFilename="data/vehicles/fendt/vario700/vario700.xml" group="DRIVABLES" ageMonths="14" operatingHours="230.0" damage="0.05" wear="0.12">
                    <config name="motor" saveId="2" isActive="true" isBought="true" />
@@ -445,7 +445,7 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
        </settlements>
    </gmDataSync>
    ```
-   Unterstützte `settlement#type`-Werte: `LISTING_SOLD` (Verkäufer-Server zahlt lokal `priceFactor × Händlerwert` aus), `LISTING_EXPIRED` (mit `<vehicle>`; Verkäufer-Server stellt das Fahrzeug wieder her), `LISTING_BOUGHT` (mit `<vehicle>`; Käufer-Server belastet `priceFactor × Händlerwert` und baut das Fahrzeug). `CANCEL_LISTING`-Ergebnisse mit `status="ACCEPTED"` enthalten ebenfalls das `<vehicle>` zur Wiederherstellung. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
+   Unterstützte `settlement#type`-Werte: `LISTING_SOLD` (Verkäufer-Server zahlt lokal `priceFactor × Händlerwert` aus), `LISTING_EXPIRED` (mit `<vehicle>`; Verkäufer-Server stellt das Fahrzeug wieder her), `LISTING_BOUGHT` (mit `<vehicle>`; Käufer-Server belastet `priceFactor × Händlerwert` und baut das Fahrzeug). `CANCEL_LISTING`-Ergebnisse mit `status="ACCEPTED"` enthalten ebenfalls das `<vehicle>` zur Wiederherstellung. `LISTING_SOLD` und `LISTING_EXPIRED` tragen zusätzlich `createActionId` des Angebots, damit der Verkäufer-Server auch ein Angebot zuordnen kann, dessen `CREATE_LISTING`-Ergebnis verloren ging (`remoteId` lokal noch unbekannt). Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
 
 ---
 
