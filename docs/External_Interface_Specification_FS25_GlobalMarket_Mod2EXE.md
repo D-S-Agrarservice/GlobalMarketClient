@@ -141,7 +141,7 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512000" isConnected="true" brandingTier="0" isPrivateMarket="false" hasCustomLogo="false">
-      <version>0.9.15</version>
+      <version>0.9.16</version>
       <minVersion>0.9.10</minVersion>
   </globalMarketOnline>
   ```
@@ -149,7 +149,7 @@ sequenceDiagram
   ```xml
   <?xml version="1.0" encoding="utf-8" standalone="no"?>
   <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="3" isPrivateMarket="true" marketName="WeekendFarmers" hasCustomLogo="true" logoFile="logos/logo_9f4b2c10e8a1.dds">
-      <version>0.9.15</version>
+      <version>0.9.16</version>
       <minVersion>0.9.10</minVersion>
       <latestVersion>1.0.0</latestVersion>
   </globalMarketOnline>
@@ -162,7 +162,7 @@ sequenceDiagram
   * `globalMarketOnline#contractsSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 2 (`FS25_GlobalMarket v0.9.9.34+`). Nur wenn der laufende `GlobalMarketClient` explizit `contractsSupported="true"` meldet, schaltet der Mod serverübergreifende Online-Verträge & Direktangebote frei (Schutz gegen ältere Clients `<= 0.9.11`, die unbekannte `write/*.xml` kommentarlos löschen).
   * `globalMarketOnline#vehiclesSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für Stage 3 (serverübergreifender Gebrauchtfahrzeugmarkt, siehe 3.6, `FS25_GlobalMarket #36`). Nur mit `"true"` bietet der Mod den Umschalter „Online“ im Anbieten-Dialog an und schreibt `write/vehicleAction_*.xml`; ohne Flag bleibt der Fahrzeugmarkt rein lokal.
   * `globalMarketOnline#marketSwitchSupported` (`bool`, Optional, Default `"false"`): Capability-Flag für den Ingame-Marktwechsel (`FS25_GlobalMarket v0.11.0.22+`, siehe 3.1.2). Nur mit `"true"` und mindestens einem `<profile>` in `<marketProfiles>` zeigt die Mod den Button „Markt wechseln“; ältere Clients ohne Flag bleiben unberührt.
-  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.15` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
+  * `globalMarketOnline.version` (`string`, Pflicht): Aktuelle Versionsnummer des laufenden `GlobalMarketClient` (rein numerisches SemVer `MAJOR.MINOR.PATCH` wie `0.9.16` in der Beta bzw. `1.0.0` ab Release oder 4-teilig `MAJOR.MINOR.PATCH.BUILD` – fehlende Segmente werden in Rust und Lua beim Vergleich automatisch mit `0` aufgefüllt; der Beta-Status selbst wird im Client separat über `IS_BETA_BUILD` geführt, damit Windows-Installer und Lua-Versionsparser strikt numerisch bleiben).
   * `globalMarketOnline.minVersion` (`string`, Pflicht – **Stufe 1: Mandatory / Pflicht-Update**): Vom Online-Backend beim Handshake (`/api/v1/meta/status` $\rightarrow$ `min_exe_version`) vorgegebene harte Mindestversion des Clients.
     * **Zweck (Remote Force-Update & Beta-Abschaltung ohne Mod-Update):** Selbst wenn das Backend einen veralteten Client ablehnt (`version < minVersion`, z. B. alle `0.9.x`-Betas bei Anhebung auf `min_exe_version = "1.0.0"`), schreibt der Client `isConnected="false"` zusammen mit `<minVersion>` in `globalMarketOnline.xml`, pausiert den Online-Handel und zeigt im Client das rote Pflicht-Update-Banner. Ist dieser Wert höher als `self.minExeVersion` im Lua-Mod (Default-Baseline `GlobalMarket.DEFAULT_MIN_EXE_VERSION = "0.9.10"`), übernimmt Lua sofort die höhere Untergrenze, persistiert sie dauerhaft außerhalb der `.zip` in `modSettings/FS25_GlobalMarket/clientVersionState.xml` (nur Client/Host, niemals auf `g_dedicatedServer`), blockiert die Online-Freigabe und blendet im Spiel die Blinkwarnung `ui_gm_warning_exe_outdated` ein. Nimmt das Backend eine Erhöhung später wieder zurück und bestätigt der Client eine aktive Verbindung (`isConnected="true"`), senkt Lua `self.minExeVersion` sowie `clientVersionState.xml` automatisch wieder auf `max(DEFAULT_MIN_EXE_VERSION, minVersion)` ab.
   * `globalMarketOnline.latestVersion` (`string`, Optional – **Stufe 2: Optional / Empfohlenes „Nice-to-have“-Update**): Wird vom Client genau dann geschrieben, wenn das Backend im Handshake (`/api/v1/meta/status`) zusätzlich `latest_exe_version` (bzw. Alias `recommended_exe_version`) ausliefert.
@@ -178,7 +178,7 @@ sequenceDiagram
   | **`2`** | Eigener isolierter Privatmarkt (ohne Logo) | `"true"` | `"<Marktname>"` (max. `48` UTF-8-Bytes) | `"false"` |
   | **`3`** | Eigener isolierter Privatmarkt + eigenes Community-Logo | `"true"` | `"<Marktname>"` (max. `48` UTF-8-Bytes) | `"true"`, `logos/logo_<hash12>.dds` |
 
-  * **Offizielles Standard-Logo & Abschalten:** Ist kein eigenes Community-Logo aktiv (Stufe 0 oder 2 bzw. Logo vorübergehend nicht verfügbar), liefert der Client das eingebaute D-S-Agrarservice-Logo als `logos/logo_<hash12>.dds` und meldet es wie ein Logo (`brandingTier` `1` bzw. `3`, `hasCustomLogo="true"`). Spieler können das offizielle Logo in den Client-Einstellungen abschalten (`showOfficialLogo`, Standard an, ab Client `0.9.15`); dann entfallen `hasCustomLogo`/`logoFile` und der Mod blendet das Logo aus. Marktname, Online-Status und eigene Community-Logos bleiben unverändert.
+  * **Offizielles Standard-Logo & Abschalten:** Ist kein eigenes Community-Logo aktiv (Stufe 0 oder 2 bzw. Logo vorübergehend nicht verfügbar), liefert der Client das eingebaute D-S-Agrarservice-Logo als `logos/logo_<hash12>.dds` und meldet es wie ein Logo (`brandingTier` `1` bzw. `3`, `hasCustomLogo="true"`). Spieler können das offizielle Logo in den Client-Einstellungen abschalten (`showOfficialLogo`, Standard an, ab Client `0.9.16`); dann entfallen `hasCustomLogo`/`logoFile` und der Mod blendet das Logo aus. Marktname, Online-Status und eigene Community-Logos bleiben unverändert.
   * **Sanitizing & MP-Sync (`marketName`):** Steuerzeichen und Mehrfach-Leerzeichen werden entfernt; in Rust wird `marketName` strikt an einer gültigen UTF-8-Codepoint-Grenze auf maximal `48` Bytes gekürzt (`MAX_MARKET_NAME_BYTES = 48`), damit `string.sub(clean, 1, 48)` in Lua niemals Mehrbyte-Umlaute zerschneidet. Der Name des aktiven Data-Host-Marktes wird über den Server an alle MP-Clients synchronisiert.
   * **Pure-Rust `.dds`-Logo-Pipeline (`src-tauri/src/bridge/dds.rs`):** Da die GIANTS Engine für UI-Overlays zwingend Power-of-Two `.dds`-Texturen mit vorberechneten Mipmaps verlangt, konvertiert der `GlobalMarketClient` vom Backend geladene `.webp`-, `.png`-, `.jpg`- oder `.dds`-Logos (max. `8 MiB`, striktes HTTPS-Origin-Pinning auf den API-Host) komplett in Rust ohne externe Zusatzprogramme:
     * Ziel-Canvas: `512 x 256` Pixel (`2:1`, transparent `[0, 0, 0, 0]`).
@@ -207,13 +207,13 @@ sequenceDiagram
 > Ein selbst gemeldeter Hash ist eine Hürde, kein Beweis: Eine veränderte Mod kann den Originalwert schreiben. Der eigentliche Schutz sind die Plausibilitätsgrenzen im Backend.
 
 
-### 3.1.2 Ingame-Marktwechsel (`marketProfiles` im Heartbeat & `write/marketSwitch_<date>_<seq>.xml`, ab `FS25_GlobalMarket v0.11.0.22`, Client `0.9.15`)
+### 3.1.2 Ingame-Marktwechsel (`marketProfiles` im Heartbeat & `write/marketSwitch_<date>_<seq>.xml`, ab `FS25_GlobalMarket v0.11.0.22`, Client `0.9.16`)
 Der aktive Data-Host kann im Spiel (Sofortmarkt, Button „Markt wechseln“ links neben dem Kategorie-Button) zwischen dem offiziellen Global Market und den im Client gespeicherten Marktprofilen wechseln, ohne zum Client zu wechseln. Die Mod schreibt nur eine Anfrage; der eigentliche Wechsel läuft über denselben Weg wie der Schnell-Umschalter im Client (`select_active_market_token`).
 
 * **Heartbeat-Erweiterung (Client -> Lua, `globalMarketOnline.xml`):**
   ```xml
   <globalMarketOnline timestamp="1729512005" isConnected="true" brandingTier="2" isPrivateMarket="true" marketName="WeekendFarmers" marketSwitchSupported="true">
-      <version>0.9.15</version>
+      <version>0.9.16</version>
       <minVersion>0.9.10</minVersion>
       <marketProfiles activeId="a1b2c3d4e5f6">
           <profile id="a1b2c3d4e5f6" label="Wochenend-Server" marketName="WeekendFarmers" brandingTier="2" />

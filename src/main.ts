@@ -83,8 +83,8 @@ interface UiState {
 
 const state: UiState = {
   info: {
-    appVersion: "0.9.15",
-    protocolVersion: "0.9.15",
+    appVersion: "0.9.16",
+    protocolVersion: "0.9.16",
     isBeta: true,
     platform: "desktop",
   },
@@ -119,7 +119,7 @@ const state: UiState = {
     savedTokens: [],
     profilePath: null,
     bridgePath: null,
-    exeVersion: "0.9.15",
+    exeVersion: "0.9.16",
     minExeVersion: "0.9.9",
     latestExeVersion: null,
     contractsSupported: false,
@@ -2890,7 +2890,7 @@ function bindDashboardEvents(): void {
       state.mockLockedMinVersion = !state.mockLockedMinVersion;
       const targetVer = state.mockLockedMinVersion
         ? "9.9.9"
-        : state.info.protocolVersion || "0.9.15";
+        : state.info.protocolVersion || "0.9.16";
       renderDashboardOnly();
       try {
         await invoke("mock_set_min_version", { minVersion: targetVer });
@@ -2906,7 +2906,7 @@ function bindDashboardEvents(): void {
       if (state.mockOptionalUpdate) {
         state.dismissedOptionalVersion = null;
       }
-      const targetOpt = state.mockOptionalUpdate ? "0.9.16" : null;
+      const targetOpt = state.mockOptionalUpdate ? "0.9.17" : null;
       renderDashboardOnly();
       try {
         await invoke("mock_set_latest_version", { latestVersion: targetOpt });
