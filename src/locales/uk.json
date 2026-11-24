@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Симулювати контракт/проп.",
   "logContractActionSent": "Дію за контрактом передано: {subAction} ({detail})",
   "logContractActionRejected": "Дію за контрактом відхилено: {subAction} ({reason})",
+  "logServerIdentityRejected": "Сервер відхилив ідентифікатор збереження: онлайн-контракти для цього збереження призупинено, зверніться до підтримки.",
   "logContractSettlementSynced": "Розрахунки отримано: передано {count} записів контрактів/пропозицій до FS.",
   "logMockContractSim": "Симуляція: Запущено онлайн-подію контракту та прямої пропозиції ({summary}).",
   "stateMaintenance": "Техобслуговування",

@@ -277,6 +277,38 @@ fn wire_unix_secs(value: &serde_json::Value) -> Option<u64> {
         .filter(|secs| *secs > 0)
 }
 
+/// Maximum accepted length of a savegame secret (same limit as the mod).
+pub const MAX_SERVER_SECRET_LEN: usize = 256;
+
+/// Credential of a savegame on the shared online pool (`X-Server-Secret`, Spec Section 3.5).
+/// Never logged: `Debug` is redacted and the type is not serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ServerSecret(String);
+
+impl ServerSecret {
+    /// Accepts opaque tokens without markup or whitespace only; anything else counts as no secret.
+    pub fn parse(raw: &str) -> Option<Self> {
+        let clean = raw.trim();
+        let valid = !clean.is_empty()
+            && clean.len() <= MAX_SERVER_SECRET_LEN
+            && clean
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.~+/=".contains(&b));
+        valid.then(|| Self(clean.to_string()))
+    }
+
+    /// The raw value, for the HTTP header, the bridge XML and the vault only.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ServerSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServerSecret(<redacted>)")
+    }
+}
+
 /// Outgoing Stage 2 contract & direct-offer action types (`write/contractAction_*.xml` -> `POST /api/v1/contracts/actions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -356,6 +388,9 @@ pub struct ContractActionRequest {
     pub was_pallet: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_ids: Option<String>,
+    /// Secret the mod sent along (`request#serverSecret`), `None` if it knows none yet.
+    #[serde(skip)]
+    pub server_secret: Option<ServerSecret>,
 }
 
 /// Authoritative online Supply Contract entry (`<contracts><contract .../></contracts>`).
@@ -442,4 +477,7 @@ pub struct ContractStateResponse {
     pub direct_offers: Vec<OnlineDirectOfferDto>,
     pub action_results: Vec<ContractActionResultDto>,
     pub settlements: Vec<ContractSettlementDto>,
+    /// Secret the backend issued in this response (once, on registration).
+    #[serde(skip)]
+    pub server_secret: Option<ServerSecret>,
 }

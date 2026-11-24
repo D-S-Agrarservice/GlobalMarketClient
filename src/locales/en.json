@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simulate Contract/Offer",
   "logContractActionSent": "Contract action synced: {subAction} ({detail})",
   "logContractActionRejected": "Contract action rejected: {subAction} ({reason})",
+  "logServerIdentityRejected": "Savegame identity rejected by the server: online contracts are paused for this savegame, please contact support.",
   "logContractSettlementSynced": "Settlements synced: Delivered {count} contract/offer settlement(s) to FS.",
   "logMockContractSim": "Simulation: Triggered online contract & direct offer event ({summary}).",
   "stateMaintenance": "Maintenance",

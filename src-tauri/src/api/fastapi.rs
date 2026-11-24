@@ -13,6 +13,7 @@
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
+    ServerSecret,
     ServerHandshake, ServerNotice, TransactionRequest, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
@@ -185,6 +186,20 @@ impl FastApiBackend {
     }
 }
 
+/// Adds `X-Server-Secret` (marked sensitive, so it never shows up in debug output).
+fn apply_server_secret(
+    req: reqwest::RequestBuilder,
+    server_secret: Option<&ServerSecret>,
+) -> reqwest::RequestBuilder {
+    match server_secret.and_then(|s| reqwest::header::HeaderValue::from_str(s.expose()).ok()) {
+        Some(mut value) => {
+            value.set_sensitive(true);
+            req.header("X-Server-Secret", value)
+        }
+        None => req,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WireMetaStatus {
     #[serde(default = "default_true")]
@@ -333,7 +348,7 @@ struct WireContractActionPayload<'a> {
     settlement_ids: Option<&'a str>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct WireContractState {
     #[serde(default)]
     updated_at: i64,
@@ -345,6 +360,8 @@ struct WireContractState {
     action_results: Vec<WireContractActionResult>,
     #[serde(default)]
     settlements: Vec<WireContractSettlement>,
+    #[serde(default, alias = "serverSecret")]
+    server_secret: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -491,6 +508,7 @@ impl From<WireContractState> for ContractStateResponse {
     fn from(wire: WireContractState) -> Self {
         Self {
             updated_at: wire.updated_at,
+            server_secret: wire.server_secret.as_deref().and_then(ServerSecret::parse),
             contracts: wire
                 .contracts
                 .into_iter()
@@ -637,6 +655,12 @@ impl From<WireMarketState> for MarketStateResponse {
                 .collect(),
         }
     }
+}
+
+fn issued_secret_from_json(root: &serde_json::Value) -> Option<ServerSecret> {
+    root.get("server_secret")
+        .and_then(|v| v.as_str())
+        .and_then(ServerSecret::parse)
 }
 
 fn extract_etag(headers: &reqwest::header::HeaderMap) -> Option<String> {
@@ -917,6 +941,7 @@ impl BackendService for FastApiBackend {
     fn fetch_contracts_state(
         &self,
         server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError> {
         let clean_sid = server_id
             .map(str::trim)
@@ -933,6 +958,7 @@ impl BackendService for FastApiBackend {
         let mut req = self.apply_auth_header(self.client.get(url));
         if let Some(ref sid) = clean_sid {
             req = req.query(&[("server_id", sid.as_str())]);
+            req = apply_server_secret(req, server_secret);
         }
         if let Some(ref cached) = cached_snapshot {
             req = req.header(IF_NONE_MATCH, &cached.etag);
@@ -981,6 +1007,7 @@ impl BackendService for FastApiBackend {
     fn submit_contract_action(
         &self,
         action: ContractActionRequest,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError> {
         let action_id = action.action_id.trim();
         let server_id = action.server_id.trim();
@@ -1031,7 +1058,10 @@ impl BackendService for FastApiBackend {
         };
 
         let url = self.endpoint("/api/v1/contracts/actions");
-        let req = self.apply_auth_header(self.client.post(url).json(&payload));
+        let req = apply_server_secret(
+            self.apply_auth_header(self.client.post(url).json(&payload)),
+            server_secret,
+        );
         let (etag_opt, raw_json) = self.runtime.block_on(async move {
             let resp = req
                 .send()
@@ -1066,6 +1096,10 @@ impl BackendService for FastApiBackend {
             let wire_state: WireContractState = serde_json::from_value(state_val)
                 .map_err(|e| ApiError::Validation(e.to_string()))?;
             let mut parsed_state = ContractStateResponse::from(wire_state);
+            let issued_secret = parsed_state
+                .server_secret
+                .take()
+                .or_else(|| issued_secret_from_json(&raw_json));
 
             if let Some(res_val) = raw_json.get("result") {
                 if let Ok(wire_res) = serde_json::from_value::<WireContractActionResult>(res_val.clone())
@@ -1082,7 +1116,9 @@ impl BackendService for FastApiBackend {
                 }
             }
 
+            // Cached without the secret: a later 304 must not look like a newly issued one.
             self.store_or_clear_contract_etag(Some(server_id.to_string()), etag_opt, &parsed_state);
+            parsed_state.server_secret = issued_secret;
             return Ok(parsed_state);
         }
 
@@ -1104,7 +1140,7 @@ impl BackendService for FastApiBackend {
             .map(|c| c.state);
 
         let mut board_state = self
-            .fetch_contracts_state(Some(server_id))
+            .fetch_contracts_state(Some(server_id), server_secret)
             .or_else(|err| prev_cached.ok_or(err))?;
 
         if let Some(dto) = single_res {
@@ -1116,6 +1152,7 @@ impl BackendService for FastApiBackend {
                 board_state.action_results.push(dto);
             }
         }
+        board_state.server_secret = issued_secret_from_json(&raw_json);
         Ok(board_state)
     }
 
@@ -1354,6 +1391,7 @@ pub fn parse_maintenance_error(
 /// - `TOKEN_SLOT_LIMIT_REACHED` (`max_slots`) -> [`ApiError::SlotLimitReached`]
 /// - `CLIENT_IP_LOCKED` (`retry_after` or `Retry-After` header) -> [`ApiError::ClientIpLocked`]
 /// - `CLIENT_ID_REQUIRED` -> [`ApiError::ClientIdRequired`]
+/// - `SERVER_SECRET_INVALID` -> [`ApiError::ServerSecretInvalid`] (object form)
 fn parse_classified_auth_error(
     root: &serde_json::Value,
     retry_after_hdr: Option<u64>,
@@ -1390,6 +1428,9 @@ fn parse_classified_auth_error(
                 }
                 if code.eq_ignore_ascii_case("CLIENT_ID_REQUIRED") {
                     return Some(ApiError::ClientIdRequired);
+                }
+                if code.eq_ignore_ascii_case("SERVER_SECRET_INVALID") {
+                    return Some(ApiError::ServerSecretInvalid);
                 }
             }
             serde_json::Value::String(s) => {

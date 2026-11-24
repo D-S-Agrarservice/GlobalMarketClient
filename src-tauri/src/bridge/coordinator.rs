@@ -8,7 +8,7 @@ use crate::api::fastapi::FastApiBackend;
 use crate::api::mock::LocalMockBackend;
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
-    FillTypeStatus, MarketItemDto, ServerHandshake, ServerNotice,
+    FillTypeStatus, MarketItemDto, ServerHandshake, ServerNotice, ServerSecret,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::{
@@ -16,6 +16,7 @@ use crate::bridge::dds::{
     ensure_default_dsa_logo_dds, is_valid_cached_logo_dds, logo_cache_hash12,
     logo_rel_path_for_hash, MAX_LOGO_RAW_BYTES,
 };
+use crate::bridge::identity::{ServerIdentityState, ServerIdentityStore};
 use crate::bridge::l10n::localize_fill_type;
 use crate::bridge::notice::{
     classify_outage, message_languages, notice_for_maintenance_error, OfflineReason,
@@ -25,7 +26,8 @@ use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, Bri
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
     is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
-    prune_market_data_xmls, write_contract_data_xml, write_heartbeat_xml_with_extras,
+    prune_market_data_xmls, write_contract_data_xml, write_contract_data_xml_with_identity,
+    write_contract_results_xml, write_heartbeat_xml_with_extras,
     write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatExtras,
     HeartbeatMarketProfile, HeartbeatMarketProfiles, HeartbeatNotice, IncomingPacket,
 };
@@ -149,6 +151,8 @@ pub struct BridgeSnapshot {
     pub server_notice: Option<ServerNotice>,
     /// `maintenance` or `unreachable` while the backend is offline, otherwise `None`.
     pub offline_reason: Option<String>,
+    /// Identity of the current savegame on the shared pool: `unknown`, `known` or `rejected`.
+    pub server_identity: String,
 }
 
 enum WorkerSignal {
@@ -172,6 +176,8 @@ struct SharedState {
     /// Last server notice, persisted in `server_notice.json` (Spec Section 3.1.3).
     server_notice: StoredServerNotice,
     notice_file: PathBuf,
+    /// Savegame secrets on the shared pool (Spec Section 3.5); issued ones are kept in the vault.
+    server_identities: ServerIdentityStore,
 }
 
 pub struct BridgeManager {
@@ -247,6 +253,8 @@ impl BridgeManager {
         let notice_file = StoredServerNotice::path_for_config(&config_file);
         let server_notice = StoredServerNotice::load(&notice_file, unix_now());
 
+        let server_identities = ServerIdentityStore::from_entries(token_vault.server_identities());
+
         let initial_snapshot = BridgeSnapshot {
             state: if initial_connection_enabled {
                 BridgeConnectionState::PathMissing
@@ -291,6 +299,7 @@ impl BridgeManager {
             extended_expires_unix: None,
             server_notice: server_notice.notice.clone(),
             offline_reason: None,
+            server_identity: ServerIdentityState::Unknown.as_str().to_string(),
         };
 
         let mgr = Self {
@@ -307,6 +316,7 @@ impl BridgeManager {
                 last_ingame_market_switch: None,
                 server_notice,
                 notice_file,
+                server_identities,
             })),
             mock_backend,
             live_backend,
@@ -748,25 +758,19 @@ impl BridgeManager {
         Ok(self.get_snapshot())
     }
 
-    /// Generates an anonymized Markdown diagnostic report with all vault tokens scrubbed.
+    /// Generates an anonymized Markdown diagnostic report with all vault tokens and savegame secrets scrubbed.
     pub fn generate_diagnostic_report(&self) -> String {
         check_and_expire_extended_tier_shared(&self.shared, &self.app_handle);
-        let (snap, cfg, logs, secrets) = match self.shared.lock() {
-            Ok(g) => (
+        let (snap, cfg, logs, secrets) = {
+            let g = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            let mut secrets = g.token_vault.all_raw_tokens();
+            secrets.extend(g.server_identities.all_raw_secrets());
+            (
                 g.snapshot.clone(),
                 g.config.clone(),
                 g.logs.iter().cloned().collect::<Vec<_>>(),
-                g.token_vault.all_raw_tokens(),
-            ),
-            Err(e) => {
-                let g = e.into_inner();
-                (
-                    g.snapshot.clone(),
-                    g.config.clone(),
-                    g.logs.iter().cloned().collect::<Vec<_>>(),
-                    g.token_vault.all_raw_tokens(),
-                )
-            }
+                secrets,
+            )
         };
         crate::diagnostics::build_diagnostic_report_with_secrets(&snap, &cfg, &logs, &secrets)
     }
@@ -1676,6 +1680,9 @@ fn run_bridge_worker(
     let mut delivered_action_ids: VecDeque<String> = VecDeque::new();
     let mut announced_settlement_ids: HashSet<String> = HashSet::new();
 
+    let identity_scope = server_identity_scope(&shared);
+    emit_server_identity_state(&shared, &app_handle, &identity_scope, active_server_id.as_deref());
+
     let bridge_display = paths.bridge_root.display().to_string();
     push_i18n_log_shared(
         &shared,
@@ -2293,11 +2300,15 @@ fn run_bridge_worker(
                 }
                 Ok(IncomingPacket::ContractActions(action_list)) => {
                     if !contracts_supported {
+                        let baseline = has_synced_contracts_once
+                            && action_list
+                                .iter()
+                                .all(|a| active_server_id.as_deref() == Some(a.server_id.trim()));
                         synthesize_rejected_contract_actions(
                             &paths,
                             &action_list,
                             "CONTRACTS_NOT_SUPPORTED",
-                            &last_synced_contract_state,
+                            baseline.then_some(&last_synced_contract_state),
                             &mut delivered_action_ids,
                         );
                         let _ = fs::remove_file(&xml_path);
@@ -2336,7 +2347,13 @@ fn run_bridge_worker(
                             ContractSubAction::RequestSync | ContractSubAction::AckSettlement
                         );
 
-                        match backend.submit_contract_action(req.clone()) {
+                        match submit_action_with_identity(
+                            backend.as_ref(),
+                            &identity_scope,
+                            &req,
+                            &shared,
+                            &app_handle,
+                        ) {
                             Ok(state) => {
                                 if is_user_facing {
                                     let matching_res = state
@@ -2379,9 +2396,15 @@ fn run_bridge_worker(
                                     }
                                 }
 
+                                let undelivered = undelivered_server_secret(
+                                    &shared,
+                                    &identity_scope,
+                                    &req.server_id,
+                                );
                                 apply_and_write_contract_state(
                                     &paths,
                                     &state,
+                                    undelivered.as_ref().map(|s| (req.server_id.as_str(), s)),
                                     true,
                                     &mut has_synced_contracts_once,
                                     &mut last_synced_contract_state,
@@ -2393,12 +2416,38 @@ fn run_bridge_worker(
                                 );
                                 last_contract_poll = Instant::now();
                             }
+                            Err(ApiError::ServerSecretInvalid) => {
+                                synthesize_rejected_contract_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    SERVER_SECRET_INVALID_REASON,
+                                    has_synced_contracts_once
+                                        .then_some(&last_synced_contract_state),
+                                    &mut delivered_action_ids,
+                                );
+                                if is_user_facing {
+                                    push_i18n_log_shared(
+                                        &shared,
+                                        &app_handle,
+                                        LogLevel::Warn,
+                                        "logContractActionRejected",
+                                        [
+                                            ("subAction", sub_str.clone()),
+                                            ("reason", SERVER_SECRET_INVALID_REASON.to_string()),
+                                        ],
+                                        format!(
+                                            "Contract action rejected: {sub_str} ({SERVER_SECRET_INVALID_REASON})"
+                                        ),
+                                    );
+                                }
+                            }
                             Err(ApiError::Validation(reason)) => {
                                 synthesize_rejected_contract_actions(
                                     &paths,
                                     std::slice::from_ref(&req),
                                     &reason,
-                                    &last_synced_contract_state,
+                                    has_synced_contracts_once
+                                        .then_some(&last_synced_contract_state),
                                     &mut delivered_action_ids,
                                 );
                                 push_i18n_log_shared(
@@ -2419,7 +2468,8 @@ fn run_bridge_worker(
                                     &paths,
                                     std::slice::from_ref(&req),
                                     "CONTRACTS_NOT_SUPPORTED",
-                                    &last_synced_contract_state,
+                                    has_synced_contracts_once
+                                        .then_some(&last_synced_contract_state),
                                     &mut delivered_action_ids,
                                 );
                                 emit_snapshot_update(&shared, &app_handle, |snap| {
@@ -2531,25 +2581,51 @@ fn run_bridge_worker(
         if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
             break;
         }
+        // Without a savegame secret the board is polled without `server_id`. Such a state has no own
+        // server ids, active contracts or settlements, so it never goes to the mod: merging it would drop
+        // the savegame's own contracts and their escrow. It only feeds the counters in the UI.
+        let poll_identity = active_server_id
+            .as_deref()
+            .filter(|_| is_connected && contracts_supported)
+            .and_then(|sid| {
+                poll_server_secret(&shared, &identity_scope, sid).map(|s| (sid.to_string(), s))
+            });
         if is_connected
             && contracts_supported
             && (force_sync
-                || !has_synced_contracts_once
+                || (poll_identity.is_some() && !has_synced_contracts_once)
                 || last_contract_poll.elapsed() >= poll_interval)
         {
             last_contract_poll = Instant::now();
-            let contract_res = backend.fetch_contracts_state(active_server_id.as_deref());
+            let contract_res = backend.fetch_contracts_state(
+                poll_identity.as_ref().map(|(sid, _)| sid.as_str()),
+                poll_identity.as_ref().map(|(_, secret)| secret),
+            );
             if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
                 break;
             }
-            match contract_res {
-                Ok(mut state) => {
+            match (contract_res, poll_identity) {
+                (Ok(state), None) => {
+                    emit_snapshot_update(&shared, &app_handle, |snap| {
+                        snap.contracts_supported = true;
+                        snap.open_contracts_count = state.contracts.len();
+                        snap.open_offers_count = state.direct_offers.len();
+                    });
+                }
+                (Err(ApiError::ServerSecretInvalid), Some((sid, _))) => {
+                    record_server_identity_rejected(&shared, &app_handle, &identity_scope, &sid);
+                    // Fall back to the board without `server_id` right away.
+                    last_contract_poll = Instant::now() - poll_interval;
+                }
+                (Ok(mut state), Some((sid, _))) => {
+                    let undelivered = undelivered_server_secret(&shared, &identity_scope, &sid);
                     state
                         .action_results
                         .retain(|r| !delivered_action_ids.iter().any(|id| id == &r.action_id));
                     apply_and_write_contract_state(
                         &paths,
                         &state,
+                        undelivered.as_ref().map(|s| (sid.as_str(), s)),
                         force_sync || !has_synced_contracts_once,
                         &mut has_synced_contracts_once,
                         &mut last_synced_contract_state,
@@ -2560,7 +2636,7 @@ fn run_bridge_worker(
                         &app_handle,
                     );
                 }
-                Err(ApiError::NotSupported(_)) => {
+                (Err(ApiError::NotSupported(_)), _) => {
                     contracts_supported = false;
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.contracts_supported = false;
@@ -2569,7 +2645,7 @@ fn run_bridge_worker(
                     });
                     last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                 }
-                Err(err) => {
+                (Err(err), _) => {
                     handle_backend_io_error(
                         &err,
                         &mut is_connected,
@@ -3283,6 +3359,7 @@ fn write_filename_sort_key(filename: &str) -> (u8, String, u64, String) {
 fn apply_and_write_contract_state(
     paths: &BridgePaths,
     state: &ContractStateResponse,
+    undelivered_identity: Option<(&str, &ServerSecret)>,
     force_write_xml: bool,
     has_synced_contracts_once: &mut bool,
     last_synced_contract_state: &mut ContractStateResponse,
@@ -3304,7 +3381,12 @@ fn apply_and_write_contract_state(
         || contract_state_semantically_changed(last_synced_contract_state, state, elapsed_secs);
 
     if should_write {
-        match write_contract_data_xml(&paths.staging_dir, &paths.read_dir, state) {
+        match write_contract_data_xml_with_identity(
+            &paths.staging_dir,
+            &paths.read_dir,
+            state,
+            undelivered_identity,
+        ) {
             Ok(_) => {
                 for res in &state.action_results {
                     record_delivered_action_id(delivered_action_ids, &res.action_id);
@@ -3334,6 +3416,7 @@ fn apply_and_write_contract_state(
 
                 let mut stored = state.clone();
                 stored.action_results.clear();
+                stored.server_secret = None;
                 *last_synced_contract_state = stored;
                 *last_contract_write_at = Instant::now();
                 *has_synced_contracts_once = true;
@@ -3443,19 +3526,24 @@ fn record_delivered_action_id(queue: &mut VecDeque<String>, action_id: &str) {
     queue.push_back(clean.to_string());
 }
 
+/// Rejects actions locally so the mod releases its escrow. Without an authenticated `board_baseline` the
+/// file carries the results only, so the mod keeps its own board.
 fn synthesize_rejected_contract_actions(
     paths: &BridgePaths,
     actions: &[ContractActionRequest],
     reason: &str,
-    board_baseline: &ContractStateResponse,
+    board_baseline: Option<&ContractStateResponse>,
     delivered_action_ids: &mut VecDeque<String>,
 ) {
     let mut results = Vec::new();
     for act in actions {
-        if matches!(
-            act.sub_action,
-            ContractSubAction::RequestSync | ContractSubAction::AckSettlement
-        ) {
+        // A rejected identity concerns the whole savegame, so the mod also hears about it for silent actions.
+        if reason != SERVER_SECRET_INVALID_REASON
+            && matches!(
+                act.sub_action,
+                ContractSubAction::RequestSync | ContractSubAction::AckSettlement
+            )
+        {
             continue;
         }
         record_delivered_action_id(delivered_action_ids, &act.action_id);
@@ -3474,9 +3562,168 @@ fn synthesize_rejected_contract_actions(
     if results.is_empty() {
         return;
     }
-    let mut synthetic = board_baseline.clone();
-    synthetic.action_results = results;
-    let _ = write_contract_data_xml(&paths.staging_dir, &paths.read_dir, &synthetic);
+    let _ = match board_baseline {
+        Some(baseline) => {
+            let mut synthetic = baseline.clone();
+            synthetic.action_results = results;
+            write_contract_data_xml(&paths.staging_dir, &paths.read_dir, &synthetic)
+        }
+        None => write_contract_results_xml(&paths.staging_dir, &paths.read_dir, &results),
+    };
+}
+
+/// Rejection reason of the backend (`403`) that is passed on to the mod (Spec Section 3.5).
+const SERVER_SECRET_INVALID_REASON: &str = "SERVER_SECRET_INVALID";
+
+/// Backend the savegame secrets belong to, so a secret is never sent to another one.
+fn server_identity_scope(shared: &Arc<Mutex<SharedState>>) -> String {
+    let guard = shared.lock().unwrap_or_else(|e| e.into_inner());
+    match guard.config.backend_mode {
+        BackendMode::Mock => "mock".to_string(),
+        BackendMode::Live => guard
+            .config
+            .backend_url
+            .trim()
+            .trim_end_matches('/')
+            .to_ascii_lowercase(),
+    }
+}
+
+fn poll_server_secret(
+    shared: &Arc<Mutex<SharedState>>,
+    scope: &str,
+    server_id: &str,
+) -> Option<ServerSecret> {
+    let guard = shared.lock().ok()?;
+    guard.server_identities.secret_for_poll(scope, server_id)
+}
+
+fn undelivered_server_secret(
+    shared: &Arc<Mutex<SharedState>>,
+    scope: &str,
+    server_id: &str,
+) -> Option<ServerSecret> {
+    let guard = shared.lock().ok()?;
+    guard.server_identities.undelivered_secret(scope, server_id)
+}
+
+/// Updates `server_identity` in the snapshot for the current savegame.
+fn emit_server_identity_state(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    scope: &str,
+    server_id: Option<&str>,
+) {
+    let state = shared
+        .lock()
+        .ok()
+        .zip(server_id)
+        .map(|(guard, sid)| guard.server_identities.state(scope, sid))
+        .unwrap_or(ServerIdentityState::Unknown);
+    let changed = shared
+        .lock()
+        .map(|g| g.snapshot.server_identity != state.as_str())
+        .unwrap_or(false);
+    if changed {
+        emit_snapshot_update(shared, app_handle, |snap| {
+            snap.server_identity = state.as_str().to_string();
+        });
+    }
+}
+
+/// Sends an action with the best known savegame secret. The backend rejects a wrong secret before it
+/// applies anything, so the other known secret (mod or client) is safe to try next.
+fn submit_action_with_identity(
+    backend: &dyn BackendService,
+    scope: &str,
+    req: &ContractActionRequest,
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+) -> Result<ContractStateResponse, ApiError> {
+    let from_mod = req.server_secret.as_ref();
+    let candidates = shared
+        .lock()
+        .map(|g| {
+            g.server_identities
+                .candidates_for_action(scope, &req.server_id, from_mod)
+        })
+        .unwrap_or_else(|_| vec![from_mod.cloned()]);
+
+    for secret in candidates {
+        match backend.submit_contract_action(req.clone(), secret.as_ref()) {
+            Ok(state) => {
+                record_server_identity_accepted(
+                    shared,
+                    app_handle,
+                    scope,
+                    req,
+                    secret.as_ref(),
+                    state.server_secret.as_ref(),
+                );
+                return Ok(state);
+            }
+            Err(ApiError::ServerSecretInvalid) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    record_server_identity_rejected(shared, app_handle, scope, &req.server_id);
+    Err(ApiError::ServerSecretInvalid)
+}
+
+/// Remembers the working secret and seals an issued one in the vault before it goes to the mod.
+fn record_server_identity_accepted(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    scope: &str,
+    req: &ContractActionRequest,
+    used: Option<&ServerSecret>,
+    issued: Option<&ServerSecret>,
+) {
+    let save_err = shared.lock().ok().and_then(|mut guard| {
+        let state = &mut *guard;
+        let changed = state.server_identities.record_accepted(
+            scope,
+            &req.server_id,
+            used,
+            req.server_secret.as_ref(),
+            issued,
+        );
+        if !changed {
+            return None;
+        }
+        state
+            .token_vault
+            .set_server_identities(&state.server_identities.issued_entries());
+        state.token_vault.save().err()
+    });
+    if let Some(err) = save_err {
+        push_raw_log_shared(shared, app_handle, LogLevel::Error, err);
+    }
+    emit_server_identity_state(shared, app_handle, scope, Some(&req.server_id));
+}
+
+fn record_server_identity_rejected(
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+    scope: &str,
+    server_id: &str,
+) {
+    let first = shared
+        .lock()
+        .map(|mut g| g.server_identities.record_rejected(scope, server_id))
+        .unwrap_or(false);
+    if first {
+        push_i18n_log_shared(
+            shared,
+            app_handle,
+            LogLevel::Error,
+            "logServerIdentityRejected",
+            [],
+            "Savegame identity rejected by the server (SERVER_SECRET_INVALID): online contracts are paused for this savegame, please contact support."
+                .to_string(),
+        );
+    }
+    emit_server_identity_state(shared, app_handle, scope, Some(server_id));
 }
 
 fn format_contract_action_detail(

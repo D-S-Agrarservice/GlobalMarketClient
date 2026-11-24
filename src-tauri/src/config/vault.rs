@@ -11,6 +11,8 @@
 //! - **Cross-platform fallback**: On macOS and Linux, `tokens.vault` is stored outside `settings.json`
 //!   with strict owner-only `0600` (`rw-------`) POSIX file permissions and SHA-256 integrity verification.
 
+use crate::api::types::ServerSecret;
+use crate::bridge::identity::ServerIdentity;
 use crate::bridge::xml::{sanitize_logo_rel_path, sanitize_market_name};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,10 +70,29 @@ impl Drop for VaultEntry {
     }
 }
 
+/// Savegame secret issued by the backend (Spec Section 3.5), kept so a client exit or a game closed
+/// without saving cannot lock the savegame out.
+#[derive(Clone, Serialize, Deserialize)]
+struct VaultServerIdentity {
+    scope: String,
+    server_id: String,
+    secret: String,
+    #[serde(default)]
+    known_to_mod: bool,
+}
+
+impl Drop for VaultServerIdentity {
+    fn drop(&mut self) {
+        zeroize_string(&mut self.secret);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct VaultPayload {
     version: u8,
     entries: Vec<VaultEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    server_identities: Vec<VaultServerIdentity>,
 }
 
 impl Default for VaultPayload {
@@ -79,6 +100,7 @@ impl Default for VaultPayload {
         Self {
             version: VAULT_SCHEMA_VERSION,
             entries: Vec::new(),
+            server_identities: Vec::new(),
         }
     }
 }
@@ -87,6 +109,7 @@ impl Default for VaultPayload {
 pub struct TokenVault {
     vault_file: PathBuf,
     entries: Vec<VaultEntry>,
+    server_identities: Vec<VaultServerIdentity>,
 }
 
 impl TokenVault {
@@ -98,7 +121,7 @@ impl TokenVault {
     /// Loads and decrypts `tokens.vault` if present, falling back cleanly to an empty vault
     /// if the file does not exist yet or cannot be decrypted (e.g. copied from another machine).
     pub fn load_or_empty(vault_file: PathBuf) -> Self {
-        let entries = fs::read(&vault_file)
+        let payload = fs::read(&vault_file)
             .ok()
             .and_then(|cipher| unseal_vault_bytes(&cipher).ok())
             .and_then(|mut plain| {
@@ -106,18 +129,18 @@ impl TokenVault {
                 zeroize_bytes(&mut plain);
                 parsed
             })
-            .map(|payload| payload.entries)
             .unwrap_or_default();
 
         Self {
             vault_file,
-            entries,
+            entries: payload.entries,
+            server_identities: payload.server_identities,
         }
     }
 
     /// Encrypts and atomically persists the current vault to `tokens.vault` (or removes the file when empty).
     pub fn save(&self) -> Result<(), String> {
-        if self.entries.is_empty() {
+        if self.entries.is_empty() && self.server_identities.is_empty() {
             if self.vault_file.exists() {
                 let _ = fs::remove_file(&self.vault_file);
             }
@@ -132,6 +155,7 @@ impl TokenVault {
         let payload = VaultPayload {
             version: VAULT_SCHEMA_VERSION,
             entries: self.entries.clone(),
+            server_identities: self.server_identities.clone(),
         };
         let mut plain = serde_json::to_vec(&payload)
             .map_err(|e| format!("Failed to serialize token vault: {e}"))?;
@@ -178,6 +202,36 @@ impl TokenVault {
     /// accidental echoes from error strings or logs.
     pub(crate) fn all_raw_tokens(&self) -> Vec<String> {
         self.entries.iter().map(|e| e.raw_token.clone()).collect()
+    }
+
+    /// Persisted savegame identities. Never expose the secrets to IPC or disk logs!
+    pub(crate) fn server_identities(&self) -> Vec<ServerIdentity> {
+        self.server_identities
+            .iter()
+            .filter_map(|e| {
+                Some(ServerIdentity {
+                    scope: e.scope.clone(),
+                    server_id: e.server_id.clone(),
+                    secret: ServerSecret::parse(&e.secret)?,
+                    issued: true,
+                    known_to_mod: e.known_to_mod,
+                    rejected: false,
+                })
+            })
+            .collect()
+    }
+
+    /// Replaces the persisted savegame identities (call `save()` afterwards).
+    pub(crate) fn set_server_identities(&mut self, identities: &[ServerIdentity]) {
+        self.server_identities = identities
+            .iter()
+            .map(|i| VaultServerIdentity {
+                scope: i.scope.clone(),
+                server_id: i.server_id.clone(),
+                secret: i.secret.expose().to_string(),
+                known_to_mod: i.known_to_mod,
+            })
+            .collect();
     }
 
     /// Validates and inserts (or deduplicates/updates) a market token in the vault.

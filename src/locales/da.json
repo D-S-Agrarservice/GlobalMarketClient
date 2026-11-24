@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simuler kontrakt/tilbud",
   "logContractActionSent": "Kontrakthandling synkroniseret: {subAction} ({detail})",
   "logContractActionRejected": "Kontrakthandling afvist: {subAction} ({reason})",
+  "logServerIdentityRejected": "Savegamets identitet blev afvist af serveren: onlinekontrakter er sat på pause for dette savegame, kontakt venligst supporten.",
   "logContractSettlementSynced": "Afregninger modtaget: {count} kontrakt-/tilbudspostering(er) leveret til FS.",
   "logMockContractSim": "Simulering: Online kontrakt- og tilbudshændelse udløst ({summary}).",
   "stateMaintenance": "Vedligeholdelse",

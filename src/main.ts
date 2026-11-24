@@ -139,6 +139,7 @@ const state: UiState = {
     extendedExpiresUnix: null,
     serverNotice: null,
     offlineReason: null,
+    serverIdentity: "unknown",
   },
   logs: [],
   activeModal: "none",

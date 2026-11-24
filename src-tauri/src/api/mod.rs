@@ -6,7 +6,7 @@ pub mod types;
 
 use crate::api::types::{
     ContractActionRequest, ContractStateResponse, MarketStateResponse, ServerHandshake,
-    TransactionRequest, WhitelistSyncRequest,
+    ServerSecret, TransactionRequest, WhitelistSyncRequest,
 };
 use thiserror::Error;
 
@@ -26,6 +26,10 @@ pub enum ApiError {
     ClientIpLocked { retry_after_sec: u64 },
     #[error("Missing or invalid X-Client-Id header for market key")]
     ClientIdRequired,
+    /// `HTTP 403` with code `SERVER_SECRET_INVALID` (Spec Section 3.5): the savegame is registered and
+    /// `X-Server-Secret` is missing or wrong.
+    #[error("Savegame identity rejected (X-Server-Secret)")]
+    ServerSecretInvalid,
     /// `HTTP 503` with code `MAINTENANCE` (Spec Section 3.1.3).
     #[error("Server maintenance in progress")]
     Maintenance {
@@ -45,10 +49,12 @@ pub trait BackendService: Send + Sync {
     fn fetch_contracts_state(
         &self,
         server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError>;
     fn submit_contract_action(
         &self,
         action: ContractActionRequest,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError>;
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError>;
 }

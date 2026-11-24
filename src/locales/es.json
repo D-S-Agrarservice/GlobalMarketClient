@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simular contrato/oferta",
   "logContractActionSent": "Acción de contrato sincronizada: {subAction} ({detail})",
   "logContractActionRejected": "Acción de contrato rechazada: {subAction} ({reason})",
+  "logServerIdentityRejected": "El servidor ha rechazado la identidad de la partida: los contratos en línea están en pausa para esta partida, contacta con el soporte.",
   "logContractSettlementSynced": "Liquidaciones recibidas: {count} asiento(s) de contratos/ofertas entregados a FS.",
   "logMockContractSim": "Simulación: Evento de contrato y oferta directa en línea activado ({summary}).",
   "stateMaintenance": "Mantenimiento",

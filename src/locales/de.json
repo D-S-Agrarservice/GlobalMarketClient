@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Vertrag/Angebot simulieren",
   "logContractActionSent": "Vertragsaktion übertragen: {subAction} ({detail})",
   "logContractActionRejected": "Vertragsaktion abgelehnt: {subAction} ({reason})",
+  "logServerIdentityRejected": "Spielstand-Identität vom Server abgelehnt: Online-Verträge sind für diesen Spielstand pausiert, bitte den Support kontaktieren.",
   "logContractSettlementSynced": "Abrechnung empfangen: {count} Vertrags-/Angebots-Buchung(en) an LS übergeben.",
   "logMockContractSim": "Simulation: Online-Vertrags- & Sofortangebots-Ereignis ausgelöst ({summary}).",
   "stateMaintenance": "Wartung",

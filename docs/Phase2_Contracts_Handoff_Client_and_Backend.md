@@ -63,7 +63,7 @@ The FS25 Lua mod has already implemented the complete Stage 2 foundation (`Globa
 1. Add `IncomingPacket::ContractActions(Vec<ContractActionRequest>)` for `<gmDataSync action="contractAction">` in `bridge/xml.rs`.
 2. Parse `<request ... />` child elements into typed DTOs with attributes:
    - Required: `subAction`, `actionId`, `serverId`
-   - Optional: `farmId`, `farmName`, `remoteId`, `fillType`, `liters`, `baseTrendFactor`, `bonusPct`, `priceDeltaPct`, `allowPartial`, `durationHours`, `wasBale`, `wasPallet`, `settlementIds`
+   - Optional: `serverSecret`, `farmId`, `farmName`, `remoteId`, `fillType`, `liters`, `baseTrendFactor`, `bonusPct`, `priceDeltaPct`, `allowPartial`, `durationHours`, `wasBale`, `wasPallet`, `settlementIds`
 3. Forward parsed requests reliably to `POST /api/v1/contracts/actions` using the existing durable retry-queue pattern (`pending_tx.json` / `pending_contract_actions.json` with idempotency key `client_id + "_" + actionId` or `actionId` directly, since Lua already generates globally unique `<serverId>_<gTimeMs>_<counter>`).
 4. Delete `write/contractAction_*.xml` strictly **after** queueing or processing, identical to `transaction_*.xml`.
 5. Remember: `REQUEST_SYNC` (`subAction="REQUEST_SYNC"`) is sent when a Data-Host first promotes so the client immediately triggers a fresh `GET /api/v1/contracts/state` and writes `read/gmContractSync_*.xml`.
@@ -78,7 +78,15 @@ The FS25 Lua mod has already implemented the complete Stage 2 foundation (`Globa
 4. Note on `actionResults`:
    * Wait-free ACK delivery: Either `POST /api/v1/contracts/actions` returns the immediate `ContractActionResult` AND/OR the next `GET /api/v1/contracts/state?server_id=<serverId>` returns recent unacknowledged `actionResults` (e.g. TTL 5 minutes or until superseded/acked) alongside unacknowledged `settlements`. Returning `actionResults` both immediately upon `POST` (writing `gmContractSync_*.xml` at once) AND keeping recent results in `GET /state` guarantees zero lost Acks across brief network hiccups!
 5. Note on `server_id` Discovery for `GET /api/v1/contracts/state`:
-   * The Rust client learns the active savegame's `serverId` from any outgoing `write/contractAction_*.xml` (including the automatic `REQUEST_SYNC` packet emitted when Lua becomes Data-Host!). Persist the last seen `server_id` in coordinator state (cleared/updated when a new `serverId` arrives, and reset on profile directory change). Even if `server_id` isn't known yet, `GET /api/v1/contracts/state` without `server_id` can still deliver open `<contracts>` and `<directOffers>` safely.
+   * The Rust client learns the active savegame's `serverId` from any outgoing `write/contractAction_*.xml` (including the automatic `REQUEST_SYNC` packet emitted when Lua becomes Data-Host!). Persist the last seen `server_id` in coordinator state (cleared/updated when a new `serverId` arrives, and reset on profile directory change). Without `server_id` and its secret the client polls the board for its own counters only and does not write it to the bridge (section 2.4).
+
+### 2.4 Server Secret per Savegame (`v0.9.16`, issue #9)
+Implemented by the backend since API `2.8.0` (`D-S-Agrarservice/GlobalMarketServer#32`). It replaces the proposal to bind `server_id` to `X-Client-Id`. Details: interface spec, section 3.5.
+* The first action of an unknown `server_id` registers it; that response carries `server_secret` once. Every later request about this `server_id` needs `X-Server-Secret`, otherwise `403 {"detail": {"code": "SERVER_SECRET_INVALID"}}`.
+* The client passes an issued secret to the mod as `<serverIdentity serverId serverSecret />` in every `gmContractSync_*.xml` until the mod sends it back in `request#serverSecret`. Until then it is kept in `tokens.vault`: the first authenticated poll already confirms the secret on the backend, so a lost file would lock the savegame out.
+* `GET /contracts/state` without a known secret is sent without `server_id`. That board is not written to the bridge.
+* `403` on `POST`: the other known secret (client or mod) is tried once if it differs, otherwise no retry. The mod gets `REJECTED` / `SERVER_SECRET_INVALID`. `403` on `GET`: board without `server_id`.
+* `*_server_id` fields of other savegames are `""`. `POST /contracts/actions` takes one flat action (no `{"actions": [...]}` wrapper).
 
 ---
 

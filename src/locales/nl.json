@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Contract/aanbod simuleren",
   "logContractActionSent": "Contractactie gesynchroniseerd: {subAction} ({detail})",
   "logContractActionRejected": "Contractactie geweigerd: {subAction} ({reason})",
+  "logServerIdentityRejected": "Identiteit van de savegame geweigerd door de server: onlinecontracten zijn voor deze savegame gepauzeerd, neem contact op met de support.",
   "logContractSettlementSynced": "Afrekeningen ontvangen: {count} contract-/aanbodboeking(en) doorgegeven aan FS.",
   "logMockContractSim": "Simulatie: Online contract- en aanbodgebeurtenis geactiveerd ({summary}).",
   "stateMaintenance": "Onderhoud",

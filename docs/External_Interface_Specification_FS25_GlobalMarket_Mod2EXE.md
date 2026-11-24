@@ -409,12 +409,19 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
 
 * **Anti-Arbitrage & Echtzeit-Fristen:** Es werden **niemals** Euro-Beträge übertragen. Verträge verwenden `baseTrendFactor` (`float`, relativ zum lokalen Map-Spy-Normalpreis) + `bonusPct`; Direktangebote verwenden `priceDeltaPct` (`-10..+10`, relativ zum aktuellen Spotpreis der Zielkarte). Fristen werden als `durationHours` (ausgehend) bzw. `remainingSeconds` (eingehend) in Echtzeit geführt.
 * **Persistente Server-ID (`serverInstanceId`):** Jedes Savegame erzeugt eine persistente 16-stellige Hex-ID in `globalMarket.xml`. Bei einem Data-Host-Failover bleibt die Zuordnung `(serverId, farmId)` dadurch stabil.
+* **Server-Secret je Savegame (`serverSecret`, Client ab `v0.9.16`, Backend ab API `2.8.0`, `D-S-Agrarservice/GlobalMarketServer#25`, Client `D-S-Agrarservice/GlobalMarketClient#9`, Mod `D-S-Agrarservice/FS25_GlobalMarket#42`):** Die `serverId` ist nicht geheim und damit kein Nachweis. Das Backend registriert eine unbekannte `serverId` mit ihrer ersten Aktion und vergibt dabei **einmalig** ein Secret (opakes Token, max. `256` Zeichen aus `A-Z a-z 0-9 - _ . ~ + / =`). Danach verlangt es bei jeder Anfrage zu dieser `serverId` den Header `X-Server-Secret`, sonst `403 SERVER_SECRET_INVALID`.
+  * **Lua -> Client:** Jedes `<request>` trägt `serverSecret="..."` (leer oder fehlend, solange keines bekannt ist). Lua speichert das Secret im Savegame neben der `serverInstanceId`.
+  * **Client -> Lua:** Solange der Mod ein vergebenes Secret noch nicht selbst mitgesendet hat, enthält **jede** `gmContractSync_*.xml` `<serverIdentity serverId="..." serverSecret="..." />` direkt unter der Wurzel. Lua übernimmt es nur bei eigener `serverId` und überschreibt einen älteren Wert. Geht der Wert im Mod verloren (z. B. Spiel ohne Speichern beendet), liefert derselbe Client ihn erneut.
+  * **Client-Regeln:** Vergebene Secrets liegen je Backend und `serverId` im `tokens.vault`, nie in Logs, Diagnose oder `settings.json`. Ein noch nicht zugestelltes Secret hat Vorrang vor dem Wert aus dem XML (Aktionen aus der Zeit davor tragen keines oder ein altes), sonst gilt der Wert aus dem XML. Wird einer der beiden abgelehnt, versucht der Client einmal den anderen.
+  * **Abfrage ohne Secret:** Ist kein gültiges Secret bekannt, fragt der Client das Board ohne `server_id` ab und nutzt es **nur für seine eigene Anzeige**. Es wird nie in die Bridge geschrieben: Ohne eigene `serverId`s und aktive Verträge würde der Merge im Mod eigene Verträge samt Treuhand verwerfen. Der Mod erhält das Board mit der Antwort auf seine nächste Aktion und muss deshalb `REQUEST_SYNC` senden, sobald er Data-Host wird **und** sobald `contractsSupported` auf `true` wechselt.
+  * **Abgelehnt (`403`):** Der Client verwirft die Aktion und schreibt ein `<result ... status="REJECTED" reason="SERVER_SECRET_INVALID" />`, hier auch für `REQUEST_SYNC` und `ACK_SETTLEMENT`. Liegt noch kein bestätigter Stand vor, enthält die Datei nur `<actionResults>`. **Fehlen `<contracts>` und `<directOffers>`, lässt Lua sein Board unverändert.** Der Support kann ein Savegame auf dem Server zurücksetzen, die nächste Aktion registriert es neu.
+  * **Fremde IDs:** Das Backend sendet `issuerServerId`, `contractorServerId` und `sellerServerId` nur für das eigene Savegame, sonst `""`.
 
 1. **Ausgehende Aktionen (`write/contractAction_<date>_<seq>.xml`, `action="contractAction"`):**
    ```xml
    <?xml version="1.0" encoding="utf-8" standalone="no"?>
    <gmDataSync action="contractAction">
-       <request subAction="CREATE_CONTRACT" actionId="a3f901c48b2e7d10_12000_1" serverId="a3f901c48b2e7d10" farmId="1" farmName="Hof Meier [Dedi EU]" fillType="WHEAT" liters="50000" baseTrendFactor="1.00" bonusPct="12" durationHours="48" />
+       <request subAction="CREATE_CONTRACT" actionId="a3f901c48b2e7d10_12000_1" serverId="a3f901c48b2e7d10" serverSecret="Jx3k...Q8w" farmId="1" farmName="Hof Meier [Dedi EU]" fillType="WHEAT" liters="50000" baseTrendFactor="1.00" bonusPct="12" durationHours="48" />
    </gmDataSync>
    ```
    Unterstützte `subAction`-Werte: `CREATE_CONTRACT`, `CANCEL_CONTRACT`, `ACCEPT_CONTRACT`, `DELIVER_CONTRACT`, `CREATE_OFFER`, `BUY_OFFER`, `CANCEL_OFFER`, `ACK_SETTLEMENT` (mit `settlementIds="s1,s2"`), `REQUEST_SYNC`.
@@ -423,11 +430,12 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
    ```xml
    <?xml version="1.0" encoding="utf-8" standalone="no"?>
    <gmDataSync action="contractData">
+       <serverIdentity serverId="a3f901c48b2e7d10" serverSecret="Jx3k...Q8w" /> <!-- nur bis der Mod es selbst sendet -->
        <contracts>
-           <contract remoteId="c_101" origin="ONLINE" isNpc="false" issuerServerId="99aa..." issuerFarmId="1" issuerName="Nordhof" contractorServerId="" contractorFarmId="0" fillType="WHEAT" totalLiters="50000" deliveredLiters="0" baseTrendFactor="1.00" bonusPct="12" remainingSeconds="172800" status="OPEN" />
+           <contract remoteId="c_101" origin="ONLINE" isNpc="false" issuerServerId="" issuerFarmId="1" issuerName="Nordhof" contractorServerId="" contractorFarmId="0" fillType="WHEAT" totalLiters="50000" deliveredLiters="0" baseTrendFactor="1.00" bonusPct="12" remainingSeconds="172800" status="OPEN" />
        </contracts>
        <directOffers>
-           <offer remoteId="o_205" origin="ONLINE" isNpc="false" sellerServerId="99aa..." sellerFarmId="2" sellerName="Südhof" fillType="BARLEY" totalLiters="25000" remainingLiters="25000" priceDeltaPct="-5" allowPartial="true" remainingSeconds="86400" wasBale="false" wasPallet="false" status="OPEN" />
+           <offer remoteId="o_205" origin="ONLINE" isNpc="false" sellerServerId="" sellerFarmId="2" sellerName="Südhof" fillType="BARLEY" totalLiters="25000" remainingLiters="25000" priceDeltaPct="-5" allowPartial="true" remainingSeconds="86400" wasBale="false" wasPallet="false" status="OPEN" />
        </directOffers>
        <actionResults>
            <result actionId="a3f901c48b2e7d10_12000_1" subAction="BUY_OFFER" status="ACCEPTED" reason="" remoteId="o_205" grantedLiters="10000" baseTrendFactor="1.00" bonusPct="0" remainingSeconds="0" />
@@ -438,6 +446,8 @@ Ab `FS25_GlobalMarket v0.9.9.34` unterstützt der Lua-Mod den serverübergreifen
    </gmDataSync>
    ```
    Unterstützte `settlement#type`-Werte: `CONTRACT_DELIVERY`, `CONTRACT_COMPLETED_ISSUER`, `CONTRACT_EXPIRED_OPEN`, `CONTRACT_DEFAULT_REFUND`, `CONTRACT_PENALTY_DEBIT` (`15 %` Strafe), `OFFER_SOLD`, `OFFER_RETURNED`. Lua verarbeitet jedes `settlementId` idempotent und quittiert es via `ACK_SETTLEMENT`.
+
+   **Ablehnungsgründe (`result#reason`):** `INVALID_REQUEST`, `UNKNOWN_SUB_ACTION`, `FILLTYPE_NOT_GLOBAL_APPROVED`, `LIMIT_REACHED` (20 offene Einträge je Hof), `NOT_FOUND`, `NOT_OWNER`, `OWN_LISTING`, `ALREADY_ACCEPTED`, `NOT_ACTIVE`, `ALREADY_DELIVERED`, `EXPIRED`, `OFFER_SOLD_OUT`, `INSUFFICIENT_LITERS`, `NOT_OPEN`; vom Client: `SERVER_SECRET_INVALID`, `CONTRACTS_NOT_SUPPORTED`. `baseTrendFactor` ist auf `0.5..2.0` begrenzt.
 
 ### 3.6 Serverübergreifender Gebrauchtfahrzeugmarkt (Stage 3: `vehicleAction` & `vehicleData`)
 

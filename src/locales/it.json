@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simula contratto/offerta",
   "logContractActionSent": "Azione contratto sincronizzata: {subAction} ({detail})",
   "logContractActionRejected": "Azione contratto rifiutata: {subAction} ({reason})",
+  "logServerIdentityRejected": "Identità del salvataggio rifiutata dal server: i contratti online sono sospesi per questo salvataggio, contatta l'assistenza.",
   "logContractSettlementSynced": "Liquidazioni ricevute: {count} registrazione/i di contratti/offerte inviate a FS.",
   "logMockContractSim": "Simulazione: Attivato evento contratto e offerta diretta online ({summary}).",
   "stateMaintenance": "Manutenzione",

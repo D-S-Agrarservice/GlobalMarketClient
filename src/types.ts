@@ -107,6 +107,8 @@ export interface BridgeSnapshot {
   serverNotice: ServerNotice | null;
   /** `maintenance` or `unreachable` while the backend is offline. */
   offlineReason: OfflineReason | null;
+  /** Identity of the current savegame on the shared online pool. */
+  serverIdentity: "unknown" | "known" | "rejected";
 }
 
 export type ServerNoticeType = "maintenance" | "restart" | "info";

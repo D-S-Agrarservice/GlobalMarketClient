@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Симуляция контракта/предл.",
   "logContractActionSent": "Действие по контракту отправлено: {subAction} ({detail})",
   "logContractActionRejected": "Действие по контракту отклонено: {subAction} ({reason})",
+  "logServerIdentityRejected": "Сервер отклонил идентификатор сохранения: онлайн-контракты для этого сохранения приостановлены, обратитесь в поддержку.",
   "logContractSettlementSynced": "Расчёты получены: передано {count} записей по контрактам/предложениям в FS.",
   "logMockContractSim": "Симуляция: Запущено онлайн-событие контракта и прямого предложения ({summary}).",
   "stateMaintenance": "Техобслуживание",

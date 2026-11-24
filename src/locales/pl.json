@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Symuluj kontrakt/ofertę",
   "logContractActionSent": "Akcja kontraktu przesłana: {subAction} ({detail})",
   "logContractActionRejected": "Akcja kontraktu odrzucona: {subAction} ({reason})",
+  "logServerIdentityRejected": "Serwer odrzucił tożsamość zapisu gry: umowy online są wstrzymane dla tego zapisu, skontaktuj się z pomocą techniczną.",
   "logContractSettlementSynced": "Rozliczenia odebrane: przekazano {count} rozliczeń kontraktów/ofert do FS.",
   "logMockContractSim": "Symulacja: Wywołano zdarzenie kontraktu i oferty bezpośredniej online ({summary}).",
   "stateMaintenance": "Konserwacja",

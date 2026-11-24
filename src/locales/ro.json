@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simulează contract/ofertă",
   "logContractActionSent": "Acțiune contract sincronizată: {subAction} ({detail})",
   "logContractActionRejected": "Acțiune contract respinsă: {subAction} ({reason})",
+  "logServerIdentityRejected": "Identitatea salvării a fost respinsă de server: contractele online sunt suspendate pentru această salvare, contactează asistența.",
   "logContractSettlementSynced": "Decontări primite: {count} înregistrare/înregistrări de contracte/oferte transmise către FS.",
   "logMockContractSim": "Simulare: Eveniment online de contract și ofertă directă declanșat ({summary}).",
   "stateMaintenance": "Mentenanță",

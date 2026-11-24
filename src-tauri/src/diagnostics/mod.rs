@@ -296,6 +296,14 @@ pub fn build_diagnostic_report_with_secrets(
         "contracts_bridge: \"supported={}, open_contracts={}, open_offers={}\"\n",
         snapshot.contracts_supported, snapshot.open_contracts_count, snapshot.open_offers_count
     ));
+    report.push_str(&format!(
+        "server_identity: \"{}\"\n",
+        if snapshot.server_identity == "rejected" {
+            "rejected (savegame identity rejected, contact support)"
+        } else {
+            snapshot.server_identity.as_str()
+        }
+    ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
     let notice_str = snapshot

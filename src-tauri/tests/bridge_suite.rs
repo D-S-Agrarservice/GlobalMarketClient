@@ -7,12 +7,14 @@ use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
-    ServerNotice, TransactionRequest, TransactionType, WhitelistItemDto, WhitelistSyncRequest,
+    ServerNotice, ServerSecret, TransactionRequest, TransactionType, WhitelistItemDto,
+    WhitelistSyncRequest,
 };
 use globalmarket_client_lib::api::{ApiError, BackendService};
 use globalmarket_client_lib::bridge::coordinator::{
     encode_base64, format_unix_utc, BridgeConnectionState, BridgeManager,
 };
+use globalmarket_client_lib::bridge::identity::{ServerIdentityState, ServerIdentityStore};
 use globalmarket_client_lib::bridge::notice::{
     classify_outage, message_languages, notice_for_maintenance_error, OfflineReason,
     StoredServerNotice,
@@ -26,7 +28,8 @@ use globalmarket_client_lib::bridge::l10n::localize_fill_type;
 use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
     is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
-    sanitize_market_name, write_contract_data_xml, write_heartbeat_xml,
+    sanitize_market_name, write_contract_data_xml, write_contract_data_xml_with_identity,
+    write_contract_results_xml, write_heartbeat_xml,
     write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest,
     write_heartbeat_xml_with_extras, write_heartbeat_xml_with_market_profiles,
     write_market_data_xml, write_market_data_xml_with_branding, HeartbeatBranding,
@@ -51,7 +54,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -606,6 +609,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
             message: Default::default(),
         }),
         offline_reason: Some("maintenance".to_string()),
+        server_identity: "unknown".to_string(),
     };
 
     let cfg = AppConfig {
@@ -2841,6 +2845,7 @@ fn stage2_contract_xml_roundtrip_and_pruning_isolation() {
 
     // 3. Incoming gmContractSync_*.xml writer & isolation from gmDataSync_*.xml pruning
     let contract_state = ContractStateResponse {
+        server_secret: None,
         updated_at: 1_763_395_200,
         contracts: vec![OnlineContractDto {
             remote_id: "c_101".to_string(),
@@ -3076,14 +3081,15 @@ fn stage2_end_to_end_contracts_offers_settlements_and_fastapi_http() {
     let hs = api.check_status().unwrap();
     assert!(hs.contracts_supported);
 
-    let s_anon = api.fetch_contracts_state(None).unwrap();
+    let srv_secret = secret("srv-a-secret");
+    let s_anon = api.fetch_contracts_state(None, None).unwrap();
     assert_eq!(s_anon.contracts.len(), 1);
     assert_eq!(s_anon.contracts[0].status, "OPEN");
 
-    let s_srva = api.fetch_contracts_state(Some("srv_a")).unwrap();
+    let s_srva = api.fetch_contracts_state(Some("srv_a"), Some(&srv_secret)).unwrap();
     assert_eq!(s_srva.contracts[0].status, "ACTIVE");
 
-    let s_cached = api.fetch_contracts_state(Some("srv_a")).unwrap();
+    let s_cached = api.fetch_contracts_state(Some("srv_a"), Some(&srv_secret)).unwrap();
     assert_eq!(s_cached.contracts[0].delivered_liters, 10_000);
 
     let after_post = api
@@ -3104,7 +3110,8 @@ fn stage2_end_to_end_contracts_offers_settlements_and_fastapi_http() {
             was_bale: Some(false),
             was_pallet: Some(false),
             settlement_ids: None,
-        })
+            server_secret: None,
+        }, Some(&srv_secret))
         .unwrap();
     assert_eq!(after_post.direct_offers.len(), 1);
     assert_eq!(after_post.action_results[0].remote_id, "o_99");
@@ -3773,5 +3780,611 @@ fn mock_maintenance_flow_updates_heartbeat_snapshot_and_logs_end_to_end() {
     assert_eq!(count("logServerMaintenanceActive"), 1, "maintenance start is logged once");
 
     manager.shutdown();
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Savegame identity (`X-Server-Secret`, Spec Section 3.5)
+// ---------------------------------------------------------------------------
+
+const IDENTITY_SERVER_ID: &str = "a3f901c48b2e7d10";
+
+fn secret(raw: &str) -> ServerSecret {
+    ServerSecret::parse(raw).expect("valid secret")
+}
+
+fn sync_request(action_id: &str, server_secret: Option<ServerSecret>) -> ContractActionRequest {
+    ContractActionRequest {
+        sub_action: ContractSubAction::RequestSync,
+        action_id: action_id.to_string(),
+        server_id: IDENTITY_SERVER_ID.to_string(),
+        farm_id: None,
+        farm_name: None,
+        remote_id: None,
+        fill_type: None,
+        liters: None,
+        base_trend_factor: None,
+        bonus_pct: None,
+        price_delta_pct: None,
+        allow_partial: None,
+        duration_hours: None,
+        was_bale: None,
+        was_pallet: None,
+        settlement_ids: None,
+        server_secret,
+    }
+}
+
+fn read_contract_sync_xmls(read_dir: &std::path::Path) -> Vec<String> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(read_dir)
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    paths.retain(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("gmContractSync_"))
+    });
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .collect()
+}
+
+fn clear_dir(dir: &std::path::Path) {
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        let _ = fs::remove_file(entry.path());
+    }
+}
+
+/// Writes an action file like the mod and waits until the client answered it.
+fn send_action_xml(
+    bridge_root: &std::path::Path,
+    seq: u32,
+    attributes: &str,
+    answered: &dyn Fn(&str) -> bool,
+) -> String {
+    let write_dir = bridge_root.join("write");
+    let read_dir = bridge_root.join("read");
+    let tmp = write_dir.join(format!("contractAction_20261124_120000_{seq}.tmp"));
+    fs::write(
+        &tmp,
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n<gmDataSync action=\"contractAction\">\n    <request serverId=\"{IDENTITY_SERVER_ID}\" {attributes} />\n</gmDataSync>"
+        ),
+    )
+    .unwrap();
+    fs::rename(&tmp, tmp.with_extension("xml")).unwrap();
+    for _ in 0..200 {
+        let joined = read_contract_sync_xmls(&read_dir).join("\n");
+        if fs::read_dir(&write_dir).unwrap().flatten().count() == 0 && answered(&joined) {
+            return joined;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "action {seq} was not answered, read/: {:?}",
+        read_contract_sync_xmls(&read_dir)
+    );
+}
+
+fn extract_attr(xml: &str, element: &str, attr: &str) -> Option<String> {
+    let start = xml.find(&format!("<{element} "))?;
+    let rest = &xml[start..];
+    let rest = &rest[..rest.find("/>")?];
+    let from = rest.find(&format!("{attr}=\""))? + attr.len() + 2;
+    let value = &rest[from..];
+    Some(value[..value.find('"')?].to_string())
+}
+
+#[test]
+fn server_secret_is_validated_redacted_and_never_serialized() {
+    assert!(ServerSecret::parse("  abc-DEF_123.~+/=  ").is_some());
+    for bad in ["", "   ", "a b", "a\"b", "<x>", "a&b", "ä", "line\nbreak"] {
+        assert!(ServerSecret::parse(bad).is_none(), "{bad:?} must be refused");
+    }
+    assert!(ServerSecret::parse(&"x".repeat(256)).is_some());
+    assert!(ServerSecret::parse(&"x".repeat(257)).is_none());
+
+    let req = sync_request("a1", Some(secret("top-secret-value")));
+    assert!(!format!("{req:?}").contains("top-secret-value"));
+    assert!(!serde_json::to_string(&req).unwrap().contains("top-secret-value"));
+
+    let state = ContractStateResponse {
+        server_secret: Some(secret("top-secret-value")),
+        ..ContractStateResponse::default()
+    };
+    assert!(!format!("{state:?}").contains("top-secret-value"));
+    assert!(!serde_json::to_string(&state).unwrap().contains("top-secret-value"));
+}
+
+#[test]
+fn server_identity_store_picks_secrets_and_tracks_delivery() {
+    let (live, sid) = ("https://gm.example", IDENTITY_SERVER_ID);
+    let (a, b) = (secret("secret-a"), secret("secret-b"));
+    let mut store = ServerIdentityStore::default();
+
+    // Nothing known: one attempt without a secret, board-only poll.
+    assert_eq!(store.candidates_for_action(live, sid, None), vec![None]);
+    assert_eq!(store.secret_for_poll(live, sid), None);
+    assert_eq!(store.state(live, sid), ServerIdentityState::Unknown);
+
+    // Registration: remembered, persisted and still to be delivered to the mod.
+    assert!(store.record_accepted(live, sid, None, None, Some(&a)));
+    assert_eq!(store.undelivered_secret(live, sid), Some(a.clone()));
+    assert_eq!(store.secret_for_poll(live, &sid.to_uppercase()), Some(a.clone()));
+    assert_eq!(store.state(live, sid), ServerIdentityState::Known);
+    assert_eq!(store.issued_entries().len(), 1);
+
+    // Other backends never see it.
+    assert_eq!(store.candidates_for_action("mock", sid, None), vec![None]);
+    assert_eq!(store.secret_for_poll("mock", sid), None);
+
+    // Queued actions carry none or an old value: the issued one wins.
+    assert_eq!(
+        store.candidates_for_action(live, sid, Some(&b)),
+        vec![Some(a.clone()), Some(b.clone())]
+    );
+    assert!(!store.record_accepted(live, sid, Some(&a), None, None));
+    assert_eq!(store.undelivered_secret(live, sid), Some(a.clone()));
+
+    // The mod sends it: delivered, from now on the XML value is tried first.
+    assert!(store.record_accepted(live, sid, Some(&a), Some(&a), None));
+    assert_eq!(store.undelivered_secret(live, sid), None);
+    assert_eq!(
+        store.candidates_for_action(live, sid, Some(&b)),
+        vec![Some(b.clone()), Some(a.clone())]
+    );
+
+    // Game closed without saving: the mod lost it, so it is delivered again.
+    assert_eq!(store.candidates_for_action(live, sid, None), vec![Some(a.clone())]);
+    assert!(store.record_accepted(live, sid, Some(&a), None, None));
+    assert_eq!(store.undelivered_secret(live, sid), Some(a.clone()));
+
+    // Rejected: reported once, no authenticated poll, no delivery, but kept as a fallback.
+    assert!(store.record_rejected(live, sid));
+    assert!(!store.record_rejected(live, sid));
+    assert_eq!(store.state(live, sid), ServerIdentityState::Rejected);
+    assert_eq!(store.secret_for_poll(live, sid), None);
+    assert_eq!(store.undelivered_secret(live, sid), None);
+    assert_eq!(
+        store.candidates_for_action(live, sid, Some(&b)),
+        vec![Some(b.clone()), Some(a.clone())]
+    );
+    assert!(store.record_accepted(live, sid, Some(&b), Some(&b), None));
+    assert_eq!(store.state(live, sid), ServerIdentityState::Known);
+    assert_eq!(store.secret_for_poll(live, sid), Some(b.clone()));
+
+    // A secret that only came from the mod is neither persisted nor passed on.
+    let mut learned = ServerIdentityStore::default();
+    assert!(!learned.record_accepted(live, sid, Some(&b), Some(&b), None));
+    assert!(learned.issued_entries().is_empty());
+    assert_eq!(learned.secret_for_poll(live, sid), Some(b.clone()));
+    assert!(!learned.record_accepted(live, sid, Some(&b), None, None));
+    assert_eq!(learned.undelivered_secret(live, sid), None);
+
+    // A rejection without any known secret clears with the next accepted action.
+    let mut unknown = ServerIdentityStore::default();
+    assert!(unknown.record_rejected(live, sid));
+    assert_eq!(unknown.state(live, sid), ServerIdentityState::Rejected);
+    unknown.record_accepted(live, sid, None, None, Some(&a));
+    assert_eq!(unknown.state(live, sid), ServerIdentityState::Known);
+}
+
+#[test]
+fn contract_xml_carries_server_secret_identity_and_results_only_files() {
+    let dir = env::temp_dir().join(format!("fs25_gm_identity_xml_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let (staging, read_dir) = (dir.join(".staging"), dir.join("read"));
+
+    let xml = r#"<gmDataSync action="contractAction">
+    <request subAction="REQUEST_SYNC" actionId="x_1" serverId="a3f901c48b2e7d10" serverSecret="s3cr-et_1" />
+    <request subAction="REQUEST_SYNC" actionId="x_2" serverId="a3f901c48b2e7d10" serverSecret="" />
+    <request subAction="REQUEST_SYNC" actionId="x_3" serverId="a3f901c48b2e7d10" />
+</gmDataSync>"#;
+    match parse_incoming_write_xml(xml, "1_1").unwrap() {
+        IncomingPacket::ContractActions(reqs) => {
+            assert_eq!(reqs.len(), 3);
+            assert_eq!(reqs[0].server_secret, Some(secret("s3cr-et_1")));
+            assert_eq!(reqs[1].server_secret, None);
+            assert_eq!(reqs[2].server_secret, None);
+        }
+        other => panic!("unexpected packet {other:?}"),
+    }
+
+    let state = ContractStateResponse::default();
+    let with_identity = fs::read_to_string(
+        write_contract_data_xml_with_identity(
+            &staging,
+            &read_dir,
+            &state,
+            Some((IDENTITY_SERVER_ID, &secret("s3cr-et_1"))),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(with_identity.contains(
+        "<serverIdentity serverId=\"a3f901c48b2e7d10\" serverSecret=\"s3cr-et_1\" />"
+    ));
+    assert!(with_identity.contains("<contracts>"));
+
+    let without =
+        fs::read_to_string(write_contract_data_xml(&staging, &read_dir, &state).unwrap()).unwrap();
+    assert!(!without.contains("serverIdentity"));
+
+    let results_only = fs::read_to_string(
+        write_contract_results_xml(
+            &staging,
+            &read_dir,
+            &[ContractActionResultDto {
+                action_id: "x_1".to_string(),
+                sub_action: "CREATE_OFFER".to_string(),
+                status: "REJECTED".to_string(),
+                reason: "SERVER_SECRET_INVALID".to_string(),
+                remote_id: String::new(),
+                granted_liters: 0,
+                base_trend_factor: 1.0,
+                bonus_pct: 0,
+                remaining_seconds: 0,
+            }],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(results_only.contains("reason=\"SERVER_SECRET_INVALID\""));
+    for section in ["<contracts", "<directOffers", "<settlements"] {
+        assert!(!results_only.contains(section), "{section} would clear the mod's board");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn mock_backend_follows_the_server_secret_rules() {
+    let mock = LocalMockBackend::new();
+    let submit = |id: &str, s: Option<&ServerSecret>| {
+        mock.submit_contract_action(sync_request(id, None), s)
+    };
+    let sid = Some(IDENTITY_SERVER_ID);
+
+    // Reads never register: an unknown savegame gets the board only.
+    assert!(mock.fetch_contracts_state(sid, None).unwrap().server_secret.is_none());
+
+    let first = submit("a1", None).unwrap().server_secret.expect("issued");
+    // First response lost: a new secret until one was used.
+    let second = submit("a2", None).unwrap().server_secret.expect("issued again");
+    assert_ne!(first, second);
+    assert!(matches!(
+        mock.fetch_contracts_state(sid, Some(&first)),
+        Err(ApiError::ServerSecretInvalid)
+    ));
+    let own = mock.fetch_contracts_state(sid, Some(&second)).unwrap();
+    assert!(own.server_secret.is_none());
+    // Other savegames' ids are never sent.
+    assert!(own.contracts.iter().all(|c| c.issuer_server_id.is_empty()));
+    assert!(own.direct_offers.iter().all(|o| o.seller_server_id.is_empty()));
+
+    assert!(matches!(submit("a3", None), Err(ApiError::ServerSecretInvalid)));
+    assert!(submit("a4", Some(&second)).unwrap().server_secret.is_none());
+
+    // Support reset: a savegame that still has its secret keeps using it.
+    mock.reset_server_identities();
+    assert!(submit("a5", Some(&second)).unwrap().server_secret.is_none());
+    assert!(matches!(submit("a6", None), Err(ApiError::ServerSecretInvalid)));
+}
+
+/// Minimal contracts backend: accepts only `good_secret`, records `METHOD path [secret]` per request.
+fn spawn_identity_server(
+    good_secret: &'static str,
+    issue: bool,
+) -> (String, Arc<Mutex<Vec<String>>>, Arc<AtomicBool>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (log, stop_flag) = (Arc::clone(&requests), Arc::clone(&stop));
+    let handle = thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            let (mut length, mut server_secret, mut none_match) = (0_usize, String::new(), String::new());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.trim().split_once(':') {
+                    match k.to_ascii_lowercase().as_str() {
+                        "content-length" => length = v.trim().parse().unwrap_or(0),
+                        "x-server-secret" => server_secret = v.trim().to_string(),
+                        "if-none-match" => none_match = v.trim().to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            let mut body = vec![0_u8; length];
+            let _ = reader.read_exact(&mut body);
+            let target = request_line
+                .rsplit_once(' ')
+                .map(|(t, _)| t.to_string())
+                .unwrap_or_default();
+            assert!(
+                !String::from_utf8_lossy(&body).contains("secret"),
+                "the secret belongs into the header only"
+            );
+            log.lock().unwrap().push(format!("{target} [{server_secret}]"));
+
+            const BOARD: &str = r#""updated_at":1,"contracts":[{"remote_id":"c_1","issuer_server_id":"","issuer_farm_id":1,"issuer_name":"Nordhof","fill_type":"WHEAT","total_liters":1000,"bonus_pct":10,"remaining_seconds":3600,"status":"OPEN"}],"direct_offers":[],"action_results":[],"settlements":[]"#;
+            let forbidden = r#"{"detail":{"code":"SERVER_SECRET_INVALID"}}"#.to_string();
+            let (status, json) = if target.contains("/meta/status") {
+                ("200 OK", r#"{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":1,"market_name":"Global Market","api_version":"2.8.0","contracts_supported":true}"#.to_string())
+            } else if target.contains("/market/") {
+                ("200 OK", r#"{"updated_at":1,"items":[]}"#.to_string())
+            } else if target.contains("/contracts/state") {
+                if target.contains("server_id=") && server_secret != good_secret {
+                    ("403 Forbidden", forbidden)
+                } else if !none_match.is_empty() {
+                    ("304 Not Modified", String::new())
+                } else {
+                    ("200 OK", format!("{{{BOARD}}}"))
+                }
+            } else if server_secret == good_secret {
+                ("200 OK", format!("{{{BOARD}}}"))
+            } else if issue && server_secret.is_empty() {
+                ("200 OK", format!("{{{BOARD},\"server_secret\":\"{good_secret}\"}}"))
+            } else {
+                ("403 Forbidden", forbidden)
+            };
+            let etag = if target.contains("/contracts/") { "ETag: \"e1\"\r\n" } else { "" };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                    json.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.flush();
+        }
+    });
+    (url, requests, stop, handle)
+}
+
+#[test]
+fn fastapi_sends_server_secret_and_maps_403_without_leaking_it() {
+    let (url, requests, stop, handle) = spawn_identity_server("good-secret", true);
+    let api = FastApiBackend::new(url, None, "a1b2c3d4e5f60718".to_string()).unwrap();
+    let sid = Some(IDENTITY_SERVER_ID);
+
+    let issued = api
+        .submit_contract_action(sync_request("a1", None), None)
+        .unwrap()
+        .server_secret
+        .expect("secret of the registration");
+    assert_eq!(issued.expose(), "good-secret");
+
+    // The POST state is cached: the 304 that follows must not look like a newly issued secret.
+    let polled = api.fetch_contracts_state(sid, Some(&issued)).unwrap();
+    assert_eq!(polled.contracts.len(), 1);
+    assert!(polled.server_secret.is_none());
+
+    let wrong = secret("wrong-secret");
+    for err in [
+        api.fetch_contracts_state(sid, Some(&wrong)).unwrap_err(),
+        api.fetch_contracts_state(sid, None).unwrap_err(),
+        api.submit_contract_action(sync_request("a2", None), Some(&wrong))
+            .unwrap_err(),
+    ] {
+        assert!(matches!(err, ApiError::ServerSecretInvalid), "{err:?}");
+        assert!(!format!("{err} {err:?}").contains("wrong-secret"));
+    }
+
+    // Without `server_id` no secret is sent.
+    api.fetch_contracts_state(None, Some(&issued)).unwrap();
+    let log = requests.lock().unwrap().clone();
+    assert_eq!(log[0], "POST /api/v1/contracts/actions []");
+    assert_eq!(
+        log[1],
+        format!("GET /api/v1/contracts/state?server_id={IDENTITY_SERVER_ID} [good-secret]")
+    );
+    assert_eq!(log.last().unwrap(), "GET /api/v1/contracts/state []");
+    stop.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
+}
+
+fn identity_test_profile(name: &str, config: AppConfig) -> (PathBuf, PathBuf, PathBuf) {
+    let test_dir = env::temp_dir().join(format!("fs25_gm_identity_{name}_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&test_dir);
+    let profile_dir = test_dir.join("FarmingSimulator2025");
+    fs::create_dir_all(&profile_dir).unwrap();
+    fs::write(profile_dir.join("gameSettings.xml"), "<gameSettings/>").unwrap();
+    let config_file = test_dir.join("config").join("settings.json");
+    AppConfig {
+        access_tier: AccessTier::Developer,
+        language: "en".to_string(),
+        fs25_profile_path: Some(profile_dir.to_string_lossy().into_owned()),
+        ..config
+    }
+    .save_to_file(&config_file)
+    .unwrap();
+    let bridge_root = profile_dir.join("modSettings").join("FS25_GlobalMarket");
+    (test_dir, config_file, bridge_root)
+}
+
+fn wait_for_contracts(bridge_root: &std::path::Path) {
+    for _ in 0..200 {
+        if fs::read_to_string(bridge_root.join("globalMarketOnline.xml"))
+            .is_ok_and(|s| s.contains("contractsSupported=\"true\""))
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("contracts never became available");
+}
+
+#[test]
+fn issued_secret_reaches_the_mod_and_survives_a_client_restart() {
+    let (test_dir, config_file, bridge_root) = identity_test_profile(
+        "restart",
+        AppConfig {
+            backend_mode: BackendMode::Mock,
+            ..AppConfig::default()
+        },
+    );
+    let read_dir = bridge_root.join("read");
+    let has_identity = |xml: &str| xml.contains("<serverIdentity ");
+
+    let mgr = BridgeManager::new(config_file.clone(), None);
+    wait_for_contracts(&bridge_root);
+    thread::sleep(Duration::from_millis(800));
+    assert!(
+        read_contract_sync_xmls(&read_dir).is_empty(),
+        "a board without identity must not reach the mod"
+    );
+    assert!(mgr.get_snapshot().open_contracts_count > 0, "the UI still counts the board");
+
+    // Registration: the answer carries the secret, and so does every sync until the mod sends it.
+    let xml = send_action_xml(
+        &bridge_root,
+        1,
+        "subAction=\"REQUEST_SYNC\" actionId=\"i_1\" serverSecret=\"\"",
+        &has_identity,
+    );
+    assert_eq!(
+        extract_attr(&xml, "serverIdentity", "serverId").as_deref(),
+        Some(IDENTITY_SERVER_ID)
+    );
+    let issued = extract_attr(&xml, "serverIdentity", "serverSecret").unwrap();
+    clear_dir(&read_dir);
+    let xml = send_action_xml(
+        &bridge_root,
+        2,
+        "subAction=\"CREATE_OFFER\" actionId=\"i_2\" farmId=\"1\" fillType=\"WHEAT\" liters=\"1000\" priceDeltaPct=\"0\" durationHours=\"24\"",
+        &|xml| xml.contains("actionId=\"i_2\""),
+    );
+    assert!(xml.contains("actionId=\"i_2\" subAction=\"CREATE_OFFER\" status=\"ACCEPTED\""));
+    assert!(xml.contains(&issued));
+    assert_eq!(mgr.get_snapshot().server_identity, "known");
+
+    let report = mgr.generate_diagnostic_report();
+    assert!(report.contains("server_identity: \"known\""));
+    assert!(!report.contains(&issued));
+    assert!(!serde_json::to_string(&mgr.get_snapshot()).unwrap().contains(&issued));
+
+    // Client exits with the file unread: the secret comes from the vault, not from `read/`.
+    mgr.shutdown();
+    drop(mgr);
+    assert!(read_contract_sync_xmls(&read_dir).is_empty());
+    let vault_file = config_file.with_file_name("tokens.vault");
+    assert!(vault_file.is_file());
+    #[cfg(target_os = "windows")]
+    assert!(!String::from_utf8_lossy(&fs::read(&vault_file).unwrap()).contains(&issued));
+    assert!(!fs::read_to_string(&config_file).unwrap().contains(&issued));
+
+    let mgr = BridgeManager::new(config_file, None);
+    wait_for_contracts(&bridge_root);
+    let xml = send_action_xml(
+        &bridge_root,
+        3,
+        "subAction=\"REQUEST_SYNC\" actionId=\"i_3\" serverSecret=\"\"",
+        &has_identity,
+    );
+    assert_eq!(extract_attr(&xml, "serverIdentity", "serverSecret"), Some(issued.clone()));
+
+    // The mod has it now: no further delivery.
+    clear_dir(&read_dir);
+    let xml = send_action_xml(
+        &bridge_root,
+        4,
+        &format!("subAction=\"REQUEST_SYNC\" actionId=\"i_4\" serverSecret=\"{issued}\""),
+        &|xml| xml.contains("<contracts>"),
+    );
+    assert!(!has_identity(&xml));
+    mgr.shutdown();
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn rejected_identity_is_passed_to_the_mod_and_recovers() {
+    let (url, requests, stop, handle) = spawn_identity_server("good-secret", false);
+    let (test_dir, config_file, bridge_root) = identity_test_profile(
+        "reject",
+        AppConfig {
+            backend_mode: BackendMode::Live,
+            backend_url: url,
+            ..AppConfig::default()
+        },
+    );
+    let read_dir = bridge_root.join("read");
+    let mgr = BridgeManager::new(config_file, None);
+    wait_for_contracts(&bridge_root);
+
+    for (seq, sub) in [(1, "REQUEST_SYNC"), (2, "CREATE_CONTRACT")] {
+        let xml = send_action_xml(
+            &bridge_root,
+            seq,
+            &format!("subAction=\"{sub}\" actionId=\"r_{seq}\" farmId=\"1\" fillType=\"WHEAT\" liters=\"5000\" bonusPct=\"10\" durationHours=\"24\" serverSecret=\"wrong-secret\""),
+            &|xml| xml.contains(&format!("actionId=\"r_{seq}\"")),
+        );
+        assert!(xml.contains(&format!(
+            "actionId=\"r_{seq}\" subAction=\"{sub}\" status=\"REJECTED\" reason=\"SERVER_SECRET_INVALID\""
+        )));
+        assert!(!xml.contains("<contracts"), "must not clear the mod's board");
+        clear_dir(&read_dir);
+    }
+
+    let snap = mgr.get_snapshot();
+    assert_eq!(snap.server_identity, "rejected");
+    assert_eq!(snap.state, BridgeConnectionState::Online, "not a connection problem");
+    let rejected_logs = mgr
+        .get_logs()
+        .iter()
+        .filter(|l| l.key.as_deref() == Some("logServerIdentityRejected"))
+        .count();
+    assert_eq!(rejected_logs, 1, "logged once");
+    let report = mgr.generate_diagnostic_report();
+    assert!(report.contains("rejected (savegame identity rejected, contact support)"));
+    assert!(!report.contains("wrong-secret"));
+
+    // Board only while rejected, and nothing of it reaches the mod.
+    thread::sleep(Duration::from_millis(1800));
+    {
+        let log = requests.lock().unwrap();
+        assert!(log.iter().any(|r| r == "GET /api/v1/contracts/state []"));
+        assert!(!log.iter().any(|r| r.contains("state?server_id=")));
+        assert_eq!(log.iter().filter(|r| r.starts_with("POST /api/v1/contracts")).count(), 2);
+    }
+    assert!(read_contract_sync_xmls(&read_dir).is_empty());
+
+    // The right secret recovers, and is used for polling.
+    let xml = send_action_xml(
+        &bridge_root,
+        3,
+        "subAction=\"REQUEST_SYNC\" actionId=\"r_3\" serverSecret=\"good-secret\"",
+        &|xml| xml.contains("remoteId=\"c_1\""),
+    );
+    assert!(!xml.contains("serverIdentity"), "only issued secrets are passed on");
+    assert_eq!(mgr.get_snapshot().server_identity, "known");
+    let expected = format!("GET /api/v1/contracts/state?server_id={IDENTITY_SERVER_ID} [good-secret]");
+    for _ in 0..100 {
+        if requests.lock().unwrap().contains(&expected) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(requests.lock().unwrap().contains(&expected));
+
+    mgr.shutdown();
+    stop.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
     let _ = fs::remove_dir_all(&test_dir);
 }

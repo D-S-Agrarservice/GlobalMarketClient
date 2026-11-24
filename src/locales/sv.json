@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simulera kontrakt/erbjudande",
   "logContractActionSent": "Kontraktsåtgärd synkroniserad: {subAction} ({detail})",
   "logContractActionRejected": "Kontraktsåtgärd avvisad: {subAction} ({reason})",
+  "logServerIdentityRejected": "Sparfilens identitet avvisades av servern: onlinekontrakt är pausade för den här sparfilen, kontakta supporten.",
   "logContractSettlementSynced": "Avräkningar mottagna: {count} kontrakt-/erbjudandepost(er) levererade till FS.",
   "logMockContractSim": "Simulering: Onlinehändelse för kontrakt och direkterbjudande utlöst ({summary}).",
   "stateMaintenance": "Underhåll",

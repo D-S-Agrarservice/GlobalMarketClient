@@ -8,8 +8,9 @@
 //! 4. Polymorphic `<gmDataSync action="...">` routing (`updateWhitelist`, `transaction`, `contractAction`, silent skip on unknown).
 
 use crate::api::types::{
-    ContractActionRequest, ContractStateResponse, ContractSubAction, MarketItemDto,
-    TransactionRequest, TransactionType, WhitelistItemDto, WhitelistSyncRequest,
+    ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
+    MarketItemDto, ServerSecret, TransactionRequest, TransactionType, WhitelistItemDto,
+    WhitelistSyncRequest,
 };
 use quick_xml::escape::escape;
 use quick_xml::events::Event;
@@ -603,6 +604,17 @@ pub fn write_contract_data_xml(
     read_dir: &Path,
     state: &ContractStateResponse,
 ) -> Result<PathBuf, String> {
+    write_contract_data_xml_with_identity(staging_dir, read_dir, state, None)
+}
+
+/// Same as [`write_contract_data_xml`], plus `<serverIdentity serverId serverSecret />` while the mod
+/// does not have the savegame's secret yet (Spec Section 3.5).
+pub fn write_contract_data_xml_with_identity(
+    staging_dir: &Path,
+    read_dir: &Path,
+    state: &ContractStateResponse,
+    identity: Option<(&str, &ServerSecret)>,
+) -> Result<PathBuf, String> {
     let ts = now_unix_secs();
     let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
     let filename = format!("gmContractSync_{ts}_{seq:06}.xml");
@@ -616,6 +628,13 @@ pub fn write_contract_data_xml(
     let mut xml = String::with_capacity(estimated_cap);
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
     xml.push_str("<gmDataSync action=\"contractData\">\n");
+    if let Some((server_id, secret)) = identity {
+        xml.push_str(&format!(
+            "    <serverIdentity serverId=\"{}\" serverSecret=\"{}\" />\n",
+            escape(server_id.trim()),
+            escape(secret.expose())
+        ));
+    }
 
     xml.push_str("    <contracts>\n");
     for c in &state.contracts {
@@ -691,34 +710,7 @@ pub fn write_contract_data_xml(
     }
     xml.push_str("    </directOffers>\n");
 
-    xml.push_str("    <actionResults>\n");
-    for r in &state.action_results {
-        let aid = escape(r.action_id.trim());
-        if aid.is_empty() {
-            continue;
-        }
-        let sub = escape(r.sub_action.trim());
-        let status = escape(if r.status.trim().is_empty() {
-            "REJECTED"
-        } else {
-            r.status.trim()
-        });
-        let reason = escape(&r.reason);
-        let rid = escape(r.remote_id.trim());
-        let granted = r.granted_liters.clamp(0, i32::MAX as i64);
-        let factor = if r.base_trend_factor.is_finite() && r.base_trend_factor > 0.0 {
-            r.base_trend_factor
-        } else {
-            1.0
-        };
-        let bonus = r.bonus_pct.clamp(0, 1_000);
-        let rem_secs = r.remaining_seconds.clamp(0, i32::MAX as i64);
-
-        xml.push_str(&format!(
-            "        <result actionId=\"{aid}\" subAction=\"{sub}\" status=\"{status}\" reason=\"{reason}\" remoteId=\"{rid}\" grantedLiters=\"{granted}\" baseTrendFactor=\"{factor:.4}\" bonusPct=\"{bonus}\" remainingSeconds=\"{rem_secs}\" />\n"
-        ));
-    }
-    xml.push_str("    </actionResults>\n");
+    push_action_results_xml(&mut xml, &state.action_results);
 
     xml.push_str("    <settlements>\n");
     for s in &state.settlements {
@@ -751,6 +743,59 @@ pub fn write_contract_data_xml(
     atomic_write_utf8_no_bom(staging_dir, &target_path, &xml)?;
     prune_contract_sync_xmls(read_dir, MAX_RETAINED_CONTRACT_SYNC_FILES);
     Ok(target_path)
+}
+
+/// Atomically writes a `gmContractSync_*.xml` with `actionResults` only. Without `<contracts>` and
+/// `<directOffers>` the mod keeps its board (used while no authenticated board state is available).
+pub fn write_contract_results_xml(
+    staging_dir: &Path,
+    read_dir: &Path,
+    results: &[ContractActionResultDto],
+) -> Result<PathBuf, String> {
+    let ts = now_unix_secs();
+    let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let target_path = read_dir.join(format!("gmContractSync_{ts}_{seq:06}.xml"));
+
+    let mut xml = String::with_capacity(256 + results.len() * 180);
+    xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
+    xml.push_str("<gmDataSync action=\"contractData\">\n");
+    push_action_results_xml(&mut xml, results);
+    xml.push_str("</gmDataSync>\n");
+
+    atomic_write_utf8_no_bom(staging_dir, &target_path, &xml)?;
+    prune_contract_sync_xmls(read_dir, MAX_RETAINED_CONTRACT_SYNC_FILES);
+    Ok(target_path)
+}
+
+fn push_action_results_xml(xml: &mut String, results: &[ContractActionResultDto]) {
+    xml.push_str("    <actionResults>\n");
+    for r in results {
+        let aid = escape(r.action_id.trim());
+        if aid.is_empty() {
+            continue;
+        }
+        let sub = escape(r.sub_action.trim());
+        let status = escape(if r.status.trim().is_empty() {
+            "REJECTED"
+        } else {
+            r.status.trim()
+        });
+        let reason = escape(&r.reason);
+        let rid = escape(r.remote_id.trim());
+        let granted = r.granted_liters.clamp(0, i32::MAX as i64);
+        let factor = if r.base_trend_factor.is_finite() && r.base_trend_factor > 0.0 {
+            r.base_trend_factor
+        } else {
+            1.0
+        };
+        let bonus = r.bonus_pct.clamp(0, 1_000);
+        let rem_secs = r.remaining_seconds.clamp(0, i32::MAX as i64);
+
+        xml.push_str(&format!(
+            "        <result actionId=\"{aid}\" subAction=\"{sub}\" status=\"{status}\" reason=\"{reason}\" remoteId=\"{rid}\" grantedLiters=\"{granted}\" baseTrendFactor=\"{factor:.4}\" bonusPct=\"{bonus}\" remainingSeconds=\"{rem_secs}\" />\n"
+        ));
+    }
+    xml.push_str("    </actionResults>\n");
 }
 
 /// Returns `true` when at least one unread `gmContractSync_*.xml` file is present in `read_dir`.
@@ -999,6 +1044,7 @@ pub fn parse_incoming_write_xml(
                         let mut was_bale: Option<bool> = None;
                         let mut was_pallet: Option<bool> = None;
                         let mut settlement_ids: Option<String> = None;
+                        let mut server_secret: Option<ServerSecret> = None;
 
                         for attr in e.attributes().flatten() {
                             let key = std::str::from_utf8(attr.key.as_ref()).unwrap_or("");
@@ -1011,6 +1057,7 @@ pub fn parse_incoming_write_xml(
                                 "subAction" => sub_action = ContractSubAction::from_xml_str(trimmed),
                                 "actionId" => action_id = trimmed.to_string(),
                                 "serverId" => server_id = trimmed.to_string(),
+                                "serverSecret" => server_secret = ServerSecret::parse(trimmed),
                                 "farmId" => {
                                     farm_id = trimmed
                                         .parse::<f64>()
@@ -1107,6 +1154,7 @@ pub fn parse_incoming_write_xml(
                                     was_bale,
                                     was_pallet,
                                     settlement_ids,
+                                    server_secret,
                                 });
                             }
                         }

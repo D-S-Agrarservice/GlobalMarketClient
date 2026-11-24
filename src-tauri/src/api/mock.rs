@@ -8,8 +8,8 @@
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto,
-    OnlineDirectOfferDto, ServerHandshake, ServerNotice, TransactionRequest, TransactionType,
-    WhitelistSyncRequest,
+    OnlineDirectOfferDto, ServerHandshake, ServerNotice, ServerSecret, TransactionRequest,
+    TransactionType, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::xml::sanitize_market_name;
@@ -48,6 +48,12 @@ struct MockSettlementRecord {
 }
 
 #[derive(Debug)]
+struct MockServerIdentity {
+    secret: ServerSecret,
+    confirmed: bool,
+}
+
+#[derive(Debug)]
 struct MockState {
     simulate_offline: bool,
     simulated_contracts_supported: bool,
@@ -70,6 +76,8 @@ struct MockState {
     direct_offers: Vec<MockOfferRecord>,
     action_results: BTreeMap<String, MockActionResultRecord>,
     settlements: Vec<MockSettlementRecord>,
+    server_identities: BTreeMap<String, MockServerIdentity>,
+    next_secret_seq: u64,
 }
 
 impl Default for MockState {
@@ -165,6 +173,8 @@ impl Default for MockState {
             direct_offers: default_offers,
             action_results: BTreeMap::new(),
             settlements: Vec::new(),
+            server_identities: BTreeMap::new(),
+            next_secret_seq: 0,
         }
     }
 }
@@ -680,6 +690,14 @@ impl LocalMockBackend {
         let now = now_unix_secs();
         Self::process_expirations_locked(guard, now);
         let sid = server_id.map(str::trim).filter(|s| !s.is_empty());
+        // Like the backend: other savegames' server ids are never sent.
+        let mask = |id: &str| -> String {
+            if sid.is_some_and(|s| s == id) {
+                id.to_string()
+            } else {
+                String::new()
+            }
+        };
 
         let contracts = guard
             .contracts
@@ -694,6 +712,8 @@ impl LocalMockBackend {
             .map(|rec| {
                 let mut dto = rec.dto.clone();
                 dto.remaining_seconds = (rec.expires_at - now).max(0);
+                dto.issuer_server_id = mask(&dto.issuer_server_id);
+                dto.contractor_server_id = mask(&dto.contractor_server_id);
                 dto
             })
             .collect();
@@ -705,6 +725,7 @@ impl LocalMockBackend {
             .map(|rec| {
                 let mut dto = rec.dto.clone();
                 dto.remaining_seconds = (rec.expires_at - now).max(0);
+                dto.seller_server_id = mask(&dto.seller_server_id);
                 dto
             })
             .collect();
@@ -735,6 +756,7 @@ impl LocalMockBackend {
             direct_offers,
             action_results,
             settlements,
+            server_secret: None,
         }
     }
 }
@@ -910,6 +932,7 @@ impl BackendService for LocalMockBackend {
     fn fetch_contracts_state(
         &self,
         server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError> {
         let mut guard = self
             .state
@@ -927,12 +950,24 @@ impl BackendService for LocalMockBackend {
             ));
         }
 
-        Ok(Self::contract_snapshot_locked(&mut guard, server_id))
+        // Like the backend for reads: unknown savegames get the board only, known ones need the secret.
+        let mut own = None;
+        if let Some(sid) = server_id.map(str::trim).filter(|s| !s.is_empty()) {
+            if let Some(identity) = guard.server_identities.get_mut(&sid.to_ascii_lowercase()) {
+                if server_secret != Some(&identity.secret) {
+                    return Err(ApiError::ServerSecretInvalid);
+                }
+                identity.confirmed = true;
+                own = Some(sid);
+            }
+        }
+        Ok(Self::contract_snapshot_locked(&mut guard, own))
     }
 
     fn submit_contract_action(
         &self,
         action: ContractActionRequest,
+        server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError> {
         let mut guard = self
             .state
@@ -953,22 +988,99 @@ impl BackendService for LocalMockBackend {
         let now = now_unix_secs();
         Self::process_expirations_locked(&mut guard, now);
 
-        let action_id = action.action_id.trim().to_string();
         let server_id = action.server_id.trim().to_string();
-        if action_id.is_empty() || server_id.is_empty() {
+        if action.action_id.trim().is_empty() || server_id.is_empty() {
             return Err(ApiError::Validation(
                 "action_id and server_id are required".to_string(),
             ));
         }
+        let issued = Self::authenticate_or_register_locked(&mut guard, &server_id, server_secret)?;
+        let mut state = Self::apply_contract_action_locked(&mut guard, now, action);
+        state.server_secret = issued;
+        Ok(state)
+    }
+
+    fn fetch_logo_bytes(&self, _logo_url: &str) -> Result<Vec<u8>, ApiError> {
+        let guard = self
+            .state
+            .lock()
+            .map_err(|_| ApiError::Internal("Mock mutex poisoned".to_string()))?;
+        guard
+            .simulated_logo_bytes
+            .clone()
+            .ok_or_else(|| ApiError::Validation("No simulated logo configured in Mock mode".to_string()))
+    }
+}
+
+impl LocalMockBackend {
+    /// Same rules as the backend for actions: registers an unknown savegame, issues a new secret until the
+    /// first one was used, otherwise requires the secret. A secret the savegame already has is adopted on
+    /// first contact, so testing in Mock mode never replaces the real one in the savegame.
+    fn authenticate_or_register_locked(
+        guard: &mut MockState,
+        server_id: &str,
+        secret: Option<&ServerSecret>,
+    ) -> Result<Option<ServerSecret>, ApiError> {
+        let key = server_id.to_ascii_lowercase();
+        if let Some(identity) = guard.server_identities.get_mut(&key) {
+            if secret == Some(&identity.secret) {
+                identity.confirmed = true;
+                return Ok(None);
+            }
+            if identity.confirmed {
+                return Err(ApiError::ServerSecretInvalid);
+            }
+        } else if let Some(existing) = secret {
+            guard.server_identities.insert(
+                key,
+                MockServerIdentity {
+                    secret: existing.clone(),
+                    confirmed: true,
+                },
+            );
+            return Ok(None);
+        }
+        guard.next_secret_seq += 1;
+        let issued = ServerSecret::parse(&format!(
+            "mock-{:x}-{}",
+            now_unix_secs(),
+            guard.next_secret_seq
+        ));
+        if let Some(ref secret) = issued {
+            guard.server_identities.insert(
+                key,
+                MockServerIdentity {
+                    secret: secret.clone(),
+                    confirmed: false,
+                },
+            );
+        }
+        Ok(issued)
+    }
+
+    /// Forgets all registered savegames, like a secret reset by support.
+    pub fn reset_server_identities(&self) {
+        if let Ok(mut guard) = self.state.lock() {
+            guard.server_identities.clear();
+        }
+    }
+
+    fn apply_contract_action_locked(
+        guard: &mut MockState,
+        now: i64,
+        action: ContractActionRequest,
+    ) -> ContractStateResponse {
+        let action_id = action.action_id.trim().to_string();
+        let server_id = action.server_id.trim().to_string();
 
         // Idempotent replay: if `action_id` was already processed, return current snapshot (including stored result) without mutating twice.
         if guard.action_results.contains_key(&action_id) {
-            return Ok(Self::contract_snapshot_locked(&mut guard, Some(&server_id)));
+            return Self::contract_snapshot_locked(guard, Some(&server_id));
         }
 
         match action.sub_action {
             ContractSubAction::RequestSync => {
-                return Ok(Self::contract_snapshot_locked(&mut guard, Some(&server_id)));
+                return Self::contract_snapshot_locked(guard, Some(&server_id));
             }
             ContractSubAction::AckSettlement => {
                 if let Some(ref raw_ids) = action.settlement_ids {
@@ -981,7 +1093,7 @@ impl BackendService for LocalMockBackend {
                         }
                     }
                 }
-                return Ok(Self::contract_snapshot_locked(&mut guard, Some(&server_id)));
+                return Self::contract_snapshot_locked(guard, Some(&server_id));
             }
             ContractSubAction::CreateContract => {
                 let ft = action
@@ -1073,7 +1185,7 @@ impl BackendService for LocalMockBackend {
                         remaining_seconds: rem_secs,
                     }
                 };
-                Self::store_action_result_locked(&mut guard, &server_id, now, result);
+                Self::store_action_result_locked(guard, &server_id, now, result);
             }
             ContractSubAction::CancelContract => {
                 let rid = action.remote_id.as_deref().unwrap_or("").trim();
@@ -1091,7 +1203,7 @@ impl BackendService for LocalMockBackend {
                     }
                 }
                 Self::store_action_result_locked(
-                    &mut guard,
+                    guard,
                     &server_id,
                     now,
                     ContractActionResultDto {
@@ -1154,7 +1266,7 @@ impl BackendService for LocalMockBackend {
                         remaining_seconds: 0,
                     },
                 };
-                Self::store_action_result_locked(&mut guard, &server_id, now, result);
+                Self::store_action_result_locked(guard, &server_id, now, result);
             }
             ContractSubAction::DeliverContract => {
                 let rid = action.remote_id.as_deref().unwrap_or("").trim();
@@ -1240,7 +1352,7 @@ impl BackendService for LocalMockBackend {
                         }
                     }
                     Self::store_action_result_locked(
-                        &mut guard,
+                        guard,
                         &server_id,
                         now,
                         ContractActionResultDto {
@@ -1257,7 +1369,7 @@ impl BackendService for LocalMockBackend {
                     );
                 } else {
                     Self::store_action_result_locked(
-                        &mut guard,
+                        guard,
                         &server_id,
                         now,
                         ContractActionResultDto {
@@ -1363,7 +1475,7 @@ impl BackendService for LocalMockBackend {
                         remaining_seconds: rem_secs,
                     }
                 };
-                Self::store_action_result_locked(&mut guard, &server_id, now, result);
+                Self::store_action_result_locked(guard, &server_id, now, result);
             }
             ContractSubAction::BuyOffer => {
                 let rid = action.remote_id.as_deref().unwrap_or("").trim();
@@ -1426,7 +1538,7 @@ impl BackendService for LocalMockBackend {
                         });
                     }
                     Self::store_action_result_locked(
-                        &mut guard,
+                        guard,
                         &server_id,
                         now,
                         ContractActionResultDto {
@@ -1443,7 +1555,7 @@ impl BackendService for LocalMockBackend {
                     );
                 } else {
                     Self::store_action_result_locked(
-                        &mut guard,
+                        guard,
                         &server_id,
                         now,
                         ContractActionResultDto {
@@ -1478,7 +1590,7 @@ impl BackendService for LocalMockBackend {
                     }
                 }
                 Self::store_action_result_locked(
-                    &mut guard,
+                    guard,
                     &server_id,
                     now,
                     ContractActionResultDto {
@@ -1500,22 +1612,9 @@ impl BackendService for LocalMockBackend {
             }
         }
 
-        Ok(Self::contract_snapshot_locked(&mut guard, Some(&server_id)))
+        Self::contract_snapshot_locked(guard, Some(&server_id))
     }
 
-    fn fetch_logo_bytes(&self, _logo_url: &str) -> Result<Vec<u8>, ApiError> {
-        let guard = self
-            .state
-            .lock()
-            .map_err(|_| ApiError::Internal("Mock mutex poisoned".to_string()))?;
-        guard
-            .simulated_logo_bytes
-            .clone()
-            .ok_or_else(|| ApiError::Validation("No simulated logo configured in Mock mode".to_string()))
-    }
-}
-
-impl LocalMockBackend {
     fn store_action_result_locked(
         guard: &mut MockState,
         server_id: &str,

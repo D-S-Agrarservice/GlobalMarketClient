@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Simulovat kontrakt/nabídku",
   "logContractActionSent": "Akce kontraktu odeslána: {subAction} ({detail})",
   "logContractActionRejected": "Akce kontraktu zamítnuta: {subAction} ({reason})",
+  "logServerIdentityRejected": "Server odmítl identitu uložené hry: online smlouvy jsou pro tuto uloženou hru pozastaveny, kontaktujte prosím podporu.",
   "logContractSettlementSynced": "Zúčtování přijato: předáno {count} položek kontraktů/nabídek do FS.",
   "logMockContractSim": "Simulace: Spuštěna událost online kontraktu a okamžité nabídky ({summary}).",
   "stateMaintenance": "Údržba",

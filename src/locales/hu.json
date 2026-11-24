@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Szerződés/ajánlat szimulálása",
   "logContractActionSent": "Szerződéses művelet elküldve: {subAction} ({detail})",
   "logContractActionRejected": "Szerződéses művelet elutasítva: {subAction} ({reason})",
+  "logServerIdentityRejected": "A szerver elutasította a mentés azonosítóját: az online szerződések szünetelnek ennél a mentésnél, kérjük, fordulj az ügyfélszolgálathoz.",
   "logContractSettlementSynced": "Elszámolások fogadva: {count} szerződéses/ajánlati tétel átadva az FS-nek.",
   "logMockContractSim": "Szimuláció: Online szerződéses és azonnali ajánlati esemény kiváltva ({summary}).",
   "stateMaintenance": "Karbantartás",

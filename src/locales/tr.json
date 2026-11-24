@@ -237,6 +237,7 @@
   "mockBtnContractsSim": "Sözleşme/Teklif Simüle Et",
   "logContractActionSent": "Sözleşme işlemi senkronize edildi: {subAction} ({detail})",
   "logContractActionRejected": "Sözleşme işlemi reddedildi: {subAction} ({reason})",
+  "logServerIdentityRejected": "Kayıt kimliği sunucu tarafından reddedildi: çevrimiçi sözleşmeler bu kayıt için duraklatıldı, lütfen destekle iletişime geçin.",
   "logContractSettlementSynced": "Mahsuplaşmalar alındı: {count} sözleşme/teklif kaydı FS'ye iletildi.",
   "logMockContractSim": "Simülasyon: Çevrimiçi sözleşme ve doğrudan teklif olayı tetiklendi ({summary}).",
   "stateMaintenance": "Bakım",

@@ -3,6 +3,7 @@
 
 pub mod coordinator;
 pub mod dds;
+pub mod identity;
 pub mod l10n;
 pub mod notice;
 pub mod paths;
