@@ -94,6 +94,8 @@ jobs:
             runner: [self-hosted, Windows, X64, floowy-win]
             label: Windows x64
             args: ""
+            # Drops the WiX culture from the MSI name (..._x64_en-US.msi -> ..._x64.msi).
+            asset_names: "[name]_[version]_[arch][setup][ext]"
           - platform: macos
             runner: macos-latest
             label: macOS Universal
@@ -178,6 +180,7 @@ jobs:
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           includeUpdaterJson: ${{ steps.signing.outputs.enabled == 'true' }}
           args: ${{ matrix.args }} ${{ steps.signing.outputs.extra_args }}
+          assetNamePattern: ${{ matrix.asset_names }}
 
   publish-tauri-linux:
     name: Release (Linux x64)
