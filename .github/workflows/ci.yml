@@ -16,44 +16,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  image:
+    uses: ./.github/workflows/ci-image.yml
+    permissions:
+      contents: read
+      packages: write
+
   verify:
-    name: Verify (${{ matrix.label }})
-    runs-on: ${{ matrix.runner }}
-    # Empty for the GitHub-hosted entries, which then run without a container.
-    container: ${{ matrix.container }}
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - label: windows-latest
-            runner: windows-latest
-          - label: linux self-hosted
-            runner: [self-hosted, Linux, X64, bydora]
-            container: ubuntu:22.04
-          - label: macos-latest
-            runner: macos-latest
+        os:
+          - windows-latest
+          - macos-latest
 
-    steps:
-      # Self-hosted Linux runs in a job container as root, so no sudo. The base
-      # image lacks the tools checkout and the setup actions need, too.
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates curl wget file git xz-utils build-essential pkg-config \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libxdo-dev \
-            libssl-dev
-
+    steps: &verify-steps
       - name: Checkout repository
         uses: actions/checkout@v6
-
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -80,3 +61,17 @@ jobs:
 
       - name: Run Rust integration & security test suite
         run: cargo test --manifest-path src-tauri/Cargo.toml --test bridge_suite
+
+  verify-linux:
+    name: Verify (linux self-hosted)
+    needs: image
+    runs-on: [self-hosted, Linux, X64, bydora]
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ needs.image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps: *verify-steps

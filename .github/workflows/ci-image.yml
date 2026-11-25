@@ -1,0 +1,65 @@
+name: CI image
+
+# Linux build image for the self-hosted runner (.github/ci-image/Dockerfile).
+# CI and release call this first: it builds the image only if the tag for the
+# current Dockerfile is missing and returns the exact reference. The weekly run
+# rebuilds the current tag to pick up Ubuntu security updates.
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: Pinned image reference
+        value: ${{ jobs.image.outputs.image }}
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: CI image
+    runs-on: [self-hosted, Linux, X64, bydora]
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute image reference
+        id: ref
+        run: |
+          hash="$(sha256sum .github/ci-image/Dockerfile | cut -c1-12)"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}-ci:deps-$hash" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether the image exists
+        id: exists
+        env:
+          IMAGE: ${{ steps.ref.outputs.image }}
+        run: |
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A called workflow reports the caller's name in github.workflow, so this
+      # forces a rebuild only for the weekly and manual runs of this workflow.
+      - uses: docker/setup-buildx-action@v4
+        if: steps.exists.outputs.found != 'true' || github.workflow == 'CI image'
+
+      - uses: docker/build-push-action@v7
+        if: steps.exists.outputs.found != 'true' || github.workflow == 'CI image'
+        with:
+          context: .github/ci-image
+          pull: true
+          push: true
+          tags: ${{ steps.ref.outputs.image }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
