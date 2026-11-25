@@ -1,10 +1,10 @@
 name: CI
 
+# Pushes to main are not built: main is fast-forwarded to an already built commit.
+# macOS is only built for releases, hosted macOS minutes count tenfold.
 on:
   push:
     branches:
-      - main
-      - develop_floowy
       - "develop*"
   pull_request:
     branches:
@@ -22,17 +22,23 @@ jobs:
       contents: read
       packages: write
 
-  verify:
-    name: Verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-latest
-          - macos-latest
-
+  verify-windows:
+    name: Verify (windows self-hosted)
+    runs-on: [self-hosted, Windows, X64, floowy-win]
     steps: &verify-steps
+      - name: Prepare self-hosted Windows runner
+        if: runner.os == 'Windows' && runner.environment == 'self-hosted'
+        shell: pwsh
+        run: |
+          # `bash` resolves to WSL on this machine, the steps need Git Bash.
+          $git = Split-Path (Split-Path (Get-Command git).Source)
+          $bash = Join-Path $git 'bin'
+          if (-not (Test-Path (Join-Path $bash 'bash.exe'))) { throw "Git Bash not found in $bash" }
+          $bash >> $env:GITHUB_PATH
+          # Own Rust, so a job never touches the toolchain of the machine's owner.
+          "CARGO_HOME=$env:RUNNER_TOOL_CACHE\cargo" >> $env:GITHUB_ENV
+          "RUSTUP_HOME=$env:RUNNER_TOOL_CACHE\rustup" >> $env:GITHUB_ENV
+
       - name: Checkout repository
         uses: actions/checkout@v6
 
@@ -45,7 +51,9 @@ jobs:
       - name: Setup Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Not on the self-hosted Windows runner: its CARGO_HOME is kept between jobs.
       - name: Cache Rust build artifacts
+        if: runner.os != 'Windows'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
