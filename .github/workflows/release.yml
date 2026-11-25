@@ -23,7 +23,7 @@ permissions:
 jobs:
   prepare:
     name: Check Release Target
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64]
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       tag_name: ${{ steps.check.outputs.tag_name }}
@@ -90,7 +90,7 @@ jobs:
           - platform: macos-latest
             label: macOS Universal
             args: "--target universal-apple-darwin"
-          - platform: ubuntu-22.04
+          - platform: [self-hosted, Linux, X64]
             label: Linux x64
             args: ""
 
@@ -99,7 +99,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
