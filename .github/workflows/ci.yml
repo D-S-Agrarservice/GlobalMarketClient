@@ -19,6 +19,8 @@ jobs:
   verify:
     name: Verify (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
+    # Empty for the GitHub-hosted entries, which then run without a container.
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
@@ -26,25 +28,32 @@ jobs:
           - label: windows-latest
             runner: windows-latest
           - label: linux self-hosted
-            runner: [self-hosted, Linux, X64]
+            runner: [self-hosted, Linux, X64, bydora]
+            container: ubuntu:22.04
           - label: macos-latest
             runner: macos-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
+      # Self-hosted Linux runs in a job container as root, so no sudo. The base
+      # image lacks the tools checkout and the setup actions need, too.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl wget file git xz-utils build-essential pkg-config \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libxdo-dev \
             libssl-dev
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
 
       - name: Setup Node.js
         uses: actions/setup-node@v6

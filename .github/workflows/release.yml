@@ -23,7 +23,7 @@ permissions:
 jobs:
   prepare:
     name: Check Release Target
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, bydora]
     outputs:
       should_build: ${{ steps.check.outputs.should_build }}
       tag_name: ${{ steps.check.outputs.tag_name }}
@@ -80,6 +80,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_build == 'true'
     runs-on: ${{ matrix.platform }}
+    # Empty for the GitHub-hosted entries, which then run without a container.
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
@@ -90,25 +92,32 @@ jobs:
           - platform: macos-latest
             label: macOS Universal
             args: "--target universal-apple-darwin"
-          - platform: [self-hosted, Linux, X64]
+          - platform: [self-hosted, Linux, X64, bydora]
+            container: ubuntu:22.04
             label: Linux x64
             args: ""
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
+      # Self-hosted Linux runs in a job container as root, so no sudo. The base
+      # image lacks the tools checkout and the setup actions need, too.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl wget file git xz-utils build-essential pkg-config \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libxdo-dev \
             libssl-dev
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -147,6 +156,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The AppImage tooling needs FUSE, which the Linux job container lacks.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GM_EXTENDED_KEY_DIGEST: ${{ secrets.GM_EXTENDED_KEY_DIGEST }}
