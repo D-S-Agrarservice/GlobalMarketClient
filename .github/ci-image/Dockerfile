@@ -16,3 +16,13 @@ RUN apt-get update \
       libxdo-dev \
       libssl-dev \
  && rm -rf /var/lib/apt/lists/*
+
+# Rust lives in the image, not in $HOME: the runner mounts /github/home from the
+# host and keeps it between jobs, which left half-updated toolchains behind.
+# dtolnay/rust-toolchain still updates stable on top of this when needed.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+ && rustc --version
