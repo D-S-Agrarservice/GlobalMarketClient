@@ -1,0 +1,68 @@
+name: Notify Discord on Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to sync (leave empty for newest published release)"
+        required: false
+        default: ""
+      skip_announce:
+        description: "Only update #gm-downloads card (do not post a changelog announcement)"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run (print Discord payloads in logs without sending)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  notify-discord:
+    name: Update Discord Download Card & Announce
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Publish release update to Discord
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_DOWNLOAD_WEBHOOK_URL: ${{ secrets.DISCORD_DOWNLOAD_WEBHOOK_URL }}
+          DISCORD_ANNOUNCE_WEBHOOK_URL: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK_URL }}
+          DISCORD_BETA_MESSAGE_ID: ${{ vars.DISCORD_BETA_MESSAGE_ID }}
+          DISCORD_RELEASE_MESSAGE_ID: ${{ vars.DISCORD_RELEASE_MESSAGE_ID }}
+          DISCORD_BETA_THREAD_ID: ${{ vars.DISCORD_BETA_THREAD_ID }}
+          DISCORD_RELEASE_THREAD_ID: ${{ vars.DISCORD_RELEASE_THREAD_ID }}
+          DISCORD_BETA_ROLE_ID: ${{ vars.DISCORD_BETA_ROLE_ID }}
+          DISCORD_RELEASE_ROLE_ID: ${{ vars.DISCORD_RELEASE_ROLE_ID }}
+          DISCORD_DOWNLOAD_CHANNEL_ID: ${{ vars.DISCORD_DOWNLOAD_CHANNEL_ID }}
+          DISCORD_SUPPORT_CHANNEL_ID: ${{ vars.DISCORD_SUPPORT_CHANNEL_ID }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
+        run: |
+          ARGS=()
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ARGS+=(--repo "${{ github.repository }}")
+            if [ -n "${{ inputs.tag_name }}" ]; then
+              ARGS+=(--tag "${{ inputs.tag_name }}")
+            fi
+          fi
+          if [ "${{ inputs.skip_announce }}" = "true" ]; then
+            ARGS+=(--skip-announce)
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          node scripts/discord/notify-release.mjs "${ARGS[@]}"
