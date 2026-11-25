@@ -9,6 +9,7 @@ use crate::api::mock::LocalMockBackend;
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
     FillTypeStatus, MarketItemDto, ServerHandshake, ServerNotice, ServerSecret,
+    VehicleActionRequest, VehicleStateResponse,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::{
@@ -27,7 +28,7 @@ use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
     is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
     prune_market_data_xmls, write_contract_data_xml, write_contract_data_xml_with_identity,
-    write_contract_results_xml, write_heartbeat_xml_with_extras,
+    prune_vehicle_sync_xmls, write_contract_results_xml, write_heartbeat_xml_with_extras,
     write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatExtras,
     HeartbeatMarketProfile, HeartbeatMarketProfiles, HeartbeatNotice, IncomingPacket,
 };
@@ -47,6 +48,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
+
+mod vehicles;
+
+use vehicles::{
+    apply_and_write_vehicle_state, log_vehicle_action_outcome,
+    synthesize_rejected_vehicle_actions, VehicleBoardSync, VEHICLES_NOT_SUPPORTED_REASON,
+};
 
 const MAX_LOG_ENTRIES: usize = 250;
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(3500);
@@ -134,6 +142,9 @@ pub struct BridgeSnapshot {
     pub contracts_supported: bool,
     pub open_contracts_count: usize,
     pub open_offers_count: usize,
+    /// Stage 3 used vehicle market available (`vehicles_supported`, Spec Section 3.6).
+    pub vehicles_supported: bool,
+    pub open_vehicle_listings_count: usize,
     pub approved_count: usize,
     pub pending_count: usize,
     pub rejected_count: usize,
@@ -285,6 +296,8 @@ impl BridgeManager {
             contracts_supported: false,
             open_contracts_count: 0,
             open_offers_count: 0,
+            vehicles_supported: false,
+            open_vehicle_listings_count: 0,
             approved_count: 0,
             pending_count: 0,
             rejected_count: 0,
@@ -1161,6 +1174,13 @@ impl BridgeManager {
                 "Simulation: Triggered online contract & direct offer event ({summary})."
             ),
         );
+        let vehicle_summary = self.mock_backend.simulate_vehicle_activity();
+        self.push_i18n_log(
+            LogLevel::Success,
+            "logMockVehicleSim",
+            [("summary", vehicle_summary.clone())],
+            format!("Simulation: Triggered used vehicle market event ({vehicle_summary})."),
+        );
         self.nudge_signal(WorkerSignal::ForceSyncNow);
         Some(summary)
     }
@@ -1368,6 +1388,8 @@ impl BridgeManager {
                 snap.market_logo_file = None;
                 snap.bridge_path = None;
                 snap.contracts_supported = false;
+                snap.vehicles_supported = false;
+                snap.open_vehicle_listings_count = 0;
                 snap.open_contracts_count = 0;
                 snap.open_offers_count = 0;
                 snap.approved_count = 0;
@@ -1411,6 +1433,8 @@ impl BridgeManager {
                     snap.market_logo_file = None;
                     snap.bridge_path = None;
                     snap.contracts_supported = false;
+                    snap.vehicles_supported = false;
+                    snap.open_vehicle_listings_count = 0;
                     snap.open_contracts_count = 0;
                     snap.open_offers_count = 0;
                     snap.approved_count = 0;
@@ -1438,6 +1462,8 @@ impl BridgeManager {
                 snap.connection_enabled = connection_enabled;
                 snap.api_version = None;
                 snap.contracts_supported = false;
+                snap.vehicles_supported = false;
+                snap.open_vehicle_listings_count = 0;
                 snap.open_contracts_count = 0;
                 snap.open_offers_count = 0;
                 snap.approved_count = 0;
@@ -1485,6 +1511,8 @@ impl BridgeManager {
                 snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
                 snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
                 snap.contracts_supported = false;
+                snap.vehicles_supported = false;
+                snap.open_vehicle_listings_count = 0;
                 snap.open_contracts_count = 0;
                 snap.open_offers_count = 0;
                 snap.approved_count = 0;
@@ -1505,9 +1533,11 @@ impl BridgeManager {
             return;
         }
 
-        // Clear any leftover `gmDataSync_*.xml` & `gmContractSync_*.xml` snapshots from previous sessions before starting fresh.
+        // Clear any leftover `gmDataSync_*.xml`, `gmContractSync_*.xml` & `gmVehicleSync_*.xml` snapshots
+        // from previous sessions before starting fresh.
         prune_market_data_xmls(&paths.read_dir, 0);
         prune_contract_sync_xmls(&paths.read_dir, 0);
+        prune_vehicle_sync_xmls(&paths.read_dir, 0);
 
         if let Ok(mut paths_guard) = self.active_paths.lock() {
             *paths_guard = Some(paths.clone());
@@ -1529,6 +1559,8 @@ impl BridgeManager {
             snap.profile_path = Some(paths.profile_dir.to_string_lossy().into_owned());
             snap.bridge_path = Some(paths.bridge_root.to_string_lossy().into_owned());
             snap.contracts_supported = false;
+            snap.vehicles_supported = false;
+            snap.open_vehicle_listings_count = 0;
             snap.open_contracts_count = 0;
             snap.open_offers_count = 0;
             snap.approved_count = 0;
@@ -1649,6 +1681,7 @@ fn run_bridge_worker(
     let mut is_connected = false;
     let mut version_ok = true;
     let mut contracts_supported = false;
+    let mut vehicles_supported = false;
     let mut server_notice: Option<ServerNotice> = shared
         .lock()
         .ok()
@@ -1658,6 +1691,7 @@ fn run_bridge_worker(
     let mut last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
     let mut last_market_poll = Instant::now() - Duration::from_secs(60);
     let mut last_contract_poll = Instant::now() - Duration::from_secs(60);
+    let mut last_vehicle_poll = Instant::now() - Duration::from_secs(60);
     let mut last_status_check = Instant::now() - Duration::from_secs(60);
     let mut retry_hold_until: Option<Instant> = None;
 
@@ -1679,6 +1713,7 @@ fn run_bridge_worker(
     let mut last_contract_write_at = Instant::now() - Duration::from_secs(60);
     let mut delivered_action_ids: VecDeque<String> = VecDeque::new();
     let mut announced_settlement_ids: HashSet<String> = HashSet::new();
+    let mut vehicle_sync = VehicleBoardSync::default();
 
     let identity_scope = server_identity_scope(&shared);
     emit_server_identity_state(&shared, &app_handle, &identity_scope, active_server_id.as_deref());
@@ -1932,11 +1967,14 @@ fn run_bridge_worker(
                     };
 
                     let next_contracts_supported = next_connected && hs.contracts_supported;
+                    let next_vehicles_supported = next_connected && hs.vehicles_supported;
                     let changed_conn = is_connected != next_connected;
                     let changed_branding = active_branding != next_branding;
-                    let changed_contracts_sup = contracts_supported != next_contracts_supported;
+                    let changed_contracts_sup = contracts_supported != next_contracts_supported
+                        || vehicles_supported != next_vehicles_supported;
                     is_connected = next_connected;
                     contracts_supported = next_contracts_supported;
+                    vehicles_supported = next_vehicles_supported;
                     active_branding = next_branding.clone();
                     let (r_cnt, w_cnt) = count_bridge_queues(&paths);
 
@@ -1980,6 +2018,10 @@ fn run_bridge_worker(
                             snap.open_contracts_count = 0;
                             snap.open_offers_count = 0;
                         }
+                        snap.vehicles_supported = vehicles_supported;
+                        if !vehicles_supported {
+                            snap.open_vehicle_listings_count = 0;
+                        }
                         snap.read_queue_count = r_cnt;
                         snap.write_queue_count = w_cnt;
                         snap.last_error = if !version_ok {
@@ -2013,6 +2055,7 @@ fn run_bridge_worker(
                     let was_online = is_connected;
                     is_connected = false;
                     contracts_supported = false;
+                    vehicles_supported = false;
                     active_branding = HeartbeatBranding::default();
                     let err_msg = err.to_string();
 
@@ -2068,6 +2111,8 @@ fn run_bridge_worker(
                         snap.market_logo_url = None;
                         snap.market_logo_file = None;
                         snap.contracts_supported = false;
+                        snap.vehicles_supported = false;
+                        snap.open_vehicle_listings_count = 0;
                         snap.open_contracts_count = 0;
                         snap.open_offers_count = 0;
                         snap.read_queue_count = r_cnt;
@@ -2117,6 +2162,7 @@ fn run_bridge_worker(
                     offline_reason: offline_reason
                         .filter(|_| !hb_connected)
                         .map(OfflineReason::as_str),
+                    vehicles_supported: hb_connected && vehicles_supported,
                 },
             ) {
                 Ok(()) if hb_connected => {
@@ -2326,6 +2372,7 @@ fn run_bridge_worker(
                             delivered_action_ids.clear();
                             announced_settlement_ids.clear();
                             has_synced_contracts_once = false;
+                            vehicle_sync.reset();
                             if let Ok(mut guard) = shared.lock() {
                                 guard.last_seen_server_id = Some(req_sid);
                             }
@@ -2347,12 +2394,14 @@ fn run_bridge_worker(
                             ContractSubAction::RequestSync | ContractSubAction::AckSettlement
                         );
 
-                        match submit_action_with_identity(
-                            backend.as_ref(),
+                        match submit_with_identity(
                             &identity_scope,
-                            &req,
+                            &req.server_id,
+                            req.server_secret.as_ref(),
                             &shared,
                             &app_handle,
+                            |secret| backend.submit_contract_action(req.clone(), secret),
+                            |state| state.server_secret.as_ref(),
                         ) {
                             Ok(state) => {
                                 if is_user_facing {
@@ -2474,8 +2523,160 @@ fn run_bridge_worker(
                                 );
                                 emit_snapshot_update(&shared, &app_handle, |snap| {
                                     snap.contracts_supported = false;
+                                    snap.vehicles_supported = false;
+                                    snap.open_vehicle_listings_count = 0;
                                     snap.open_contracts_count = 0;
                                     snap.open_offers_count = 0;
+                                });
+                                last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
+                            }
+                            Err(err) => {
+                                all_ok = false;
+                                handle_backend_io_error(
+                                    &err,
+                                    &mut is_connected,
+                                    &mut retry_hold_until,
+                                    &shared,
+                                    &app_handle,
+                                );
+                                break;
+                            }
+                        }
+                    }
+
+                    if all_ok {
+                        let _ = fs::remove_file(&xml_path);
+                    } else {
+                        break;
+                    }
+                }
+                Ok(IncomingPacket::VehicleActions(action_list)) => {
+                    let same_savegame = action_list
+                        .iter()
+                        .all(|a| active_server_id.as_deref() == Some(a.server_id.trim()));
+                    if !vehicles_supported {
+                        synthesize_rejected_vehicle_actions(
+                            &paths,
+                            &action_list,
+                            VEHICLES_NOT_SUPPORTED_REASON,
+                            same_savegame,
+                            &mut vehicle_sync,
+                        );
+                        let _ = fs::remove_file(&xml_path);
+                        continue;
+                    }
+
+                    let mut all_ok = true;
+                    for req in action_list {
+                        let req_sid = req.server_id.trim().to_string();
+                        if !req_sid.is_empty() && active_server_id.as_deref() != Some(req_sid.as_str())
+                        {
+                            active_server_id = Some(req_sid.clone());
+                            delivered_action_ids.clear();
+                            announced_settlement_ids.clear();
+                            has_synced_contracts_once = false;
+                            vehicle_sync.reset();
+                            if let Ok(mut guard) = shared.lock() {
+                                guard.last_seen_server_id = Some(req_sid);
+                            }
+                        }
+                        if req.sub_action == crate::api::types::VehicleSubAction::RequestSync {
+                            vehicle_sync.delivered_action_ids.clear();
+                        }
+
+                        // Oversized or broken snapshots never leave the client (Spec Section 3.6 limits).
+                        if let Some(reason) = req.local_rejection_reason() {
+                            synthesize_rejected_vehicle_actions(
+                                &paths,
+                                std::slice::from_ref(&req),
+                                reason,
+                                true,
+                                &mut vehicle_sync,
+                            );
+                            log_vehicle_action_outcome(&req, Some(reason), &shared, &app_handle);
+                            continue;
+                        }
+
+                        match submit_vehicle_action(
+                            backend.as_ref(),
+                            &identity_scope,
+                            &req,
+                            &shared,
+                            &app_handle,
+                        ) {
+                            Ok(state) => {
+                                let rejection = state
+                                    .action_results
+                                    .iter()
+                                    .find(|r| r.action_id == req.action_id)
+                                    .filter(|r| r.status == "REJECTED")
+                                    .map(|r| r.reason.clone());
+                                log_vehicle_action_outcome(
+                                    &req,
+                                    rejection.as_deref(),
+                                    &shared,
+                                    &app_handle,
+                                );
+                                let undelivered = undelivered_server_secret(
+                                    &shared,
+                                    &identity_scope,
+                                    &req.server_id,
+                                );
+                                // Always a full board, also for an unchanged `REQUEST_SYNC`: the mod
+                                // matches lost `CREATE_LISTING` answers against it.
+                                apply_and_write_vehicle_state(
+                                    &paths,
+                                    &state,
+                                    undelivered.as_ref().map(|s| (req.server_id.as_str(), s)),
+                                    true,
+                                    &mut vehicle_sync,
+                                    &shared,
+                                    &app_handle,
+                                );
+                                last_vehicle_poll = Instant::now();
+                            }
+                            Err(ApiError::ServerSecretInvalid) => {
+                                synthesize_rejected_vehicle_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    SERVER_SECRET_INVALID_REASON,
+                                    true,
+                                    &mut vehicle_sync,
+                                );
+                                log_vehicle_action_outcome(
+                                    &req,
+                                    Some(SERVER_SECRET_INVALID_REASON),
+                                    &shared,
+                                    &app_handle,
+                                );
+                            }
+                            Err(ApiError::Validation(reason)) => {
+                                synthesize_rejected_vehicle_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    "INVALID_REQUEST",
+                                    true,
+                                    &mut vehicle_sync,
+                                );
+                                log_vehicle_action_outcome(
+                                    &req,
+                                    Some(&format!("INVALID_REQUEST: {reason}")),
+                                    &shared,
+                                    &app_handle,
+                                );
+                            }
+                            Err(ApiError::NotSupported(_)) => {
+                                vehicles_supported = false;
+                                synthesize_rejected_vehicle_actions(
+                                    &paths,
+                                    std::slice::from_ref(&req),
+                                    VEHICLES_NOT_SUPPORTED_REASON,
+                                    true,
+                                    &mut vehicle_sync,
+                                );
+                                emit_snapshot_update(&shared, &app_handle, |snap| {
+                                    snap.vehicles_supported = false;
+                                    snap.open_vehicle_listings_count = 0;
                                 });
                                 last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                             }
@@ -2640,8 +2841,85 @@ fn run_bridge_worker(
                     contracts_supported = false;
                     emit_snapshot_update(&shared, &app_handle, |snap| {
                         snap.contracts_supported = false;
+                        snap.vehicles_supported = false;
+                        snap.open_vehicle_listings_count = 0;
                         snap.open_contracts_count = 0;
                         snap.open_offers_count = 0;
+                    });
+                    last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
+                }
+                (Err(err), _) => {
+                    handle_backend_io_error(
+                        &err,
+                        &mut is_connected,
+                        &mut retry_hold_until,
+                        &shared,
+                        &app_handle,
+                    );
+                }
+            }
+        }
+
+        // 6. Periodic Stage 3 vehicle market poll (`GET /api/v1/vehicles/state`, Spec Section 3.6).
+        if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
+            break;
+        }
+        // Same rule as for contracts: a board without savegame identity has no own listings or
+        // settlements and only feeds the UI counter; it never reaches the mod.
+        let vehicle_identity = active_server_id
+            .as_deref()
+            .filter(|_| is_connected && vehicles_supported)
+            .and_then(|sid| {
+                poll_server_secret(&shared, &identity_scope, sid).map(|s| (sid.to_string(), s))
+            });
+        if is_connected
+            && vehicles_supported
+            && (force_sync
+                || (vehicle_identity.is_some() && !vehicle_sync.synced_once)
+                || last_vehicle_poll.elapsed() >= poll_interval)
+        {
+            last_vehicle_poll = Instant::now();
+            let vehicle_res = backend.fetch_vehicles_state(
+                vehicle_identity.as_ref().map(|(sid, _)| sid.as_str()),
+                vehicle_identity.as_ref().map(|(_, secret)| secret),
+            );
+            if stop_mode.load(Ordering::SeqCst) != STOP_RUNNING {
+                break;
+            }
+            match (vehicle_res, vehicle_identity) {
+                (Ok(state), None) => {
+                    emit_snapshot_update(&shared, &app_handle, |snap| {
+                        snap.vehicles_supported = true;
+                        snap.open_vehicle_listings_count = state.listings.len();
+                    });
+                }
+                (Err(ApiError::ServerSecretInvalid), Some((sid, _))) => {
+                    record_server_identity_rejected(&shared, &app_handle, &identity_scope, &sid);
+                    last_vehicle_poll = Instant::now() - poll_interval;
+                }
+                (Ok(mut state), Some((sid, _))) => {
+                    let undelivered = undelivered_server_secret(&shared, &identity_scope, &sid);
+                    state.action_results.retain(|r| {
+                        !vehicle_sync
+                            .delivered_action_ids
+                            .iter()
+                            .any(|id| id == &r.action_id)
+                    });
+                    apply_and_write_vehicle_state(
+                        &paths,
+                        &state,
+                        undelivered.as_ref().map(|s| (sid.as_str(), s)),
+                        force_sync || !vehicle_sync.synced_once,
+                        &mut vehicle_sync,
+                        &shared,
+                        &app_handle,
+                    );
+                }
+                (Err(ApiError::NotSupported(_)), _) => {
+                    vehicles_supported = false;
+                    emit_snapshot_update(&shared, &app_handle, |snap| {
+                        snap.vehicles_supported = false;
+                        snap.open_vehicle_listings_count = 0;
                     });
                     last_heartbeat = Instant::now() - HEARTBEAT_INTERVAL;
                 }
@@ -3314,7 +3592,7 @@ fn list_sorted_write_xmls(write_dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
 
-    // Prioritize `whitelist_*.xml`, then `contractAction_*.xml`, then `transaction_*.xml`, and handle
+    // Prioritize `whitelist_*.xml`, then `contractAction_*.xml` / `vehicleAction_*.xml`, then `transaction_*.xml`, and handle
     // `marketSwitch_*.xml` last so actions written before the switch still reach the previous market.
     // Numeric sequence suffixes sort numerically so `_2.xml` always executes before `_10.xml`.
     files.sort_by(|a, b| {
@@ -3329,7 +3607,7 @@ fn list_sorted_write_xmls(write_dir: &Path) -> Vec<PathBuf> {
 fn write_filename_sort_key(filename: &str) -> (u8, String, u64, String) {
     let priority = if filename.starts_with("whitelist_") {
         0
-    } else if filename.starts_with("contractAction_") {
+    } else if filename.starts_with("contractAction_") || filename.starts_with("vehicleAction_") {
         1
     } else if filename.starts_with("transaction_") {
         2
@@ -3631,34 +3909,38 @@ fn emit_server_identity_state(
     }
 }
 
-/// Sends an action with the best known savegame secret. The backend rejects a wrong secret before it
-/// applies anything, so the other known secret (mod or client) is safe to try next.
-fn submit_action_with_identity(
-    backend: &dyn BackendService,
+/// Sends an action (contracts or vehicles, one secret per savegame) with the best known savegame
+/// secret. The backend rejects a wrong secret before it applies anything, so the other known secret
+/// (mod or client) is safe to try next.
+#[allow(clippy::too_many_arguments)]
+fn submit_with_identity<T>(
     scope: &str,
-    req: &ContractActionRequest,
+    server_id: &str,
+    from_mod: Option<&ServerSecret>,
     shared: &Arc<Mutex<SharedState>>,
     app_handle: &Option<AppHandle>,
-) -> Result<ContractStateResponse, ApiError> {
-    let from_mod = req.server_secret.as_ref();
+    send: impl Fn(Option<&ServerSecret>) -> Result<T, ApiError>,
+    issued_secret: impl Fn(&T) -> Option<&ServerSecret>,
+) -> Result<T, ApiError> {
     let candidates = shared
         .lock()
         .map(|g| {
             g.server_identities
-                .candidates_for_action(scope, &req.server_id, from_mod)
+                .candidates_for_action(scope, server_id, from_mod)
         })
         .unwrap_or_else(|_| vec![from_mod.cloned()]);
 
     for secret in candidates {
-        match backend.submit_contract_action(req.clone(), secret.as_ref()) {
+        match send(secret.as_ref()) {
             Ok(state) => {
                 record_server_identity_accepted(
                     shared,
                     app_handle,
                     scope,
-                    req,
+                    server_id,
+                    from_mod,
                     secret.as_ref(),
-                    state.server_secret.as_ref(),
+                    issued_secret(&state),
                 );
                 return Ok(state);
             }
@@ -3666,8 +3948,27 @@ fn submit_action_with_identity(
             Err(err) => return Err(err),
         }
     }
-    record_server_identity_rejected(shared, app_handle, scope, &req.server_id);
+    record_server_identity_rejected(shared, app_handle, scope, server_id);
     Err(ApiError::ServerSecretInvalid)
+}
+
+/// Sends a vehicle action with the savegame identity shared with the contract board.
+fn submit_vehicle_action(
+    backend: &dyn BackendService,
+    scope: &str,
+    req: &VehicleActionRequest,
+    shared: &Arc<Mutex<SharedState>>,
+    app_handle: &Option<AppHandle>,
+) -> Result<VehicleStateResponse, ApiError> {
+    submit_with_identity(
+        scope,
+        &req.server_id,
+        req.server_secret.as_ref(),
+        shared,
+        app_handle,
+        |secret| backend.submit_vehicle_action(req.clone(), secret),
+        |state| state.server_secret.as_ref(),
+    )
 }
 
 /// Remembers the working secret and seals an issued one in the vault before it goes to the mod.
@@ -3675,19 +3976,17 @@ fn record_server_identity_accepted(
     shared: &Arc<Mutex<SharedState>>,
     app_handle: &Option<AppHandle>,
     scope: &str,
-    req: &ContractActionRequest,
+    server_id: &str,
+    from_mod: Option<&ServerSecret>,
     used: Option<&ServerSecret>,
     issued: Option<&ServerSecret>,
 ) {
     let save_err = shared.lock().ok().and_then(|mut guard| {
         let state = &mut *guard;
-        let changed = state.server_identities.record_accepted(
-            scope,
-            &req.server_id,
-            used,
-            req.server_secret.as_ref(),
-            issued,
-        );
+        let changed =
+            state
+                .server_identities
+                .record_accepted(scope, server_id, used, from_mod, issued);
         if !changed {
             return None;
         }
@@ -3699,7 +3998,7 @@ fn record_server_identity_accepted(
     if let Some(err) = save_err {
         push_raw_log_shared(shared, app_handle, LogLevel::Error, err);
     }
-    emit_server_identity_state(shared, app_handle, scope, Some(&req.server_id));
+    emit_server_identity_state(shared, app_handle, scope, Some(server_id));
 }
 
 fn record_server_identity_rejected(
@@ -3719,7 +4018,7 @@ fn record_server_identity_rejected(
             LogLevel::Error,
             "logServerIdentityRejected",
             [],
-            "Savegame identity rejected by the server (SERVER_SECRET_INVALID): online contracts are paused for this savegame, please contact support."
+            "Savegame identity rejected by the server (SERVER_SECRET_INVALID): online contracts and vehicle listings are paused for this savegame, please contact support."
                 .to_string(),
         );
     }

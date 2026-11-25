@@ -125,6 +125,8 @@ const state: UiState = {
     contractsSupported: false,
     openContractsCount: 0,
     openOffersCount: 0,
+    vehiclesSupported: false,
+    openVehicleListingsCount: 0,
     approvedCount: 0,
     pendingCount: 0,
     rejectedCount: 0,
@@ -1616,6 +1618,15 @@ function renderDashboardHtml(): string {
           </span>
           <span class="rounded bg-cyan-500/15 border border-cyan-500/30 px-2 py-0.5 text-[11px] font-medium text-cyan-300">
             🏷 ${escapeHtml(t("offersBadge", { count: state.snapshot.openOffersCount }))}
+          </span>
+          `
+              : ""
+          }
+          ${
+            state.snapshot.vehiclesSupported
+              ? `
+          <span class="rounded bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 text-[11px] font-medium text-indigo-300">
+            🚜 ${escapeHtml(t("vehiclesBadge", { count: state.snapshot.openVehicleListingsCount }))}
           </span>
           `
               : ""

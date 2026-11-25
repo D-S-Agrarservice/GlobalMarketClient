@@ -5,11 +5,13 @@
 //! `greatDemand` triggers, buy/sell stock deltas, and `minVersion` force-update warnings)
 //! without requiring a live FastAPI server.
 
+mod vehicles;
+
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto,
     OnlineDirectOfferDto, ServerHandshake, ServerNotice, ServerSecret, TransactionRequest,
-    TransactionType, WhitelistSyncRequest,
+    TransactionType, VehicleActionRequest, VehicleStateResponse, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::xml::sanitize_market_name;
@@ -78,6 +80,8 @@ struct MockState {
     settlements: Vec<MockSettlementRecord>,
     server_identities: BTreeMap<String, MockServerIdentity>,
     next_secret_seq: u64,
+    /// Stage 3 used vehicle market (Spec Section 3.6).
+    vehicles: vehicles::MockVehicleMarket,
 }
 
 impl Default for MockState {
@@ -175,6 +179,7 @@ impl Default for MockState {
             settlements: Vec::new(),
             server_identities: BTreeMap::new(),
             next_secret_seq: 0,
+            vehicles: vehicles::MockVehicleMarket::default(),
         }
     }
 }
@@ -805,6 +810,7 @@ impl BackendService for LocalMockBackend {
             is_private_market,
             market_logo_url,
             contracts_supported: guard.simulated_contracts_supported,
+            vehicles_supported: guard.vehicles.supported,
             notice: guard.simulated_notice.clone(),
         })
     }
@@ -996,6 +1002,71 @@ impl BackendService for LocalMockBackend {
         }
         let issued = Self::authenticate_or_register_locked(&mut guard, &server_id, server_secret)?;
         let mut state = Self::apply_contract_action_locked(&mut guard, now, action);
+        state.server_secret = issued;
+        Ok(state)
+    }
+
+    fn fetch_vehicles_state(
+        &self,
+        server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError> {
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| ApiError::Internal("Mock mutex poisoned".to_string()))?;
+        if guard.simulate_offline {
+            return Err(ApiError::Network(
+                "Simulated connection outage (Mock mode)".to_string(),
+            ));
+        }
+        if !guard.vehicles.supported {
+            return Err(ApiError::NotSupported(
+                "Vehicle market disabled in Mock mode".to_string(),
+            ));
+        }
+        // Same savegame registry as contracts: unknown savegames get the board only.
+        let mut own = None;
+        if let Some(sid) = server_id.map(str::trim).filter(|s| !s.is_empty()) {
+            let key = sid.to_ascii_lowercase();
+            if let Some(identity) = guard.server_identities.get_mut(&key) {
+                if server_secret != Some(&identity.secret) {
+                    return Err(ApiError::ServerSecretInvalid);
+                }
+                identity.confirmed = true;
+                own = Some(key);
+            }
+        }
+        Ok(Self::vehicles_snapshot_locked(&mut guard, own.as_deref()))
+    }
+
+    fn submit_vehicle_action(
+        &self,
+        action: VehicleActionRequest,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError> {
+        let mut guard = self
+            .state
+            .lock()
+            .map_err(|_| ApiError::Internal("Mock mutex poisoned".to_string()))?;
+        if guard.simulate_offline {
+            return Err(ApiError::Network(
+                "Simulated connection outage (Mock mode)".to_string(),
+            ));
+        }
+        if !guard.vehicles.supported {
+            return Err(ApiError::NotSupported(
+                "Vehicle market disabled in Mock mode".to_string(),
+            ));
+        }
+        let server_id = action.server_id.trim().to_string();
+        if action.action_id.trim().is_empty() || server_id.is_empty() {
+            return Err(ApiError::Validation(
+                "action_id and server_id are required".to_string(),
+            ));
+        }
+        let issued = Self::authenticate_or_register_locked(&mut guard, &server_id, server_secret)?;
+        let mut state = guard.vehicles.apply_action(now_unix_secs(), action);
         state.server_secret = issued;
         Ok(state)
     }

@@ -130,6 +130,9 @@ pub struct ServerHandshake {
     /// Capability gate for Stage 2 cross-server Supply Contracts & Direct Offers (`#25`).
     #[serde(default)]
     pub contracts_supported: bool,
+    /// Capability gate for the Stage 3 cross-server used vehicle market (Spec Section 3.6).
+    #[serde(default)]
+    pub vehicles_supported: bool,
     /// Optional maintenance / restart / info notice (Spec Section 3.1.3).
     #[serde(default)]
     pub notice: Option<ServerNotice>,
@@ -478,6 +481,208 @@ pub struct ContractStateResponse {
     pub action_results: Vec<ContractActionResultDto>,
     pub settlements: Vec<ContractSettlementDto>,
     /// Secret the backend issued in this response (once, on registration).
+    #[serde(skip)]
+    pub server_secret: Option<ServerSecret>,
+}
+
+/// Maximum number of `<config>` entries per vehicle (same limit as the backend, Spec Section 3.6).
+pub const MAX_VEHICLE_CONFIGS: usize = 64;
+/// Maximum size of one vehicle snapshot as JSON (same limit as the backend, Spec Section 3.6).
+pub const MAX_VEHICLE_JSON_BYTES: usize = 16 * 1024;
+
+/// Outgoing Stage 3 vehicle market action types (`write/vehicleAction_*.xml` -> `POST /api/v1/vehicles/actions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum VehicleSubAction {
+    CreateListing,
+    CancelListing,
+    BuyListing,
+    AckSettlement,
+    RequestSync,
+}
+
+impl VehicleSubAction {
+    pub fn from_xml_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "CREATE_LISTING" => Some(Self::CreateListing),
+            "CANCEL_LISTING" => Some(Self::CancelListing),
+            "BUY_LISTING" => Some(Self::BuyListing),
+            "ACK_SETTLEMENT" => Some(Self::AckSettlement),
+            "REQUEST_SYNC" => Some(Self::RequestSync),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateListing => "CREATE_LISTING",
+            Self::CancelListing => "CANCEL_LISTING",
+            Self::BuyListing => "BUY_LISTING",
+            Self::AckSettlement => "ACK_SETTLEMENT",
+            Self::RequestSync => "REQUEST_SYNC",
+        }
+    }
+
+    /// `REQUEST_SYNC` and `ACK_SETTLEMENT` run in the background and are not shown to the player.
+    pub fn is_silent(self) -> bool {
+        matches!(self, Self::RequestSync | Self::AckSettlement)
+    }
+}
+
+/// One `<config>` of a vehicle snapshot (`vehicle.configurations[]`). The same `name` may appear
+/// several times (one active entry, others only bought).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleConfigDto {
+    pub name: String,
+    pub save_id: String,
+    pub is_active: bool,
+    pub is_bought: bool,
+    /// Custom paint `[r, g, b]` (XML `color="r g b"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_template: Option<String>,
+}
+
+/// Vehicle snapshot (`<vehicle>` / `vehicle`), passed through as sent: the mod filters by compatibility.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleDto {
+    /// Network form: `data/...`, `$pdlcdir$...` or `$moddir$FS25_Name/...`.
+    pub xml_filename: String,
+    /// `None` for basegame and DLC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_name: Option<String>,
+    /// `None` for basegame and DLC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_file_hash: Option<String>,
+    pub group: String,
+    pub age_months: i64,
+    pub operating_hours: f64,
+    pub damage: f64,
+    pub wear: f64,
+    pub configurations: Vec<VehicleConfigDto>,
+}
+
+/// Outgoing Stage 3 action parsed from `write/vehicleAction_<date>_<seq>.xml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleActionRequest {
+    pub sub_action: VehicleSubAction,
+    pub action_id: String,
+    pub server_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm_id: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
+    /// `CANCEL_LISTING` of a listing whose `CREATE_LISTING` result was lost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sale_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_hours: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_ids: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<VehicleDto>,
+    /// The `<vehicle>` had more than [`MAX_VEHICLE_CONFIGS`] `<config>` entries (the rest was dropped).
+    #[serde(skip)]
+    pub configs_truncated: bool,
+    /// Secret the mod sent along (`request#serverSecret`), `None` if it knows none yet.
+    #[serde(skip)]
+    pub server_secret: Option<ServerSecret>,
+}
+
+impl VehicleActionRequest {
+    /// Checks the limits the backend enforces before anything is sent, so an oversized or broken
+    /// snapshot gets a `REJECTED` result (`INVALID_REQUEST`) and the mod releases its escrow.
+    pub fn local_rejection_reason(&self) -> Option<&'static str> {
+        if self.sub_action != VehicleSubAction::CreateListing {
+            return None;
+        }
+        let Some(vehicle) = self.vehicle.as_ref() else {
+            return Some("INVALID_REQUEST");
+        };
+        let too_big = self.configs_truncated
+            || vehicle.configurations.len() > MAX_VEHICLE_CONFIGS
+            || serde_json::to_vec(vehicle).map_or(true, |b| b.len() > MAX_VEHICLE_JSON_BYTES);
+        (too_big || vehicle.xml_filename.trim().is_empty()).then_some("INVALID_REQUEST")
+    }
+}
+
+/// Open online vehicle listing (`<listings><listing>`). Other savegames' `seller_server_id` and
+/// `create_action_id` are `""` (masked by the backend) and are passed through unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineVehicleListingDto {
+    pub remote_id: String,
+    pub create_action_id: String,
+    pub sale_mode: String,
+    pub seller_server_id: String,
+    pub seller_farm_id: i32,
+    pub seller_name: String,
+    pub price_factor: f64,
+    pub remaining_seconds: i64,
+    pub status: String,
+    pub vehicle: VehicleDto,
+}
+
+/// Result of one vehicle action (`<actionResults><result>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleActionResultDto {
+    pub action_id: String,
+    pub sub_action: String,
+    pub status: String,
+    pub reason: String,
+    pub remote_id: String,
+    /// `CREATE_LISTING`: its own `action_id`; `CANCEL_LISTING`: the listing's.
+    pub create_action_id: String,
+    pub remaining_seconds: i64,
+    /// Accepted `BUY_LISTING` and `CANCEL_LISTING` (except `NOT_CREATED`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<VehicleDto>,
+}
+
+/// Vehicle market settlement (`<settlements><settlement>`): `LISTING_SOLD`, `LISTING_BOUGHT`, `LISTING_EXPIRED`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleSettlementDto {
+    pub settlement_id: String,
+    #[serde(rename = "type")]
+    pub settlement_type: String,
+    pub target_server_id: String,
+    pub target_farm_id: i32,
+    pub remote_id: String,
+    /// `LISTING_SOLD`, `LISTING_EXPIRED`; else `""`.
+    pub create_action_id: String,
+    /// `LISTING_BOUGHT`; else `""`.
+    pub buy_action_id: String,
+    pub price_factor: f64,
+    /// `LISTING_SOLD`; else `""`.
+    pub buyer_name: String,
+    /// `LISTING_BOUGHT`; else `""`.
+    pub seller_name: String,
+    /// `LISTING_BOUGHT`, `LISTING_EXPIRED`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<VehicleDto>,
+}
+
+/// Complete Stage 3 vehicle market state (`GET /api/v1/vehicles/state` & `POST /api/v1/vehicles/actions`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleStateResponse {
+    pub updated_at: i64,
+    pub listings: Vec<OnlineVehicleListingDto>,
+    pub action_results: Vec<VehicleActionResultDto>,
+    pub settlements: Vec<VehicleSettlementDto>,
+    /// Secret the backend issued in this response (once, on registration; shared with contracts).
     #[serde(skip)]
     pub server_secret: Option<ServerSecret>,
 }

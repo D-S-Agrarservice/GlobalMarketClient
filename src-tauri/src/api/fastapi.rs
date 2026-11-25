@@ -7,14 +7,17 @@
 //! - `POST /api/v1/market/transactions` -> `TransactionRequest` -> `200 MarketState`
 //! - `GET  /api/v1/contracts/state`     -> `200 ContractState` or `304 Not Modified` (`?server_id=...`)
 //! - `POST /api/v1/contracts/actions`   -> `ContractActionRequest` -> `200 ContractState`
+//! - `GET  /api/v1/vehicles/state`      -> `200 VehicleState` or `304 Not Modified` (`?server_id=...`)
+//! - `POST /api/v1/vehicles/actions`    -> `VehicleActionRequest` -> `200 VehicleState`
 //! - Optional `X-Market-Token` header for private/community/logo keys (absent = official public market).
 //! - Persistent random `X-Client-Id` header so the backend can enforce 16/32 active client slots per key without hardware tracking.
 
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
-    ServerSecret,
-    ServerHandshake, ServerNotice, TransactionRequest, WhitelistSyncRequest,
+    OnlineVehicleListingDto, ServerHandshake, ServerNotice, ServerSecret, TransactionRequest,
+    VehicleActionRequest, VehicleActionResultDto, VehicleConfigDto, VehicleDto,
+    VehicleSettlementDto, VehicleStateResponse, WhitelistSyncRequest,
 };
 use crate::api::{ApiError, BackendService};
 use crate::bridge::dds::MAX_LOGO_RAW_BYTES;
@@ -33,6 +36,13 @@ struct CachedMarketState {
 }
 
 #[derive(Debug, Clone)]
+struct CachedVehicleState {
+    server_id: Option<String>,
+    etag: String,
+    state: VehicleStateResponse,
+}
+
+#[derive(Debug, Clone)]
 struct CachedContractState {
     server_id: Option<String>,
     etag: String,
@@ -45,6 +55,7 @@ pub struct FastApiBackend {
     client_id: RwLock<Option<String>>,
     etag_cache: Mutex<Option<CachedMarketState>>,
     contract_etag_cache: Mutex<Option<CachedContractState>>,
+    vehicle_etag_cache: Mutex<Option<CachedVehicleState>>,
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
 }
@@ -76,6 +87,7 @@ impl FastApiBackend {
             client_id: RwLock::new(clean_client_id(&client_id)),
             etag_cache: Mutex::new(None),
             contract_etag_cache: Mutex::new(None),
+            vehicle_etag_cache: Mutex::new(None),
             client,
             runtime,
         })
@@ -124,6 +136,30 @@ impl FastApiBackend {
         }
         if let Ok(mut guard) = self.contract_etag_cache.lock() {
             *guard = None;
+        }
+        if let Ok(mut guard) = self.vehicle_etag_cache.lock() {
+            *guard = None;
+        }
+    }
+
+    fn store_or_clear_vehicle_etag(
+        &self,
+        server_id: Option<String>,
+        etag_opt: Option<String>,
+        state: &VehicleStateResponse,
+    ) {
+        if let Ok(mut guard) = self.vehicle_etag_cache.lock() {
+            *guard = match etag_opt {
+                Some(etag) if !etag.is_empty() => Some(CachedVehicleState {
+                    server_id,
+                    etag,
+                    state: VehicleStateResponse {
+                        server_secret: None,
+                        ..state.clone()
+                    },
+                }),
+                _ => None,
+            };
         }
     }
 
@@ -229,6 +265,8 @@ struct WireMetaStatus {
     market_logo_url: Option<String>,
     #[serde(default, alias = "contractsSupported")]
     contracts_supported: bool,
+    #[serde(default, alias = "vehiclesSupported")]
+    vehicles_supported: bool,
     /// Parsed leniently via [`ServerNotice::from_wire`], so a malformed notice never fails the handshake.
     #[serde(default)]
     notice: Option<serde_json::Value>,
@@ -617,6 +655,329 @@ impl From<WireContractState> for ContractStateResponse {
     }
 }
 
+/// Integer field that tolerates a JSON float (`26.0`) or a numeric string.
+fn de_i64_lenient<'de, D: serde::Deserializer<'de>>(de: D) -> Result<i64, D::Error> {
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f.round() as i64))
+            .unwrap_or(0),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().map_or(0, |f| f.round() as i64),
+        _ => 0,
+    })
+}
+
+/// String field that tolerates a number (`save_id: 3`) or `null`.
+fn de_string_lenient<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    let value = serde_json::Value::deserialize(de)?;
+    Ok(match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    })
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WireVehicleConfig {
+    #[serde(default, deserialize_with = "de_string_lenient")]
+    name: String,
+    #[serde(default, alias = "saveId", deserialize_with = "de_string_lenient")]
+    save_id: String,
+    #[serde(default, alias = "isActive")]
+    is_active: bool,
+    #[serde(default, alias = "isBought")]
+    is_bought: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<Vec<f64>>,
+    #[serde(default, alias = "materialTemplate", skip_serializing_if = "Option::is_none")]
+    material_template: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WireVehicle {
+    #[serde(default, alias = "xmlFilename", deserialize_with = "de_string_lenient")]
+    xml_filename: String,
+    #[serde(default, alias = "modName", skip_serializing_if = "Option::is_none")]
+    mod_name: Option<String>,
+    #[serde(default, alias = "modFileHash", skip_serializing_if = "Option::is_none")]
+    mod_file_hash: Option<String>,
+    #[serde(default, deserialize_with = "de_string_lenient")]
+    group: String,
+    #[serde(default, alias = "ageMonths", deserialize_with = "de_i64_lenient")]
+    age_months: i64,
+    #[serde(default, alias = "operatingHours")]
+    operating_hours: f64,
+    #[serde(default)]
+    damage: f64,
+    #[serde(default)]
+    wear: f64,
+    /// `null` in listings of a `compact=true` board.
+    #[serde(default)]
+    configurations: Option<Vec<WireVehicleConfig>>,
+}
+
+fn clean_opt_text(raw: Option<String>) -> Option<String> {
+    raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+impl From<WireVehicle> for VehicleDto {
+    fn from(v: WireVehicle) -> Self {
+        Self {
+            xml_filename: v.xml_filename.trim().to_string(),
+            mod_name: clean_opt_text(v.mod_name),
+            mod_file_hash: clean_opt_text(v.mod_file_hash),
+            group: v.group.trim().to_string(),
+            age_months: v.age_months.max(0),
+            operating_hours: finite_or(v.operating_hours, 0.0).max(0.0),
+            damage: finite_or(v.damage, 0.0).clamp(0.0, 1.0),
+            wear: finite_or(v.wear, 0.0).clamp(0.0, 1.0),
+            configurations: v
+                .configurations
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| VehicleConfigDto {
+                    name: c.name.trim().to_string(),
+                    save_id: c.save_id.trim().to_string(),
+                    is_active: c.is_active,
+                    is_bought: c.is_bought,
+                    color: c
+                        .color
+                        .filter(|rgb| rgb.len() == 3 && rgb.iter().all(|f| f.is_finite()))
+                        .map(|rgb| [rgb[0], rgb[1], rgb[2]]),
+                    material_template: c.material_template,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&VehicleDto> for WireVehicle {
+    fn from(v: &VehicleDto) -> Self {
+        Self {
+            xml_filename: v.xml_filename.clone(),
+            mod_name: v.mod_name.clone(),
+            mod_file_hash: v.mod_file_hash.clone(),
+            group: v.group.clone(),
+            age_months: v.age_months,
+            operating_hours: v.operating_hours,
+            damage: v.damage,
+            wear: v.wear,
+            configurations: Some(
+                v.configurations
+                    .iter()
+                    .map(|c| WireVehicleConfig {
+                        name: c.name.clone(),
+                        save_id: c.save_id.clone(),
+                        is_active: c.is_active,
+                        is_bought: c.is_bought,
+                        color: c.color.map(|rgb| rgb.to_vec()),
+                        material_template: c.material_template.clone(),
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct WireVehicleActionPayload<'a> {
+    sub_action: &'a str,
+    action_id: &'a str,
+    server_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    farm_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    farm_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    create_action_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sale_mode: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    price_factor: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_hours: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement_ids: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vehicle: Option<WireVehicle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireVehicleListing {
+    #[serde(alias = "remoteId", alias = "id", deserialize_with = "de_string_lenient")]
+    remote_id: String,
+    #[serde(default, alias = "createActionId", deserialize_with = "de_string_lenient")]
+    create_action_id: String,
+    #[serde(default, alias = "saleMode", deserialize_with = "de_string_lenient")]
+    sale_mode: String,
+    #[serde(default, alias = "sellerServerId", deserialize_with = "de_string_lenient")]
+    seller_server_id: String,
+    #[serde(default, alias = "sellerFarmId", deserialize_with = "de_i64_lenient")]
+    seller_farm_id: i64,
+    #[serde(default, alias = "sellerName", deserialize_with = "de_string_lenient")]
+    seller_name: String,
+    #[serde(default = "default_one_f64", alias = "priceFactor")]
+    price_factor: f64,
+    #[serde(default, alias = "remainingSeconds", deserialize_with = "de_i64_lenient")]
+    remaining_seconds: i64,
+    #[serde(default, deserialize_with = "de_string_lenient")]
+    status: String,
+    #[serde(default)]
+    vehicle: Option<WireVehicle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireVehicleActionResult {
+    #[serde(alias = "actionId", deserialize_with = "de_string_lenient")]
+    action_id: String,
+    #[serde(default, alias = "subAction", deserialize_with = "de_string_lenient")]
+    sub_action: String,
+    #[serde(default, deserialize_with = "de_string_lenient")]
+    status: String,
+    #[serde(default, deserialize_with = "de_string_lenient")]
+    reason: String,
+    #[serde(default, alias = "remoteId", deserialize_with = "de_string_lenient")]
+    remote_id: String,
+    #[serde(default, alias = "createActionId", deserialize_with = "de_string_lenient")]
+    create_action_id: String,
+    #[serde(default, alias = "remainingSeconds", deserialize_with = "de_i64_lenient")]
+    remaining_seconds: i64,
+    #[serde(default)]
+    vehicle: Option<WireVehicle>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WireVehicleSettlement {
+    #[serde(alias = "settlementId", alias = "id", deserialize_with = "de_string_lenient")]
+    settlement_id: String,
+    #[serde(default, rename = "type", alias = "settlementType", deserialize_with = "de_string_lenient")]
+    settlement_type: String,
+    #[serde(default, alias = "targetServerId", deserialize_with = "de_string_lenient")]
+    target_server_id: String,
+    #[serde(default, alias = "targetFarmId", deserialize_with = "de_i64_lenient")]
+    target_farm_id: i64,
+    #[serde(default, alias = "remoteId", deserialize_with = "de_string_lenient")]
+    remote_id: String,
+    #[serde(default, alias = "createActionId", deserialize_with = "de_string_lenient")]
+    create_action_id: String,
+    #[serde(default, alias = "buyActionId", deserialize_with = "de_string_lenient")]
+    buy_action_id: String,
+    #[serde(default = "default_one_f64", alias = "priceFactor")]
+    price_factor: f64,
+    #[serde(default, alias = "buyerName", deserialize_with = "de_string_lenient")]
+    buyer_name: String,
+    #[serde(default, alias = "sellerName", deserialize_with = "de_string_lenient")]
+    seller_name: String,
+    #[serde(default)]
+    vehicle: Option<WireVehicle>,
+}
+
+#[derive(Deserialize)]
+struct WireVehicleState {
+    #[serde(default, deserialize_with = "de_i64_lenient")]
+    updated_at: i64,
+    #[serde(default)]
+    listings: Vec<WireVehicleListing>,
+    #[serde(default, alias = "actionResults")]
+    action_results: Vec<WireVehicleActionResult>,
+    #[serde(default)]
+    settlements: Vec<WireVehicleSettlement>,
+    #[serde(default, alias = "serverSecret")]
+    server_secret: Option<String>,
+}
+
+fn default_one_f64() -> f64 {
+    1.0
+}
+
+fn clamp_farm_id(raw: i64) -> i32 {
+    raw.clamp(0, i32::MAX as i64) as i32
+}
+
+fn upper_or(raw: &str, fallback: &str) -> String {
+    let clean = raw.trim();
+    if clean.is_empty() {
+        fallback.to_string()
+    } else {
+        clean.to_ascii_uppercase()
+    }
+}
+
+impl From<WireVehicleState> for VehicleStateResponse {
+    fn from(wire: WireVehicleState) -> Self {
+        Self {
+            updated_at: wire.updated_at,
+            server_secret: wire.server_secret.as_deref().and_then(ServerSecret::parse),
+            // Listings without a vehicle are useless for the mod; masked `""` ids stay as they are.
+            listings: wire
+                .listings
+                .into_iter()
+                .filter(|l| !l.remote_id.trim().is_empty())
+                .filter_map(|l| {
+                    let vehicle = VehicleDto::from(l.vehicle?);
+                    Some(OnlineVehicleListingDto {
+                        remote_id: l.remote_id.trim().to_string(),
+                        create_action_id: l.create_action_id.trim().to_string(),
+                        sale_mode: upper_or(&l.sale_mode, "FIXED"),
+                        seller_server_id: l.seller_server_id.trim().to_string(),
+                        seller_farm_id: clamp_farm_id(l.seller_farm_id),
+                        seller_name: l.seller_name.trim().to_string(),
+                        price_factor: finite_or(l.price_factor, 1.0),
+                        remaining_seconds: l.remaining_seconds.max(0),
+                        status: upper_or(&l.status, "OPEN"),
+                        vehicle,
+                    })
+                })
+                .collect(),
+            action_results: wire
+                .action_results
+                .into_iter()
+                .filter(|r| !r.action_id.trim().is_empty())
+                .map(|r| VehicleActionResultDto {
+                    action_id: r.action_id.trim().to_string(),
+                    sub_action: r.sub_action.trim().to_ascii_uppercase(),
+                    status: upper_or(&r.status, "REJECTED"),
+                    reason: r.reason.trim().to_string(),
+                    remote_id: r.remote_id.trim().to_string(),
+                    create_action_id: r.create_action_id.trim().to_string(),
+                    remaining_seconds: r.remaining_seconds.max(0),
+                    vehicle: r.vehicle.map(VehicleDto::from),
+                })
+                .collect(),
+            settlements: wire
+                .settlements
+                .into_iter()
+                .filter(|s| !s.settlement_id.trim().is_empty())
+                .map(|s| VehicleSettlementDto {
+                    settlement_id: s.settlement_id.trim().to_string(),
+                    settlement_type: s.settlement_type.trim().to_ascii_uppercase(),
+                    target_server_id: s.target_server_id.trim().to_string(),
+                    target_farm_id: clamp_farm_id(s.target_farm_id),
+                    remote_id: s.remote_id.trim().to_string(),
+                    create_action_id: s.create_action_id.trim().to_string(),
+                    buy_action_id: s.buy_action_id.trim().to_string(),
+                    price_factor: finite_or(s.price_factor, 1.0),
+                    buyer_name: s.buyer_name.trim().to_string(),
+                    seller_name: s.seller_name.trim().to_string(),
+                    vehicle: s.vehicle.map(VehicleDto::from),
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WireHttpValidationError {
     #[serde(default)]
@@ -808,6 +1169,7 @@ impl BackendService for FastApiBackend {
                 is_private_market,
                 market_logo_url,
                 contracts_supported: parsed.contracts_supported,
+                vehicles_supported: parsed.vehicles_supported,
                 notice: parsed.notice.as_ref().and_then(ServerNotice::from_wire),
             })
         })
@@ -1154,6 +1516,141 @@ impl BackendService for FastApiBackend {
         }
         board_state.server_secret = issued_secret_from_json(&raw_json);
         Ok(board_state)
+    }
+
+    fn fetch_vehicles_state(
+        &self,
+        server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError> {
+        let clean_sid = server_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+        let url = self.endpoint("/api/v1/vehicles/state");
+        let cached_snapshot = self
+            .vehicle_etag_cache
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|c| c.server_id == clean_sid);
+
+        let mut req = self.apply_auth_header(self.client.get(url));
+        if let Some(ref sid) = clean_sid {
+            req = req.query(&[("server_id", sid.as_str())]);
+            req = apply_server_secret(req, server_secret);
+        }
+        if let Some(ref cached) = cached_snapshot {
+            req = req.header(IF_NONE_MATCH, &cached.etag);
+        }
+
+        let (etag_opt, state, was_not_modified) = self.runtime.block_on(async move {
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?;
+            if resp.status() == StatusCode::NOT_FOUND
+                || resp.status() == StatusCode::NOT_IMPLEMENTED
+            {
+                return Err(ApiError::NotSupported(format!("HTTP {}", resp.status())));
+            }
+            if resp.status() == StatusCode::NOT_MODIFIED {
+                if let Some(cached) = cached_snapshot {
+                    return Ok((Some(cached.etag), cached.state, true));
+                }
+                return Err(ApiError::Network(
+                    "Received HTTP 304 Not Modified without local vehicles ETag cache".to_string(),
+                ));
+            }
+            if !resp.status().is_success() {
+                return Err(map_error_response(resp, false).await);
+            }
+            let etag = extract_etag(resp.headers());
+            let wire: WireVehicleState = resp
+                .json()
+                .await
+                .map_err(|e| ApiError::Validation(e.to_string()))?;
+            Ok((etag, VehicleStateResponse::from(wire), false))
+        })?;
+
+        if !was_not_modified {
+            self.store_or_clear_vehicle_etag(clean_sid, etag_opt, &state);
+        }
+        Ok(state)
+    }
+
+    fn submit_vehicle_action(
+        &self,
+        action: VehicleActionRequest,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError> {
+        let action_id = action.action_id.trim();
+        let server_id = action.server_id.trim();
+        if action_id.is_empty() || server_id.is_empty() {
+            return Err(ApiError::Validation(
+                "Invalid VehicleActionRequest: action_id and server_id are required".to_string(),
+            ));
+        }
+        let non_empty = |v: &Option<String>| -> Option<String> {
+            v.as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+        };
+        let (farm_name, remote_id, create_action_id, sale_mode, settlement_ids) = (
+            non_empty(&action.farm_name),
+            non_empty(&action.remote_id),
+            non_empty(&action.create_action_id),
+            non_empty(&action.sale_mode).map(|s| s.to_ascii_uppercase()),
+            non_empty(&action.settlement_ids),
+        );
+        let payload = WireVehicleActionPayload {
+            sub_action: action.sub_action.as_str(),
+            action_id,
+            server_id,
+            farm_id: action.farm_id.filter(|&id| id > 0),
+            farm_name: farm_name.as_deref(),
+            remote_id: remote_id.as_deref(),
+            create_action_id: create_action_id.as_deref(),
+            sale_mode: sale_mode.as_deref(),
+            price_factor: action
+                .price_factor
+                .filter(|f| f.is_finite())
+                .map(|f| (f * 10_000.0).round() / 10_000.0),
+            duration_hours: action.duration_hours,
+            settlement_ids: settlement_ids.as_deref(),
+            vehicle: action.vehicle.as_ref().map(WireVehicle::from),
+        };
+
+        let url = self.endpoint("/api/v1/vehicles/actions");
+        let req = apply_server_secret(
+            self.apply_auth_header(self.client.post(url).json(&payload)),
+            server_secret,
+        );
+        let (etag_opt, state) = self.runtime.block_on(async move {
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| ApiError::Network(format_reqwest_error(&e)))?;
+            if resp.status() == StatusCode::NOT_FOUND
+                || resp.status() == StatusCode::NOT_IMPLEMENTED
+            {
+                return Err(ApiError::NotSupported(format!("HTTP {}", resp.status())));
+            }
+            if !resp.status().is_success() {
+                return Err(map_error_response(resp, true).await);
+            }
+            let etag = extract_etag(resp.headers());
+            let wire: WireVehicleState = resp
+                .json()
+                .await
+                .map_err(|e| ApiError::Validation(e.to_string()))?;
+            Ok((etag, VehicleStateResponse::from(wire)))
+        })?;
+
+        // Cached without the secret: a later 304 must not look like a newly issued one.
+        self.store_or_clear_vehicle_etag(Some(server_id.to_string()), etag_opt, &state);
+        Ok(state)
     }
 
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError> {

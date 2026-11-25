@@ -589,6 +589,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         contracts_supported: true,
         open_contracts_count: 2,
         open_offers_count: 3,
+        vehicles_supported: true,
+        open_vehicle_listings_count: 4,
         approved_count: 10,
         pending_count: 2,
         rejected_count: 0,
@@ -639,6 +641,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
     assert!(report.contains("app_version: \"0.9.16-beta (protocol 0.9.16)\""));
     assert!(report.contains("connection_state: \"ONLINE (min_exe_version=0.9.9, latest_exe_version=0.9.17)\""));
     assert!(report.contains("contracts_bridge: \"supported=true, open_contracts=2, open_offers=3\""));
+    assert!(report.contains("vehicles_bridge: \"supported=true, open_listings=4\""));
     assert!(report.contains("client_slot_prefix: \"a3f901…\""));
     assert!(report.contains("lifebit_seq=7"));
     assert!(report.contains("configured (redacted)"));
@@ -3525,6 +3528,7 @@ fn heartbeat_xml_writes_server_notice_and_offline_reason() {
                 market_profiles: None,
                 server_notice: notice,
                 offline_reason: reason,
+                vehicles_supported: false,
             },
         )
         .unwrap();
@@ -4077,6 +4081,15 @@ fn spawn_identity_server(
     good_secret: &'static str,
     issue: bool,
 ) -> (String, Arc<Mutex<Vec<String>>>, Arc<AtomicBool>, thread::JoinHandle<()>) {
+    spawn_identity_server_with(good_secret, issue, false)
+}
+
+/// Like [`spawn_identity_server`]; with `vehicles` it also offers the vehicle market (API 2.9.0).
+fn spawn_identity_server_with(
+    good_secret: &'static str,
+    issue: bool,
+    vehicles: bool,
+) -> (String, Arc<Mutex<Vec<String>>>, Arc<AtomicBool>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -4123,13 +4136,13 @@ fn spawn_identity_server(
             );
             log.lock().unwrap().push(format!("{target} [{server_secret}]"));
 
-            const BOARD: &str = r#""updated_at":1,"contracts":[{"remote_id":"c_1","issuer_server_id":"","issuer_farm_id":1,"issuer_name":"Nordhof","fill_type":"WHEAT","total_liters":1000,"bonus_pct":10,"remaining_seconds":3600,"status":"OPEN"}],"direct_offers":[],"action_results":[],"settlements":[]"#;
+            const BOARD: &str = r#""updated_at":1,"contracts":[{"remote_id":"c_1","issuer_server_id":"","issuer_farm_id":1,"issuer_name":"Nordhof","fill_type":"WHEAT","total_liters":1000,"bonus_pct":10,"remaining_seconds":3600,"status":"OPEN"}],"direct_offers":[],"action_results":[],"settlements":[],"listings":[{"remote_id":"v_9","create_action_id":"","sale_mode":"FIXED","seller_server_id":"","seller_farm_id":1,"seller_name":"Nordhof","price_factor":1.1,"remaining_seconds":3600,"status":"OPEN","vehicle":{"xml_filename":"data/x.xml","mod_name":null,"group":"DRIVABLES","age_months":3,"operating_hours":1.5,"damage":0.1,"wear":0.2,"configurations":[{"name":"baseColor","save_id":"4","is_active":true,"is_bought":true,"color":[0.62,0.05,0.04],"material_template":null}]}}]"#;
             let forbidden = r#"{"detail":{"code":"SERVER_SECRET_INVALID"}}"#.to_string();
             let (status, json) = if target.contains("/meta/status") {
-                ("200 OK", r#"{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":1,"market_name":"Global Market","api_version":"2.8.0","contracts_supported":true}"#.to_string())
+                ("200 OK", format!(r#"{{"online":true,"min_exe_version":"0.9.9","poll_interval_sec":1,"market_name":"Global Market","api_version":"2.8.0","contracts_supported":true,"vehicles_supported":{vehicles}}}"#))
             } else if target.contains("/market/") {
                 ("200 OK", r#"{"updated_at":1,"items":[]}"#.to_string())
-            } else if target.contains("/contracts/state") {
+            } else if target.contains("/contracts/state") || target.contains("/vehicles/state") {
                 if target.contains("server_id=") && server_secret != good_secret {
                     ("403 Forbidden", forbidden)
                 } else if !none_match.is_empty() {
@@ -4144,7 +4157,7 @@ fn spawn_identity_server(
             } else {
                 ("403 Forbidden", forbidden)
             };
-            let etag = if target.contains("/contracts/") { "ETag: \"e1\"\r\n" } else { "" };
+            let etag = if target.contains("/contracts/") || target.contains("/vehicles/") { "ETag: \"e1\"\r\n" } else { "" };
             let _ = stream.write_all(
                 format!(
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{json}",
@@ -4375,6 +4388,870 @@ fn rejected_identity_is_passed_to_the_mod_and_recovers() {
     assert!(!xml.contains("serverIdentity"), "only issued secrets are passed on");
     assert_eq!(mgr.get_snapshot().server_identity, "known");
     let expected = format!("GET /api/v1/contracts/state?server_id={IDENTITY_SERVER_ID} [good-secret]");
+    for _ in 0..100 {
+        if requests.lock().unwrap().contains(&expected) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(requests.lock().unwrap().contains(&expected));
+
+    mgr.shutdown();
+    stop.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3 used vehicle market (`vehicleAction` / `vehicleData`, Spec Section 3.6)
+// ---------------------------------------------------------------------------
+
+use globalmarket_client_lib::api::types::{
+    OnlineVehicleListingDto, VehicleActionRequest, VehicleActionResultDto, VehicleConfigDto,
+    VehicleDto, VehicleSettlementDto, VehicleStateResponse, VehicleSubAction,
+};
+use globalmarket_client_lib::bridge::xml::{
+    cleanup_bridge_transfer_files, prune_market_data_xmls, write_vehicle_data_xml,
+    write_vehicle_data_xml_with_identity, write_vehicle_results_xml,
+};
+
+fn painted_vehicle() -> VehicleDto {
+    VehicleDto {
+        xml_filename: "$moddir$FS25_ExampleTractor/tractor.xml".to_string(),
+        mod_name: Some("FS25_ExampleTractor".to_string()),
+        mod_file_hash: Some("3f1ce9".to_string()),
+        group: "DRIVABLES".to_string(),
+        age_months: 26,
+        operating_hours: 412.5,
+        damage: 0.18,
+        wear: 0.31,
+        configurations: vec![
+            VehicleConfigDto {
+                name: "wheel".to_string(),
+                save_id: "3".to_string(),
+                is_active: true,
+                is_bought: true,
+                color: None,
+                material_template: None,
+            },
+            VehicleConfigDto {
+                name: "baseColor".to_string(),
+                save_id: "4".to_string(),
+                is_active: true,
+                is_bought: true,
+                color: Some([0.62, 0.05, 0.04]),
+                material_template: Some(String::new()),
+            },
+        ],
+    }
+}
+
+fn vehicle_request(sub: VehicleSubAction, action_id: &str) -> VehicleActionRequest {
+    VehicleActionRequest {
+        sub_action: sub,
+        action_id: action_id.to_string(),
+        server_id: IDENTITY_SERVER_ID.to_string(),
+        farm_id: Some(1),
+        farm_name: Some("Hof Meier".to_string()),
+        remote_id: None,
+        create_action_id: None,
+        sale_mode: None,
+        price_factor: None,
+        duration_hours: None,
+        settlement_ids: None,
+        vehicle: None,
+        configs_truncated: false,
+        server_secret: None,
+    }
+}
+
+fn create_listing_request(action_id: &str) -> VehicleActionRequest {
+    VehicleActionRequest {
+        sale_mode: Some("FIXED".to_string()),
+        price_factor: Some(1.10),
+        duration_hours: Some(72),
+        vehicle: Some(painted_vehicle()),
+        ..vehicle_request(VehicleSubAction::CreateListing, action_id)
+    }
+}
+
+fn read_sync_xmls(read_dir: &std::path::Path, prefix: &str) -> Vec<String> {
+    let mut paths: Vec<PathBuf> = fs::read_dir(read_dir)
+        .map(|entries| entries.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    paths.retain(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(prefix))
+    });
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .collect()
+}
+
+/// Writes a `vehicleAction_*.xml` like the mod and waits until the client answered it.
+fn send_vehicle_xml(
+    bridge_root: &std::path::Path,
+    seq: u32,
+    requests: &str,
+    answered: &dyn Fn(&str) -> bool,
+) -> String {
+    let write_dir = bridge_root.join("write");
+    let read_dir = bridge_root.join("read");
+    let tmp = write_dir.join(format!("vehicleAction_20261125_120000_{seq}.tmp"));
+    fs::write(
+        &tmp,
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n<gmDataSync action=\"vehicleAction\">\n{requests}\n</gmDataSync>"
+        ),
+    )
+    .unwrap();
+    fs::rename(&tmp, tmp.with_extension("xml")).unwrap();
+    for _ in 0..200 {
+        let joined = read_sync_xmls(&read_dir, "gmVehicleSync_").join("\n");
+        if fs::read_dir(&write_dir).unwrap().flatten().count() == 0 && answered(&joined) {
+            return joined;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "vehicle action {seq} was not answered, read/: {:?}",
+        read_sync_xmls(&read_dir, "gmVehicleSync_")
+    );
+}
+
+fn wait_for_heartbeat_flag(bridge_root: &std::path::Path, flag: &str) {
+    for _ in 0..200 {
+        if fs::read_to_string(bridge_root.join("globalMarketOnline.xml"))
+            .is_ok_and(|s| s.contains(flag))
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("heartbeat never contained {flag}");
+}
+
+#[test]
+fn stage3_vehicle_action_xml_parsing_with_nested_vehicle_and_paint() {
+    let xml = r#"<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<gmDataSync action="vehicleAction">
+    <request subAction="CREATE_LISTING" actionId="a3f901c48b2e7d10_15000_1" serverId="a3f901c48b2e7d10" serverSecret="s3cr-et_1" farmId="1" farmName="Hof Meier [Dedi EU]" saleMode="FIXED" priceFactor="1,10" durationHours="72">
+        <vehicle xmlFilename="$moddir$FS25_ExampleTractor/tractor.xml" modName="FS25_ExampleTractor" modFileHash="3f1c...e9" group="DRIVABLES" ageMonths="26" operatingHours="412.5" damage="0.18" wear="0.31">
+            <config name="wheel" saveId="3" isActive="true" isBought="true" />
+            <config name="baseColor" saveId="4" isActive="true" isBought="true" color="0.62 0.05 0.04" materialTemplate="" />
+            <config name="design" saveId="2" isActive="false" isBought="true" color="broken" />
+        </vehicle>
+    </request>
+    <request subAction="CANCEL_LISTING" actionId="c_1" serverId="a3f901c48b2e7d10" createActionId="a3f901c48b2e7d10_9000_3" />
+    <request subAction="BUY_LISTING" actionId="b_1" serverId="a3f901c48b2e7d10" farmId="2" remoteId="v_301"></request>
+    <request subAction="ACK_SETTLEMENT" serverId="a3f901c48b2e7d10" settlementIds="vs_77,vs_78" />
+    <request subAction="REQUEST_SYNC" actionId="s_1" serverId="a3f901c48b2e7d10" serverSecret="" />
+    <request subAction="AUCTION_BID" actionId="x_1" serverId="a3f901c48b2e7d10" />
+    <request subAction="REQUEST_SYNC" actionId="x_2" />
+</gmDataSync>"#;
+    let reqs = match parse_incoming_write_xml(xml, "20261125_7").unwrap() {
+        IncomingPacket::VehicleActions(reqs) => reqs,
+        other => panic!("unexpected packet {other:?}"),
+    };
+    // Unknown sub actions and requests without server id are dropped.
+    assert_eq!(reqs.len(), 5);
+
+    let create = &reqs[0];
+    assert_eq!(create.sub_action, VehicleSubAction::CreateListing);
+    assert_eq!(create.server_secret, Some(secret("s3cr-et_1")));
+    assert_eq!(create.farm_name.as_deref(), Some("Hof Meier [Dedi EU]"));
+    assert_eq!(create.price_factor, Some(1.10));
+    assert_eq!(create.duration_hours, Some(72));
+    let vehicle = create.vehicle.as_ref().expect("nested vehicle");
+    assert_eq!(vehicle.mod_name.as_deref(), Some("FS25_ExampleTractor"));
+    assert_eq!(vehicle.age_months, 26);
+    assert_eq!(vehicle.operating_hours, 412.5);
+    assert_eq!(vehicle.configurations.len(), 3);
+    assert_eq!(vehicle.configurations[1].color, Some([0.62, 0.05, 0.04]));
+    assert_eq!(vehicle.configurations[1].material_template.as_deref(), Some(""));
+    assert_eq!(vehicle.configurations[2].color, None, "broken paint counts as none");
+    assert!(!vehicle.configurations[2].is_active);
+    assert_eq!(create.local_rejection_reason(), None);
+
+    assert_eq!(reqs[1].create_action_id.as_deref(), Some("a3f901c48b2e7d10_9000_3"));
+    assert_eq!(reqs[1].remote_id, None);
+    assert_eq!(reqs[2].remote_id.as_deref(), Some("v_301"));
+    assert_eq!(reqs[2].farm_id, Some(2));
+    assert_eq!(reqs[3].settlement_ids.as_deref(), Some("vs_77,vs_78"));
+    assert_eq!(reqs[3].action_id, "a3f901c48b2e7d10_20261125_7_3", "derived from the file name");
+    assert_eq!(reqs[4].server_secret, None);
+
+    // The secret never shows up in debug output or JSON.
+    assert!(!format!("{create:?}").contains("s3cr-et_1"));
+    assert!(!serde_json::to_string(create).unwrap().contains("s3cr-et_1"));
+
+    // More than 64 configurations: parsed up to the limit and rejected locally.
+    let configs: String = (0..70)
+        .map(|i| format!("<config name=\"c{i}\" saveId=\"{i}\" isActive=\"true\" isBought=\"true\" />"))
+        .collect();
+    let big = format!(
+        "<gmDataSync action=\"vehicleAction\"><request subAction=\"CREATE_LISTING\" actionId=\"big_1\" serverId=\"a3f901c48b2e7d10\"><vehicle xmlFilename=\"data/x.xml\">{configs}</vehicle></request></gmDataSync>"
+    );
+    match parse_incoming_write_xml(&big, "1_1").unwrap() {
+        IncomingPacket::VehicleActions(reqs) => {
+            assert_eq!(reqs[0].vehicle.as_ref().unwrap().configurations.len(), 64);
+            assert!(reqs[0].configs_truncated);
+            assert_eq!(reqs[0].local_rejection_reason(), Some("INVALID_REQUEST"));
+        }
+        other => panic!("unexpected packet {other:?}"),
+    }
+    // CREATE_LISTING without a vehicle or with an oversized snapshot never leaves the client.
+    let mut no_vehicle = create_listing_request("nv_1");
+    no_vehicle.vehicle = None;
+    assert_eq!(no_vehicle.local_rejection_reason(), Some("INVALID_REQUEST"));
+    let mut huge = create_listing_request("h_1");
+    huge.vehicle.as_mut().unwrap().configurations[0].name = "x".repeat(17 * 1024);
+    assert_eq!(huge.local_rejection_reason(), Some("INVALID_REQUEST"));
+    assert_eq!(vehicle_request(VehicleSubAction::RequestSync, "s").local_rejection_reason(), None);
+
+    // Unknown future actions are still skipped.
+    assert!(matches!(
+        parse_incoming_write_xml("<gmDataSync action=\"vehicleAuction\" />", "1").unwrap(),
+        IncomingPacket::IgnoredUnknownAction(a) if a == "vehicleAuction"
+    ));
+}
+
+#[test]
+fn stage3_vehicle_sync_xml_masks_ids_and_keeps_its_own_file_class() {
+    let dir = env::temp_dir().join(format!("fs25_gm_vehicle_xml_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let (staging, read_dir) = (dir.join(".staging"), dir.join("read"));
+
+    let foreign = OnlineVehicleListingDto {
+        remote_id: "v_301".to_string(),
+        create_action_id: String::new(),
+        sale_mode: "FIXED".to_string(),
+        seller_server_id: String::new(),
+        seller_farm_id: 1,
+        seller_name: "Nordhof & Söhne".to_string(),
+        price_factor: 1.12,
+        remaining_seconds: 259_200,
+        status: "OPEN".to_string(),
+        vehicle: painted_vehicle(),
+    };
+    let own = OnlineVehicleListingDto {
+        remote_id: "v_302".to_string(),
+        create_action_id: format!("{IDENTITY_SERVER_ID}_15000_1"),
+        seller_server_id: IDENTITY_SERVER_ID.to_string(),
+        vehicle: VehicleDto {
+            mod_name: None,
+            mod_file_hash: None,
+            configurations: Vec::new(),
+            ..painted_vehicle()
+        },
+        ..foreign.clone()
+    };
+    let state = VehicleStateResponse {
+        updated_at: 1,
+        listings: vec![foreign, own],
+        action_results: vec![VehicleActionResultDto {
+            action_id: "b_1".to_string(),
+            sub_action: "BUY_LISTING".to_string(),
+            status: "ACCEPTED".to_string(),
+            reason: String::new(),
+            remote_id: "v_301".to_string(),
+            create_action_id: String::new(),
+            remaining_seconds: 0,
+            vehicle: Some(painted_vehicle()),
+        }],
+        settlements: vec![VehicleSettlementDto {
+            settlement_id: "vs_78".to_string(),
+            settlement_type: "LISTING_BOUGHT".to_string(),
+            target_server_id: IDENTITY_SERVER_ID.to_string(),
+            target_farm_id: 2,
+            remote_id: "v_301".to_string(),
+            create_action_id: String::new(),
+            buy_action_id: "b_1".to_string(),
+            price_factor: 1.12,
+            buyer_name: String::new(),
+            seller_name: "Nordhof".to_string(),
+            vehicle: Some(painted_vehicle()),
+        }],
+        server_secret: Some(secret("never-written")),
+    };
+
+    let xml = fs::read_to_string(
+        write_vehicle_data_xml_with_identity(
+            &staging,
+            &read_dir,
+            &state,
+            Some((IDENTITY_SERVER_ID, &secret("s3cr-et_1"))),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(xml.starts_with("<?xml"));
+    assert!(xml.contains("<gmDataSync action=\"vehicleData\">"));
+    assert!(xml.contains("<serverIdentity serverId=\"a3f901c48b2e7d10\" serverSecret=\"s3cr-et_1\" />"));
+    assert!(!xml.contains("never-written"), "the issued secret only goes via serverIdentity");
+    // Masked ids stay empty, own ids are passed through.
+    assert!(xml.contains("<listing remoteId=\"v_301\" createActionId=\"\" saleMode=\"FIXED\" sellerServerId=\"\" sellerFarmId=\"1\" sellerName=\"Nordhof &amp; Söhne\" priceFactor=\"1.12\" remainingSeconds=\"259200\" status=\"OPEN\">"));
+    assert!(xml.contains(&format!(
+        "<listing remoteId=\"v_302\" createActionId=\"{IDENTITY_SERVER_ID}_15000_1\" saleMode=\"FIXED\" sellerServerId=\"{IDENTITY_SERVER_ID}\""
+    )));
+    assert!(xml.contains("<vehicle xmlFilename=\"$moddir$FS25_ExampleTractor/tractor.xml\" modName=\"FS25_ExampleTractor\" modFileHash=\"3f1ce9\" group=\"DRIVABLES\" ageMonths=\"26\" operatingHours=\"412.5\" damage=\"0.18\" wear=\"0.31\">"));
+    assert!(xml.contains("<config name=\"baseColor\" saveId=\"4\" isActive=\"true\" isBought=\"true\" color=\"0.62 0.05 0.04\" materialTemplate=\"\" />"));
+    assert!(xml.contains("<config name=\"wheel\" saveId=\"3\" isActive=\"true\" isBought=\"true\" />"));
+    // Basegame vehicle without configurations: no mod attributes, self-closing.
+    assert!(xml.contains("<vehicle xmlFilename=\"$moddir$FS25_ExampleTractor/tractor.xml\" group=\"DRIVABLES\" ageMonths=\"26\" operatingHours=\"412.5\" damage=\"0.18\" wear=\"0.31\" />"));
+    assert!(xml.contains("<result actionId=\"b_1\" subAction=\"BUY_LISTING\" status=\"ACCEPTED\" reason=\"\" remoteId=\"v_301\" createActionId=\"\" remainingSeconds=\"0\">"));
+    assert!(xml.contains("<settlement settlementId=\"vs_78\" type=\"LISTING_BOUGHT\" targetServerId=\"a3f901c48b2e7d10\" targetFarmId=\"2\" remoteId=\"v_301\" createActionId=\"\" buyActionId=\"b_1\" priceFactor=\"1.12\" buyerName=\"\" sellerName=\"Nordhof\">"));
+    assert!(!xml.as_bytes().starts_with(&[0xEF, 0xBB, 0xBF]));
+    // Well-formed: the parser accepts it (and ignores it as an unknown incoming action).
+    assert!(matches!(
+        parse_incoming_write_xml(&xml, "1").unwrap(),
+        IncomingPacket::IgnoredUnknownAction(a) if a == "vehicleData"
+    ));
+
+    let without = fs::read_to_string(write_vehicle_data_xml(&staging, &read_dir, &state).unwrap()).unwrap();
+    assert!(!without.contains("serverIdentity"));
+
+    // Results only: a missing `<listings>` keeps the mod's board, an empty one would clear it.
+    let results_only = fs::read_to_string(
+        write_vehicle_results_xml(
+            &staging,
+            &read_dir,
+            &[VehicleActionResultDto {
+                action_id: "c_1".to_string(),
+                sub_action: "CREATE_LISTING".to_string(),
+                status: "REJECTED".to_string(),
+                reason: "SERVER_SECRET_INVALID".to_string(),
+                remote_id: String::new(),
+                create_action_id: "c_1".to_string(),
+                remaining_seconds: 0,
+                vehicle: None,
+            }],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(results_only.contains("<result actionId=\"c_1\" subAction=\"CREATE_LISTING\" status=\"REJECTED\" reason=\"SERVER_SECRET_INVALID\" remoteId=\"\" createActionId=\"c_1\" remainingSeconds=\"0\" />"));
+    for section in ["<listings", "<settlements"] {
+        assert!(!results_only.contains(section), "{section} must be missing");
+    }
+
+    // Own file class: market data retention never touches unread vehicle files.
+    for _ in 0..(MAX_RETAINED_MARKET_SYNC_FILES + 2) {
+        write_market_data_xml(&staging, &read_dir, &[]).unwrap();
+    }
+    prune_market_data_xmls(&read_dir, 0);
+    assert_eq!(read_sync_xmls(&read_dir, "gmVehicleSync_").len(), 3);
+    assert!(read_sync_xmls(&read_dir, "gmDataSync_").is_empty());
+    cleanup_bridge_transfer_files(&read_dir, &staging);
+    assert!(read_sync_xmls(&read_dir, "gmVehicleSync_").is_empty());
+
+    // Capability flag only while connected.
+    let online = dir.join("globalMarketOnline.xml");
+    for (connected, flag, expected) in [(true, true, true), (true, false, false), (false, true, false)] {
+        write_heartbeat_xml_with_extras(
+            &staging,
+            &online,
+            connected,
+            "0.9.16",
+            "0.9.10",
+            None,
+            None,
+            true,
+            HeartbeatExtras {
+                vehicles_supported: flag,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hb = fs::read_to_string(&online).unwrap();
+        assert_eq!(hb.contains("vehiclesSupported=\"true\""), expected, "{connected} {flag}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stage3_mock_vehicle_market_follows_the_backend_rules() {
+    let mock = LocalMockBackend::new();
+    let sid = Some(IDENTITY_SERVER_ID);
+    assert!(mock.check_status().unwrap().vehicles_supported);
+
+    // Unknown savegame: board only, foreign ids masked.
+    let board = mock.fetch_vehicles_state(sid, None).unwrap();
+    assert!(board.listings.len() >= 2);
+    assert!(board
+        .listings
+        .iter()
+        .all(|l| l.seller_server_id.is_empty() && l.create_action_id.is_empty()));
+    assert!(board.server_secret.is_none());
+    let painted = board
+        .listings
+        .iter()
+        .find(|l| l.vehicle.configurations.iter().any(|c| c.color.is_some()))
+        .expect("a listing with custom paint");
+    assert!(painted.vehicle.mod_name.is_some());
+
+    // Registration on the vehicle board: the same secret then works for contracts.
+    let created = mock
+        .submit_vehicle_action(create_listing_request("cr_1"), None)
+        .unwrap();
+    let issued = created.server_secret.clone().expect("secret issued on registration");
+    let res = &created.action_results[0];
+    assert_eq!((res.status.as_str(), res.create_action_id.as_str()), ("ACCEPTED", "cr_1"));
+    let own_rid = res.remote_id.clone();
+    let own = created.listings.iter().find(|l| l.remote_id == own_rid).unwrap();
+    assert_eq!(own.seller_server_id, IDENTITY_SERVER_ID);
+    assert_eq!(own.create_action_id, "cr_1");
+    assert_eq!(own.vehicle.configurations[1].color, Some([0.62, 0.05, 0.04]));
+    assert!(mock.fetch_contracts_state(sid, Some(&issued)).is_ok(), "one secret for both boards");
+    assert!(matches!(
+        mock.fetch_vehicles_state(sid, Some(&secret("wrong"))),
+        Err(ApiError::ServerSecretInvalid)
+    ));
+    let submit = |req: VehicleActionRequest| mock.submit_vehicle_action(req, Some(&issued)).unwrap();
+    let result_of = |state: &VehicleStateResponse, id: &str| {
+        state
+            .action_results
+            .iter()
+            .find(|r| r.action_id == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("no result for {id}"))
+    };
+
+    // Idempotent: a repeated action id changes nothing.
+    let replay = submit(create_listing_request("cr_1"));
+    assert_eq!(replay.listings.len(), created.listings.len());
+    assert!(replay.server_secret.is_none());
+
+    // Validation and limits.
+    let mut bad = create_listing_request("cr_bad");
+    bad.price_factor = Some(1.5);
+    assert_eq!(result_of(&submit(bad), "cr_bad").reason, "INVALID_REQUEST");
+    for i in 2..=20 {
+        assert_eq!(result_of(&submit(create_listing_request(&format!("cr_{i}"))), &format!("cr_{i}")).status, "ACCEPTED");
+    }
+    assert_eq!(result_of(&submit(create_listing_request("cr_21")), "cr_21").reason, "LIMIT_REACHED");
+
+    // Own listing cannot be bought by the same farm.
+    let buy_own = VehicleActionRequest {
+        remote_id: Some(own_rid.clone()),
+        ..vehicle_request(VehicleSubAction::BuyListing, "buy_own")
+    };
+    assert_eq!(result_of(&submit(buy_own), "buy_own").reason, "OWN_LISTING");
+
+    // Buying a foreign listing: vehicle in the result plus a LISTING_BOUGHT settlement.
+    let foreign_rid = board.listings[0].remote_id.clone();
+    let bought = submit(VehicleActionRequest {
+        farm_id: Some(2),
+        remote_id: Some(foreign_rid.clone()),
+        ..vehicle_request(VehicleSubAction::BuyListing, "buy_1")
+    });
+    let res = result_of(&bought, "buy_1");
+    assert_eq!(res.status, "ACCEPTED");
+    assert!(res.vehicle.is_some());
+    let settlement = bought
+        .settlements
+        .iter()
+        .find(|s| s.settlement_type == "LISTING_BOUGHT")
+        .expect("LISTING_BOUGHT");
+    assert!(settlement.settlement_id.starts_with("vs_"));
+    assert_eq!((settlement.buy_action_id.as_str(), settlement.target_farm_id), ("buy_1", 2));
+    assert!(settlement.vehicle.is_some() && !settlement.seller_name.is_empty());
+    assert!(bought.listings.iter().all(|l| l.remote_id != foreign_rid));
+    let again = submit(VehicleActionRequest {
+        farm_id: Some(2),
+        remote_id: Some(foreign_rid),
+        ..vehicle_request(VehicleSubAction::BuyListing, "buy_2")
+    });
+    assert_eq!(result_of(&again, "buy_2").reason, "LISTING_SOLD");
+
+    // Settlements stay until ACK_SETTLEMENT.
+    let acked = submit(VehicleActionRequest {
+        settlement_ids: Some(settlement.settlement_id.clone()),
+        ..vehicle_request(VehicleSubAction::AckSettlement, "ack_1")
+    });
+    assert!(acked.settlements.is_empty());
+
+    // Cancel: the vehicle comes back, a repeated cancel answers again with the vehicle.
+    for id in ["cn_1", "cn_2"] {
+        let cancel = submit(VehicleActionRequest {
+            remote_id: Some(own_rid.clone()),
+            ..vehicle_request(VehicleSubAction::CancelListing, id)
+        });
+        let res = result_of(&cancel, id);
+        assert_eq!((res.status.as_str(), res.reason.as_str()), ("ACCEPTED", ""), "{id}");
+        assert_eq!(res.create_action_id, "cr_1");
+        assert!(res.vehicle.is_some(), "{id}");
+    }
+    // Cancel by a create id that never arrived: ACCEPTED/NOT_CREATED, a late create is rejected.
+    let never = submit(VehicleActionRequest {
+        create_action_id: Some("lost_1".to_string()),
+        ..vehicle_request(VehicleSubAction::CancelListing, "cn_3")
+    });
+    let res = result_of(&never, "cn_3");
+    assert_eq!((res.status.as_str(), res.reason.as_str()), ("ACCEPTED", "NOT_CREATED"));
+    assert!(res.vehicle.is_none());
+    let late = submit(create_listing_request("lost_1"));
+    assert_eq!(result_of(&late, "lost_1").reason, "NOT_CREATED");
+    // Another farm cannot cancel.
+    let mut other_farm = vehicle_request(VehicleSubAction::CancelListing, "cn_4");
+    other_farm.remote_id = Some(result_of(&late, "cr_2").remote_id);
+    other_farm.farm_id = Some(3);
+    assert_eq!(result_of(&submit(other_farm), "cn_4").reason, "NOT_OWNER");
+
+    // Expiry: LISTING_EXPIRED with the vehicle, a later cancel gets EXPIRED.
+    mock.expire_all_vehicle_listings();
+    let state = mock.fetch_vehicles_state(sid, Some(&issued)).unwrap();
+    let expired: Vec<_> = state
+        .settlements
+        .iter()
+        .filter(|s| s.settlement_type == "LISTING_EXPIRED")
+        .collect();
+    assert_eq!(expired.len(), 19);
+    assert!(expired.iter().all(|s| s.vehicle.is_some() && !s.create_action_id.is_empty()));
+    let cancel_expired = submit(VehicleActionRequest {
+        remote_id: Some(expired[0].remote_id.clone()),
+        ..vehicle_request(VehicleSubAction::CancelListing, "cn_5")
+    });
+    assert_eq!(result_of(&cancel_expired, "cn_5").reason, "EXPIRED");
+    assert!(state.listings.iter().all(|l| l.seller_server_id.is_empty()));
+
+    // Disabled market.
+    mock.set_simulated_vehicles_supported(false);
+    assert!(!mock.check_status().unwrap().vehicles_supported);
+    assert!(matches!(mock.fetch_vehicles_state(None, None), Err(ApiError::NotSupported(_))));
+}
+
+/// Serves `responses` in order (`status`, extra headers, body) and returns every raw request.
+fn spawn_scripted_server(
+    responses: Vec<(&'static str, &'static str, String)>,
+) -> (String, thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        for (status, headers, body) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut length = 0_usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.trim().split_once(':') {
+                    if k.eq_ignore_ascii_case("content-length") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                head.push_str(&line);
+            }
+            let mut req_body = vec![0_u8; length];
+            let _ = reader.read_exact(&mut req_body);
+            seen.push(format!("{head}\n{}", String::from_utf8_lossy(&req_body)));
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.flush();
+        }
+        seen
+    });
+    (url, handle)
+}
+
+#[test]
+fn stage3_fastapi_maps_vehicle_json_both_ways() {
+    let state_json = r#"{"updated_at":5,"server_secret":"issued-1",
+        "listings":[{"remote_id":"v_301","create_action_id":"","sale_mode":"FIXED","seller_server_id":"","seller_farm_id":1,"seller_name":"Nordhof","price_factor":1.12,"remaining_seconds":259200,"status":"OPEN",
+            "vehicle":{"xml_filename":"data/vehicles/fendt/vario700/vario700.xml","mod_name":null,"mod_file_hash":null,"group":"DRIVABLES","age_months":14,"operating_hours":230.0,"damage":0.05,"wear":0.12,
+                "configurations":[{"name":"baseColor","save_id":"4","is_active":true,"is_bought":true,"color":[0.62,0.05,0.04],"material_template":null},{"name":"motor","save_id":2,"is_active":true,"is_bought":true,"color":null}]}},
+            {"remote_id":"v_302","create_action_id":"","sale_mode":"FIXED","seller_server_id":"","seller_farm_id":1,"seller_name":"X","price_factor":1.0,"remaining_seconds":1,"status":"OPEN","vehicle":null}],
+        "action_results":[{"action_id":"a3f901c48b2e7d10_15000_1","sub_action":"CREATE_LISTING","status":"ACCEPTED","reason":"","remote_id":"v_303","create_action_id":"a3f901c48b2e7d10_15000_1","remaining_seconds":259200,"vehicle":null}],
+        "settlements":[{"settlement_id":"vs_77","type":"LISTING_SOLD","target_server_id":"a3f901c48b2e7d10","target_farm_id":1,"remote_id":"v_288","create_action_id":"a3f901c48b2e7d10_9000_3","buy_action_id":"","price_factor":1.05,"buyer_name":"Südhof","seller_name":"","vehicle":null}]}"#;
+    let forbidden = r#"{"detail":{"code":"SERVER_SECRET_INVALID"}}"#.to_string();
+    let (url, handle) = spawn_scripted_server(vec![
+        ("200 OK", "ETag: \"v1\"\r\n", state_json.to_string()),
+        ("304 Not Modified", "", String::new()),
+        ("403 Forbidden", "", forbidden),
+        ("404 Not Found", "", r#"{"detail":"Not Found"}"#.to_string()),
+    ]);
+    let api = FastApiBackend::new(url, None, "a1b2c3d4e5f60718".to_string()).unwrap();
+
+    let mut req = create_listing_request("a3f901c48b2e7d10_15000_1");
+    req.server_secret = Some(secret("from-the-mod"));
+    let state = api.submit_vehicle_action(req, None).unwrap();
+    assert_eq!(state.server_secret, Some(secret("issued-1")));
+    assert_eq!(state.listings.len(), 1, "listings without vehicle are dropped");
+    let listing = &state.listings[0];
+    assert_eq!((listing.seller_server_id.as_str(), listing.create_action_id.as_str()), ("", ""));
+    assert_eq!(listing.vehicle.mod_name, None);
+    assert_eq!(listing.vehicle.configurations[0].color, Some([0.62, 0.05, 0.04]));
+    assert_eq!(listing.vehicle.configurations[1].save_id, "2", "numeric save ids are accepted");
+    assert_eq!(state.action_results[0].create_action_id, "a3f901c48b2e7d10_15000_1");
+    assert_eq!(state.settlements[0].buyer_name, "Südhof");
+    assert_eq!(state.settlements[0].create_action_id, "a3f901c48b2e7d10_9000_3");
+
+    // The POST state is cached for the `server_id`: a 304 returns it without the issued secret.
+    let polled = api
+        .fetch_vehicles_state(Some(IDENTITY_SERVER_ID), Some(&secret("issued-1")))
+        .unwrap();
+    assert_eq!(polled.listings.len(), 1);
+    assert!(polled.server_secret.is_none());
+
+    let err = api
+        .fetch_vehicles_state(Some(IDENTITY_SERVER_ID), Some(&secret("wrong-secret")))
+        .unwrap_err();
+    assert!(matches!(err, ApiError::ServerSecretInvalid));
+    assert!(matches!(
+        api.fetch_vehicles_state(None, None),
+        Err(ApiError::NotSupported(_))
+    ));
+
+    let seen = handle.join().unwrap();
+    let (post_head, post_body) = seen[0].split_once("\n\n").unwrap();
+    assert!(post_head.starts_with("POST /api/v1/vehicles/actions "));
+    assert!(!post_head.to_ascii_lowercase().contains("x-server-secret"));
+    assert!(!seen[0].contains("from-the-mod"), "the mod's secret is only sent as a header");
+    let body: serde_json::Value = serde_json::from_str(post_body).unwrap();
+    assert_eq!(body["sub_action"], "CREATE_LISTING");
+    assert_eq!(body["price_factor"], 1.1);
+    assert_eq!(body["duration_hours"], 72);
+    assert_eq!(body["sale_mode"], "FIXED");
+    assert!(body.get("create_action_id").is_none());
+    let vehicle = &body["vehicle"];
+    assert_eq!(vehicle["xml_filename"], "$moddir$FS25_ExampleTractor/tractor.xml");
+    assert_eq!(vehicle["mod_name"], "FS25_ExampleTractor");
+    assert_eq!(vehicle["age_months"], 26);
+    assert_eq!(vehicle["configurations"][0]["save_id"], "3");
+    assert!(vehicle["configurations"][0].get("color").is_none());
+    assert_eq!(vehicle["configurations"][1]["color"], serde_json::json!([0.62, 0.05, 0.04]));
+    assert_eq!(vehicle["configurations"][1]["material_template"], "");
+
+    assert!(seen[1].starts_with(&format!(
+        "GET /api/v1/vehicles/state?server_id={IDENTITY_SERVER_ID} "
+    )));
+    assert!(seen[1].to_ascii_lowercase().contains("x-server-secret: issued-1"));
+    assert!(seen[1].to_ascii_lowercase().contains("if-none-match: \"v1\""));
+    assert!(seen[3].starts_with("GET /api/v1/vehicles/state "));
+    assert!(!seen[3].to_ascii_lowercase().contains("x-server-secret"));
+}
+
+#[test]
+fn stage3_end_to_end_vehicle_bridge_with_mock_backend() {
+    let (test_dir, config_file, bridge_root) = identity_test_profile(
+        "vehicles",
+        AppConfig {
+            backend_mode: BackendMode::Mock,
+            ..AppConfig::default()
+        },
+    );
+    let read_dir = bridge_root.join("read");
+    let mgr = BridgeManager::new(config_file, None);
+    wait_for_heartbeat_flag(&bridge_root, "vehiclesSupported=\"true\"");
+    thread::sleep(Duration::from_millis(800));
+    assert!(
+        read_sync_xmls(&read_dir, "gmVehicleSync_").is_empty(),
+        "a board without identity must not reach the mod"
+    );
+    let snap = mgr.get_snapshot();
+    assert!(snap.vehicles_supported);
+    assert!(snap.open_vehicle_listings_count >= 2, "the UI still counts the board");
+
+    let req = |attrs: &str| format!("    <request serverId=\"{IDENTITY_SERVER_ID}\" {attrs} />");
+
+    // Registration through the vehicle board: secret and full board reach the mod.
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        1,
+        &req("subAction=\"REQUEST_SYNC\" actionId=\"v_1\" serverSecret=\"\""),
+        &|xml| xml.contains("<serverIdentity ") && xml.contains("<listings>"),
+    );
+    let issued = extract_attr(&xml, "serverIdentity", "serverSecret").expect("secret");
+    assert!(xml.contains("<listing remoteId=\"mock_v_1\" createActionId=\"\" saleMode=\"FIXED\" sellerServerId=\"\""));
+    assert!(xml.contains("color=\"0.62 0.05 0.04\""));
+    assert_eq!(mgr.get_snapshot().server_identity, "known");
+
+    // The same secret also goes to the contract bridge until the mod sends it.
+    clear_dir(&read_dir);
+    let contract_xml = send_action_xml(
+        &bridge_root,
+        11,
+        "subAction=\"REQUEST_SYNC\" actionId=\"c_1\" serverSecret=\"\"",
+        &|xml| xml.contains("<serverIdentity "),
+    );
+    assert_eq!(extract_attr(&contract_xml, "serverIdentity", "serverSecret"), Some(issued.clone()));
+
+    // CREATE_LISTING with nested vehicle and paint: accepted, own listing with unmasked ids.
+    clear_dir(&read_dir);
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        2,
+        &format!(
+            "    <request subAction=\"CREATE_LISTING\" actionId=\"v_2\" serverId=\"{IDENTITY_SERVER_ID}\" serverSecret=\"{issued}\" farmId=\"1\" farmName=\"Hof Meier\" saleMode=\"FIXED\" priceFactor=\"1.10\" durationHours=\"72\">\n        <vehicle xmlFilename=\"data/vehicles/claas/axion/axion.xml\" group=\"DRIVABLES\" ageMonths=\"26\" operatingHours=\"412.5\" damage=\"0.18\" wear=\"0.31\">\n            <config name=\"baseColor\" saveId=\"4\" isActive=\"true\" isBought=\"true\" color=\"0.1 0.2 0.3\" materialTemplate=\"metallic\" />\n        </vehicle>\n    </request>"
+        ),
+        &|xml| xml.contains("actionId=\"v_2\""),
+    );
+    let res_start = xml.find("<result actionId=\"v_2\"").unwrap();
+    assert!(xml[res_start..].starts_with("<result actionId=\"v_2\" subAction=\"CREATE_LISTING\" status=\"ACCEPTED\" reason=\"\""));
+    assert!(xml.contains(&format!("createActionId=\"v_2\" saleMode=\"FIXED\" sellerServerId=\"{IDENTITY_SERVER_ID}\"")));
+    assert!(xml.contains("color=\"0.1 0.2 0.3\" materialTemplate=\"metallic\""));
+    assert!(!xml.contains("<serverIdentity"), "the mod sent the secret itself");
+
+    // BUY_LISTING of a foreign listing: result with vehicle and a LISTING_BOUGHT settlement.
+    clear_dir(&read_dir);
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        3,
+        &req(&format!("subAction=\"BUY_LISTING\" actionId=\"v_3\" serverSecret=\"{issued}\" farmId=\"2\" remoteId=\"mock_v_1\"")),
+        &|xml| xml.contains("actionId=\"v_3\""),
+    );
+    assert!(xml.contains("<result actionId=\"v_3\" subAction=\"BUY_LISTING\" status=\"ACCEPTED\""));
+    assert!(xml.contains("type=\"LISTING_BOUGHT\""));
+    assert!(xml.contains("buyActionId=\"v_3\""));
+    let settlement_id = extract_attr(&xml, "settlement", "settlementId").unwrap();
+    assert!(!xml.contains("<listing remoteId=\"mock_v_1\""));
+
+    // ACK_SETTLEMENT; a REQUEST_SYNC afterwards always gets a full board, without the settlement.
+    clear_dir(&read_dir);
+    send_vehicle_xml(
+        &bridge_root,
+        4,
+        &format!(
+            "{}\n{}",
+            req(&format!("subAction=\"ACK_SETTLEMENT\" actionId=\"v_4\" serverSecret=\"{issued}\" settlementIds=\"{settlement_id}\"")),
+            req(&format!("subAction=\"REQUEST_SYNC\" actionId=\"v_5\" serverSecret=\"{issued}\""))
+        ),
+        &|xml| xml.matches("<listings>").count() >= 2,
+    );
+    let last = read_sync_xmls(&read_dir, "gmVehicleSync_").pop().unwrap();
+    assert!(last.contains("<listings>"));
+    assert!(!last.contains(&settlement_id));
+
+    // Cancel by a create id that never arrived, and an oversized snapshot rejected locally.
+    clear_dir(&read_dir);
+    let configs: String = (0..70)
+        .map(|i| format!("<config name=\"c{i}\" saveId=\"{i}\" isActive=\"true\" isBought=\"true\" />"))
+        .collect();
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        5,
+        &format!(
+            "{}\n    <request subAction=\"CREATE_LISTING\" actionId=\"v_7\" serverId=\"{IDENTITY_SERVER_ID}\" serverSecret=\"{issued}\" farmId=\"1\" priceFactor=\"1.0\" durationHours=\"24\"><vehicle xmlFilename=\"data/x.xml\">{configs}</vehicle></request>",
+            req(&format!("subAction=\"CANCEL_LISTING\" actionId=\"v_6\" serverSecret=\"{issued}\" createActionId=\"never_sent_1\""))
+        ),
+        &|xml| xml.contains("actionId=\"v_6\"") && xml.contains("actionId=\"v_7\""),
+    );
+    assert!(xml.contains("<result actionId=\"v_6\" subAction=\"CANCEL_LISTING\" status=\"ACCEPTED\" reason=\"NOT_CREATED\" remoteId=\"\" createActionId=\"never_sent_1\""));
+    assert!(xml.contains("<result actionId=\"v_7\" subAction=\"CREATE_LISTING\" status=\"REJECTED\" reason=\"INVALID_REQUEST\" remoteId=\"\" createActionId=\"v_7\""));
+
+    let logs = mgr.get_logs();
+    assert!(logs.iter().any(|l| l.key.as_deref() == Some("logVehicleActionSent")));
+    assert!(logs.iter().any(|l| l.key.as_deref() == Some("logVehicleActionRejected")));
+    assert!(logs.iter().any(|l| l.key.as_deref() == Some("logVehicleSettlementSynced")));
+    assert!(mgr
+        .generate_diagnostic_report()
+        .contains("vehicles_bridge: \"supported=true"));
+
+    mgr.shutdown();
+    assert!(read_sync_xmls(&read_dir, "gmVehicleSync_").is_empty());
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn stage3_vehicle_actions_without_backend_support_are_rejected_for_the_mod() {
+    // The identity test backend speaks API 2.8.0: no vehicle market.
+    let (url, requests, stop, handle) = spawn_identity_server("good-secret", true);
+    let (test_dir, config_file, bridge_root) = identity_test_profile(
+        "novehicles",
+        AppConfig {
+            backend_mode: BackendMode::Live,
+            backend_url: url,
+            ..AppConfig::default()
+        },
+    );
+    let mgr = BridgeManager::new(config_file, None);
+    wait_for_contracts(&bridge_root);
+    let heartbeat = fs::read_to_string(bridge_root.join("globalMarketOnline.xml")).unwrap();
+    assert!(!heartbeat.contains("vehiclesSupported"));
+
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        1,
+        &format!(
+            "    <request subAction=\"CREATE_LISTING\" actionId=\"n_1\" serverId=\"{IDENTITY_SERVER_ID}\" farmId=\"1\" priceFactor=\"1.0\" durationHours=\"24\"><vehicle xmlFilename=\"data/x.xml\" /></request>\n    <request subAction=\"REQUEST_SYNC\" actionId=\"n_2\" serverId=\"{IDENTITY_SERVER_ID}\" />"
+        ),
+        &|xml| xml.contains("actionId=\"n_1\""),
+    );
+    assert!(xml.contains("<result actionId=\"n_1\" subAction=\"CREATE_LISTING\" status=\"REJECTED\" reason=\"VEHICLES_NOT_SUPPORTED\""));
+    assert!(!xml.contains("actionId=\"n_2\""), "silent actions are not answered");
+    assert!(!xml.contains("<listings"), "must not clear the mod's board");
+    assert!(!requests.lock().unwrap().iter().any(|r| r.contains("/vehicles/")));
+
+    mgr.shutdown();
+    stop.store(true, Ordering::SeqCst);
+    handle.join().unwrap();
+    let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn stage3_rejected_identity_on_vehicle_actions_is_passed_to_the_mod_and_recovers() {
+    let (url, requests, stop, handle) = spawn_identity_server_with("good-secret", false, true);
+    let (test_dir, config_file, bridge_root) = identity_test_profile(
+        "vehreject",
+        AppConfig {
+            backend_mode: BackendMode::Live,
+            backend_url: url,
+            ..AppConfig::default()
+        },
+    );
+    let read_dir = bridge_root.join("read");
+    let mgr = BridgeManager::new(config_file, None);
+    wait_for_heartbeat_flag(&bridge_root, "vehiclesSupported=\"true\"");
+
+    // Rejected also for silent actions, as a results-only file.
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        1,
+        &format!("    <request subAction=\"REQUEST_SYNC\" actionId=\"r_1\" serverId=\"{IDENTITY_SERVER_ID}\" serverSecret=\"wrong-secret\" />"),
+        &|xml| xml.contains("actionId=\"r_1\""),
+    );
+    assert!(xml.contains("<result actionId=\"r_1\" subAction=\"REQUEST_SYNC\" status=\"REJECTED\" reason=\"SERVER_SECRET_INVALID\""));
+    assert!(!xml.contains("<listings"), "must not clear the mod's board");
+    assert_eq!(mgr.get_snapshot().server_identity, "rejected");
+    assert!(mgr
+        .get_logs()
+        .iter()
+        .any(|l| l.key.as_deref() == Some("logServerIdentityRejected")));
+
+    // Board only while rejected, and nothing of it reaches the mod.
+    clear_dir(&read_dir);
+    thread::sleep(Duration::from_millis(1500));
+    assert!(read_sync_xmls(&read_dir, "gmVehicleSync_").is_empty());
+    {
+        let log = requests.lock().unwrap();
+        assert!(log.iter().any(|r| r == "GET /api/v1/vehicles/state []"));
+        assert!(!log.iter().any(|r| r.contains("vehicles/state?server_id=")));
+    }
+
+    // The right secret recovers and is used for polling.
+    let xml = send_vehicle_xml(
+        &bridge_root,
+        2,
+        &format!("    <request subAction=\"REQUEST_SYNC\" actionId=\"r_2\" serverId=\"{IDENTITY_SERVER_ID}\" serverSecret=\"good-secret\" />"),
+        &|xml| xml.contains("remoteId=\"v_9\""),
+    );
+    assert!(xml.contains("color=\"0.62 0.05 0.04\""));
+    assert!(!xml.contains("serverIdentity"), "only issued secrets are passed on");
+    assert_eq!(mgr.get_snapshot().server_identity, "known");
+    let expected = format!("GET /api/v1/vehicles/state?server_id={IDENTITY_SERVER_ID} [good-secret]");
     for _ in 0..100 {
         if requests.lock().unwrap().contains(&expected) {
             break;

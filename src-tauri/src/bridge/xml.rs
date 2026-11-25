@@ -5,15 +5,16 @@
 //! 2. **Atomic writes** via sibling `.staging/*.tmp` (outside `read/`, so Lua's `getFiles(read/)`
 //!    never sees half-written temp files!) + `std::fs::rename` with Windows file-lock retry.
 //! 3. Invariant dot-decimal floats (`0.92`) and safe 32-bit clamping (`0..=i32::MAX`) for GIANTS C++ `getInt`.
-//! 4. Polymorphic `<gmDataSync action="...">` routing (`updateWhitelist`, `transaction`, `contractAction`, silent skip on unknown).
+//! 4. Polymorphic `<gmDataSync action="...">` routing (`updateWhitelist`, `transaction`, `contractAction`, `vehicleAction`, silent skip on unknown).
 
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractStateResponse, ContractSubAction,
-    MarketItemDto, ServerSecret, TransactionRequest, TransactionType, WhitelistItemDto,
-    WhitelistSyncRequest,
+    MarketItemDto, ServerSecret, TransactionRequest, TransactionType, VehicleActionRequest,
+    VehicleActionResultDto, VehicleConfigDto, VehicleDto, VehicleStateResponse, VehicleSubAction,
+    WhitelistItemDto, WhitelistSyncRequest, MAX_VEHICLE_CONFIGS,
 };
 use quick_xml::escape::escape;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 use std::fs::{self, File};
 use std::io::Write;
@@ -32,6 +33,9 @@ pub const MAX_RETAINED_MARKET_SYNC_FILES: usize = 3;
 /// Separate generous retention cap for unread `gmContractSync_*.xml` files in `read/`.
 /// Never shares pruning with `gmDataSync_*.xml` so spot-market polls cannot evict unread `actionResults` or `settlements`.
 pub const MAX_RETAINED_CONTRACT_SYNC_FILES: usize = 32;
+
+/// Separate retention cap for unread `gmVehicleSync_*.xml` files in `read/` (Spec Section 3.6).
+pub const MAX_RETAINED_VEHICLE_SYNC_FILES: usize = 32;
 
 /// Maximum UTF-8 byte & character length accepted by `GlobalMarketBranding.lua` (`MAX_MARKET_NAME_LEN = 48`).
 pub const MAX_MARKET_NAME_BYTES: usize = 48;
@@ -150,6 +154,8 @@ pub enum IncomingPacket {
     UpdateWhitelist(WhitelistSyncRequest),
     Transactions(Vec<TransactionRequest>),
     ContractActions(Vec<ContractActionRequest>),
+    /// Stage 3 vehicle market actions (`action="vehicleAction"`, Spec Section 3.6).
+    VehicleActions(Vec<VehicleActionRequest>),
     /// In-game market switch (`action="selectMarket"`, Spec Section 3.1.2): `None` = Official Global Market.
     SelectMarket(Option<String>),
     IgnoredUnknownAction(String),
@@ -198,6 +204,8 @@ pub struct HeartbeatExtras<'a> {
     pub server_notice: Option<&'a HeartbeatNotice>,
     /// `maintenance` or `unreachable`, only written while not connected.
     pub offline_reason: Option<&'a str>,
+    /// Stage 3 capability flag `vehiclesSupported` (Spec Section 3.6), only `true` while connected.
+    pub vehicles_supported: bool,
 }
 
 /// Compares SemVer (`MAJOR.MINOR.PATCH`) and 4-part (`MAJOR.MINOR.PATCH.BUILD`) version strings
@@ -382,6 +390,10 @@ pub fn write_heartbeat_xml_with_extras(
         "timestamp=\"{timestamp}\" isConnected=\"{connected_str}\" contractsSupported=\"{contracts_str}\" brandingTier=\"{}\" isPrivateMarket=\"{is_priv_str}\"",
         effective.branding_tier
     );
+
+    if is_connected && extras.vehicles_supported {
+        root_attrs.push_str(" vehiclesSupported=\"true\"");
+    }
 
     if effective.is_private_market {
         if let Some(ref name) = effective.market_name {
@@ -798,8 +810,254 @@ fn push_action_results_xml(xml: &mut String, results: &[ContractActionResultDto]
     xml.push_str("    </actionResults>\n");
 }
 
-/// Returns `true` when at least one unread `gmContractSync_*.xml` file is present in `read_dir`.
-pub fn has_unread_contract_sync_xml(read_dir: &Path) -> bool {
+/// Formats a float invariantly with up to 6 decimals and without trailing zeros (`0.62`, `230`).
+fn fmt_float(value: f64) -> String {
+    let clean = if value.is_finite() { value } else { 0.0 };
+    let mut out = format!("{clean:.6}");
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    if out == "-0" {
+        out = "0".to_string();
+    }
+    out
+}
+
+fn xml_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// Writes `<vehicle>` with its `<config>` children (Spec Section 3.6) at the given indentation.
+fn push_vehicle_xml(xml: &mut String, vehicle: &VehicleDto, indent: &str) {
+    xml.push_str(&format!(
+        "{indent}<vehicle xmlFilename=\"{}\"",
+        escape(vehicle.xml_filename.trim())
+    ));
+    for (attr, value) in [
+        ("modName", vehicle.mod_name.as_deref()),
+        ("modFileHash", vehicle.mod_file_hash.as_deref()),
+    ] {
+        if let Some(v) = value.map(str::trim).filter(|v| !v.is_empty()) {
+            xml.push_str(&format!(" {attr}=\"{}\"", escape(v)));
+        }
+    }
+    xml.push_str(&format!(
+        " group=\"{}\" ageMonths=\"{}\" operatingHours=\"{}\" damage=\"{}\" wear=\"{}\"",
+        escape(vehicle.group.trim()),
+        vehicle.age_months.clamp(0, i32::MAX as i64),
+        fmt_float(vehicle.operating_hours.max(0.0)),
+        fmt_float(vehicle.damage.clamp(0.0, 1.0)),
+        fmt_float(vehicle.wear.clamp(0.0, 1.0)),
+    ));
+    if vehicle.configurations.is_empty() {
+        xml.push_str(" />\n");
+        return;
+    }
+    xml.push_str(">\n");
+    for c in vehicle.configurations.iter().take(MAX_VEHICLE_CONFIGS) {
+        xml.push_str(&format!(
+            "{indent}    <config name=\"{}\" saveId=\"{}\" isActive=\"{}\" isBought=\"{}\"",
+            escape(c.name.trim()),
+            escape(c.save_id.trim()),
+            xml_bool(c.is_active),
+            xml_bool(c.is_bought),
+        ));
+        if let Some([r, g, b]) = c.color {
+            xml.push_str(&format!(
+                " color=\"{} {} {}\"",
+                fmt_float(r),
+                fmt_float(g),
+                fmt_float(b)
+            ));
+        }
+        if let Some(ref template) = c.material_template {
+            xml.push_str(&format!(" materialTemplate=\"{}\"", escape(template.trim())));
+        }
+        xml.push_str(" />\n");
+    }
+    xml.push_str(&format!("{indent}</vehicle>\n"));
+}
+
+fn push_vehicle_results_xml(xml: &mut String, results: &[VehicleActionResultDto]) {
+    xml.push_str("    <actionResults>\n");
+    for r in results {
+        let aid = escape(r.action_id.trim());
+        if aid.is_empty() {
+            continue;
+        }
+        let status = escape(if r.status.trim().is_empty() {
+            "REJECTED"
+        } else {
+            r.status.trim()
+        });
+        xml.push_str(&format!(
+            "        <result actionId=\"{aid}\" subAction=\"{}\" status=\"{status}\" reason=\"{}\" remoteId=\"{}\" createActionId=\"{}\" remainingSeconds=\"{}\"",
+            escape(r.sub_action.trim()),
+            escape(r.reason.trim()),
+            escape(r.remote_id.trim()),
+            escape(r.create_action_id.trim()),
+            r.remaining_seconds.clamp(0, i32::MAX as i64),
+        ));
+        match r.vehicle {
+            Some(ref vehicle) => {
+                xml.push_str(">\n");
+                push_vehicle_xml(xml, vehicle, "            ");
+                xml.push_str("        </result>\n");
+            }
+            None => xml.push_str(" />\n"),
+        }
+    }
+    xml.push_str("    </actionResults>\n");
+}
+
+fn new_vehicle_sync_path(read_dir: &Path) -> PathBuf {
+    let ts = now_unix_secs();
+    let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    read_dir.join(format!("gmVehicleSync_{ts}_{seq:06}.xml"))
+}
+
+/// Atomically writes `read/gmVehicleSync_<ts>_<seq>.xml` (`action="vehicleData"`, Spec Section 3.6).
+/// Own filename class, so neither `gmDataSync_*` nor `gmContractSync_*` retention ever evicts unread
+/// vehicle results or settlements.
+pub fn write_vehicle_data_xml(
+    staging_dir: &Path,
+    read_dir: &Path,
+    state: &VehicleStateResponse,
+) -> Result<PathBuf, String> {
+    write_vehicle_data_xml_with_identity(staging_dir, read_dir, state, None)
+}
+
+/// Same as [`write_vehicle_data_xml`], plus `<serverIdentity serverId serverSecret />` while the mod
+/// does not have the savegame's secret yet (one secret for contracts and vehicles, Spec Section 3.5).
+pub fn write_vehicle_data_xml_with_identity(
+    staging_dir: &Path,
+    read_dir: &Path,
+    state: &VehicleStateResponse,
+    identity: Option<(&str, &ServerSecret)>,
+) -> Result<PathBuf, String> {
+    let target_path = new_vehicle_sync_path(read_dir);
+    let mut xml = String::with_capacity(
+        256 + state.listings.len() * 900
+            + state.action_results.len() * 600
+            + state.settlements.len() * 700,
+    );
+    xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
+    xml.push_str("<gmDataSync action=\"vehicleData\">\n");
+    if let Some((server_id, secret)) = identity {
+        xml.push_str(&format!(
+            "    <serverIdentity serverId=\"{}\" serverSecret=\"{}\" />\n",
+            escape(server_id.trim()),
+            escape(secret.expose())
+        ));
+    }
+
+    xml.push_str("    <listings>\n");
+    for l in &state.listings {
+        let rid = escape(l.remote_id.trim());
+        if rid.is_empty() {
+            continue;
+        }
+        let sale_mode = escape(if l.sale_mode.trim().is_empty() {
+            "FIXED"
+        } else {
+            l.sale_mode.trim()
+        });
+        let status = escape(if l.status.trim().is_empty() {
+            "OPEN"
+        } else {
+            l.status.trim()
+        });
+        // Masked ids of other savegames stay `""`: the mod treats them as foreign listings.
+        xml.push_str(&format!(
+            "        <listing remoteId=\"{rid}\" createActionId=\"{}\" saleMode=\"{sale_mode}\" sellerServerId=\"{}\" sellerFarmId=\"{}\" sellerName=\"{}\" priceFactor=\"{}\" remainingSeconds=\"{}\" status=\"{status}\">\n",
+            escape(l.create_action_id.trim()),
+            escape(l.seller_server_id.trim()),
+            l.seller_farm_id.clamp(0, i32::MAX),
+            escape(l.seller_name.trim()),
+            fmt_float(l.price_factor),
+            l.remaining_seconds.clamp(0, i32::MAX as i64),
+        ));
+        push_vehicle_xml(&mut xml, &l.vehicle, "            ");
+        xml.push_str("        </listing>\n");
+    }
+    xml.push_str("    </listings>\n");
+
+    push_vehicle_results_xml(&mut xml, &state.action_results);
+
+    xml.push_str("    <settlements>\n");
+    for s in &state.settlements {
+        let sid = escape(s.settlement_id.trim());
+        if sid.is_empty() {
+            continue;
+        }
+        xml.push_str(&format!(
+            "        <settlement settlementId=\"{sid}\" type=\"{}\" targetServerId=\"{}\" targetFarmId=\"{}\" remoteId=\"{}\" createActionId=\"{}\" buyActionId=\"{}\" priceFactor=\"{}\" buyerName=\"{}\" sellerName=\"{}\"",
+            escape(s.settlement_type.trim()),
+            escape(s.target_server_id.trim()),
+            s.target_farm_id.clamp(0, i32::MAX),
+            escape(s.remote_id.trim()),
+            escape(s.create_action_id.trim()),
+            escape(s.buy_action_id.trim()),
+            fmt_float(s.price_factor),
+            escape(s.buyer_name.trim()),
+            escape(s.seller_name.trim()),
+        ));
+        match s.vehicle {
+            Some(ref vehicle) => {
+                xml.push_str(">\n");
+                push_vehicle_xml(&mut xml, vehicle, "            ");
+                xml.push_str("        </settlement>\n");
+            }
+            None => xml.push_str(" />\n"),
+        }
+    }
+    xml.push_str("    </settlements>\n");
+    xml.push_str("</gmDataSync>\n");
+
+    atomic_write_utf8_no_bom(staging_dir, &target_path, &xml)?;
+    prune_vehicle_sync_xmls(read_dir, MAX_RETAINED_VEHICLE_SYNC_FILES);
+    Ok(target_path)
+}
+
+/// Atomically writes a `gmVehicleSync_*.xml` with `<actionResults>` only. A missing `<listings>`
+/// keeps the mod's board, an empty one would clear it (used while no authenticated board is available).
+pub fn write_vehicle_results_xml(
+    staging_dir: &Path,
+    read_dir: &Path,
+    results: &[VehicleActionResultDto],
+) -> Result<PathBuf, String> {
+    let target_path = new_vehicle_sync_path(read_dir);
+    let mut xml = String::with_capacity(256 + results.len() * 300);
+    xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n");
+    xml.push_str("<gmDataSync action=\"vehicleData\">\n");
+    push_vehicle_results_xml(&mut xml, results);
+    xml.push_str("</gmDataSync>\n");
+
+    atomic_write_utf8_no_bom(staging_dir, &target_path, &xml)?;
+    prune_vehicle_sync_xmls(read_dir, MAX_RETAINED_VEHICLE_SYNC_FILES);
+    Ok(target_path)
+}
+
+/// Returns `true` when at least one unread `gmVehicleSync_*.xml` file is present in `read_dir`.
+pub fn has_unread_vehicle_sync_xml(read_dir: &Path) -> bool {
+    has_unread_prefixed_sync_xml(read_dir, "gmVehicleSync_")
+}
+
+/// Prunes `gmVehicleSync_*.xml` files in `read_dir` independently of all other sync files.
+pub fn prune_vehicle_sync_xmls(read_dir: &Path, keep_newest: usize) {
+    prune_prefixed_sync_xmls(read_dir, "gmVehicleSync_", keep_newest);
+}
+
+fn has_unread_prefixed_sync_xml(read_dir: &Path, prefix: &str) -> bool {
     fs::read_dir(read_dir)
         .ok()
         .map(|entries| {
@@ -809,11 +1067,16 @@ pub fn has_unread_contract_sync_xml(read_dir: &Path) -> bool {
                     && path
                         .file_name()
                         .and_then(|n| n.to_str())
-                        .and_then(|name| parse_prefixed_sync_sort_key(name, "gmContractSync_"))
+                        .and_then(|name| parse_prefixed_sync_sort_key(name, prefix))
                         .is_some()
             })
         })
         .unwrap_or(false)
+}
+
+/// Returns `true` when at least one unread `gmContractSync_*.xml` file is present in `read_dir`.
+pub fn has_unread_contract_sync_xml(read_dir: &Path) -> bool {
+    has_unread_prefixed_sync_xml(read_dir, "gmContractSync_")
 }
 
 /// Prunes `gmDataSync_*.xml` snapshot files in `read_dir` so at most `keep_newest` remain.
@@ -855,12 +1118,13 @@ fn prune_prefixed_sync_xmls(read_dir: &Path, prefix: &str, keep_newest: usize) {
     }
 }
 
-/// Removes unread `read/gmDataSync_*.xml` + `read/gmContractSync_*.xml` snapshots and any leftover
+/// Removes unread `read/gmDataSync_*.xml`, `read/gmContractSync_*.xml` & `read/gmVehicleSync_*.xml` and any leftover
 /// `.staging/*.tmp` files while keeping `globalMarketOnline.xml` intact (used during live market/token
 /// restarts so Dedicated Server Lua polling never sees a transient missing heartbeat file).
 pub fn cleanup_bridge_transfer_files(read_dir: &Path, staging_dir: &Path) {
     prune_market_data_xmls(read_dir, 0);
     prune_contract_sync_xmls(read_dir, 0);
+    prune_vehicle_sync_xmls(read_dir, 0);
     if let Ok(entries) = fs::read_dir(staging_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -871,7 +1135,7 @@ pub fn cleanup_bridge_transfer_files(read_dir: &Path, staging_dir: &Path) {
     }
 }
 
-/// Removes `globalMarketOnline.xml`, all unread `read/gmDataSync_*.xml` & `read/gmContractSync_*.xml` snapshots,
+/// Removes `globalMarketOnline.xml`, all unread `read/gm*Sync_*.xml` snapshots,
 /// and any leftover `.staging/*.tmp` files when stopping or exiting the bridge.
 pub fn cleanup_bridge_runtime_files(
     online_xml_path: &Path,
@@ -899,6 +1163,182 @@ fn parse_prefixed_sync_sort_key(filename: &str, prefix: &str) -> Option<(u64, u6
     }
 }
 
+/// A `<request>` of `vehicleAction` while its `<vehicle>` / `<config>` children are read.
+struct PendingVehicleRequest {
+    sub_action: Option<VehicleSubAction>,
+    request: VehicleActionRequest,
+}
+
+fn attribute_pairs(e: &BytesStart<'_>) -> Vec<(String, String)> {
+    e.attributes()
+        .flatten()
+        .map(|attr| {
+            let key = std::str::from_utf8(attr.key.as_ref())
+                .unwrap_or("")
+                .to_string();
+            let val = attr
+                .unescape_value()
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
+            (key, val)
+        })
+        .collect()
+}
+
+fn parse_f64_opt(raw: &str) -> Option<f64> {
+    raw.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|f| f.is_finite())
+}
+
+fn parse_vehicle_request_start(e: &BytesStart<'_>) -> PendingVehicleRequest {
+    let mut sub_action = None;
+    let mut request = VehicleActionRequest {
+        sub_action: VehicleSubAction::RequestSync,
+        action_id: String::new(),
+        server_id: String::new(),
+        farm_id: None,
+        farm_name: None,
+        remote_id: None,
+        create_action_id: None,
+        sale_mode: None,
+        price_factor: None,
+        duration_hours: None,
+        settlement_ids: None,
+        vehicle: None,
+        configs_truncated: false,
+        server_secret: None,
+    };
+    let non_empty = |v: String| (!v.is_empty()).then_some(v);
+    for (key, val) in attribute_pairs(e) {
+        match key.as_str() {
+            "subAction" => sub_action = VehicleSubAction::from_xml_str(&val),
+            "actionId" => request.action_id = val,
+            "serverId" => request.server_id = val,
+            "serverSecret" => request.server_secret = ServerSecret::parse(&val),
+            "farmId" => {
+                request.farm_id = parse_f64_opt(&val)
+                    .map(|n| n.round() as i32)
+                    .filter(|&n| n > 0);
+            }
+            "farmName" => request.farm_name = non_empty(val),
+            "remoteId" => request.remote_id = non_empty(val),
+            "createActionId" => request.create_action_id = non_empty(val),
+            "saleMode" => request.sale_mode = non_empty(val.to_ascii_uppercase()),
+            "priceFactor" => request.price_factor = parse_f64_opt(&val),
+            "durationHours" => {
+                request.duration_hours = parse_f64_opt(&val).map(|n| n.round() as i32);
+            }
+            "settlementIds" => request.settlement_ids = non_empty(val),
+            _ => {}
+        }
+    }
+    PendingVehicleRequest {
+        sub_action,
+        request,
+    }
+}
+
+fn parse_vehicle_start(e: &BytesStart<'_>) -> VehicleDto {
+    let mut vehicle = VehicleDto {
+        xml_filename: String::new(),
+        mod_name: None,
+        mod_file_hash: None,
+        group: String::new(),
+        age_months: 0,
+        operating_hours: 0.0,
+        damage: 0.0,
+        wear: 0.0,
+        configurations: Vec::new(),
+    };
+    for (key, val) in attribute_pairs(e) {
+        match key.as_str() {
+            "xmlFilename" => vehicle.xml_filename = val,
+            "modName" if !val.is_empty() => vehicle.mod_name = Some(val),
+            "modFileHash" if !val.is_empty() => vehicle.mod_file_hash = Some(val),
+            "group" => vehicle.group = val,
+            "ageMonths" => {
+                vehicle.age_months = parse_f64_opt(&val).map_or(0, |n| n.round().max(0.0) as i64);
+            }
+            "operatingHours" => vehicle.operating_hours = parse_f64_opt(&val).unwrap_or(0.0),
+            "damage" => vehicle.damage = parse_f64_opt(&val).unwrap_or(0.0),
+            "wear" => vehicle.wear = parse_f64_opt(&val).unwrap_or(0.0),
+            _ => {}
+        }
+    }
+    vehicle
+}
+
+/// Parses `color="r g b"`; anything other than three numbers counts as no custom paint.
+fn parse_color_triplet(raw: &str) -> Option<[f64; 3]> {
+    let parts: Vec<f64> = raw
+        .split_whitespace()
+        .map(parse_f64_opt)
+        .collect::<Option<Vec<_>>>()?;
+    match parts.as_slice() {
+        [r, g, b] => Some([*r, *g, *b]),
+        _ => None,
+    }
+}
+
+fn parse_vehicle_config(e: &BytesStart<'_>) -> VehicleConfigDto {
+    let mut config = VehicleConfigDto {
+        name: String::new(),
+        save_id: String::new(),
+        is_active: false,
+        is_bought: false,
+        color: None,
+        material_template: None,
+    };
+    for (key, val) in attribute_pairs(e) {
+        match key.as_str() {
+            "name" => config.name = val,
+            "saveId" => config.save_id = val,
+            "isActive" => config.is_active = parse_xml_bool_opt(&val).unwrap_or(false),
+            "isBought" => config.is_bought = parse_xml_bool_opt(&val).unwrap_or(false),
+            "color" => config.color = parse_color_triplet(&val),
+            "materialTemplate" => config.material_template = Some(val),
+            _ => {}
+        }
+    }
+    config
+}
+
+/// Completes a pending vehicle `<request>`: requests without a known `subAction` or `serverId` are
+/// dropped like contract requests; a missing `actionId` is derived from the file name.
+fn flush_vehicle_request(
+    pending: &mut Option<PendingVehicleRequest>,
+    out: &mut Vec<VehicleActionRequest>,
+    file_stem_tx_id: &str,
+    request_idx: &mut usize,
+) {
+    let Some(PendingVehicleRequest {
+        sub_action,
+        mut request,
+    }) = pending.take()
+    else {
+        return;
+    };
+    let Some(sub) = sub_action else {
+        return;
+    };
+    if request.server_id.is_empty() {
+        return;
+    }
+    if request.action_id.is_empty() {
+        request.action_id = if *request_idx == 0 {
+            format!("{}_{file_stem_tx_id}", request.server_id)
+        } else {
+            format!("{}_{file_stem_tx_id}_{request_idx}", request.server_id)
+        };
+    }
+    *request_idx += 1;
+    request.sub_action = sub;
+    out.push(request);
+}
+
 /// Parses an XML file written by Lua into `modSettings/FS25_GlobalMarket/write/`.
 /// `file_stem_tx_id` is extracted from e.g. `transaction_1729512015_1.xml` -> `"1729512015_1"`.
 pub fn parse_incoming_write_xml(
@@ -915,11 +1355,23 @@ pub fn parse_incoming_write_xml(
     let mut whitelist_items = Vec::new();
     let mut transactions = Vec::new();
     let mut contract_actions = Vec::new();
+    let mut vehicle_actions = Vec::new();
+    let mut pending_vehicle: Option<PendingVehicleRequest> = None;
     let mut entry_idx = 0_usize;
     let mut request_idx = 0_usize;
 
     loop {
-        match reader.read_event() {
+        let event = reader.read_event();
+        let is_empty_element = matches!(event, Ok(Event::Empty(_)));
+        match event {
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"request" => {
+                flush_vehicle_request(
+                    &mut pending_vehicle,
+                    &mut vehicle_actions,
+                    file_stem_tx_id,
+                    &mut request_idx,
+                );
+            }
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 let tag_bytes = e.name();
                 let tag = std::str::from_utf8(tag_bytes.as_ref()).unwrap_or("");
@@ -1159,6 +1611,41 @@ pub fn parse_incoming_write_xml(
                             }
                         }
                     }
+                    "request" if action.as_deref() == Some("vehicleAction") => {
+                        flush_vehicle_request(
+                            &mut pending_vehicle,
+                            &mut vehicle_actions,
+                            file_stem_tx_id,
+                            &mut request_idx,
+                        );
+                        pending_vehicle = Some(parse_vehicle_request_start(e));
+                        if is_empty_element {
+                            flush_vehicle_request(
+                                &mut pending_vehicle,
+                                &mut vehicle_actions,
+                                file_stem_tx_id,
+                                &mut request_idx,
+                            );
+                        }
+                    }
+                    "vehicle" if action.as_deref() == Some("vehicleAction") => {
+                        if let Some(p) = pending_vehicle.as_mut() {
+                            if p.request.vehicle.is_none() {
+                                p.request.vehicle = Some(parse_vehicle_start(e));
+                            }
+                        }
+                    }
+                    "config" if action.as_deref() == Some("vehicleAction") => {
+                        if let Some(p) = pending_vehicle.as_mut() {
+                            if let Some(vehicle) = p.request.vehicle.as_mut() {
+                                if vehicle.configurations.len() < MAX_VEHICLE_CONFIGS {
+                                    vehicle.configurations.push(parse_vehicle_config(e));
+                                } else {
+                                    p.request.configs_truncated = true;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1175,6 +1662,15 @@ pub fn parse_incoming_write_xml(
         })),
         Some("transaction") => Ok(IncomingPacket::Transactions(transactions)),
         Some("contractAction") => Ok(IncomingPacket::ContractActions(contract_actions)),
+        Some("vehicleAction") => {
+            flush_vehicle_request(
+                &mut pending_vehicle,
+                &mut vehicle_actions,
+                file_stem_tx_id,
+                &mut request_idx,
+            );
+            Ok(IncomingPacket::VehicleActions(vehicle_actions))
+        }
         Some("selectMarket") => Ok(IncomingPacket::SelectMarket(profile_id)),
         Some(other) => Ok(IncomingPacket::IgnoredUnknownAction(other.to_string())),
         None => Err("XML does not contain a <gmDataSync action=\"...\"> root element.".to_string()),

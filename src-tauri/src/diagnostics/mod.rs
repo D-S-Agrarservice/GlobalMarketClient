@@ -297,6 +297,11 @@ pub fn build_diagnostic_report_with_secrets(
         snapshot.contracts_supported, snapshot.open_contracts_count, snapshot.open_offers_count
     ));
     report.push_str(&format!(
+        "vehicles_bridge: \"supported={}, open_listings={}\"
+",
+        snapshot.vehicles_supported, snapshot.open_vehicle_listings_count
+    ));
+    report.push_str(&format!(
         "server_identity: \"{}\"\n",
         if snapshot.server_identity == "rejected" {
             "rejected (savegame identity rejected, contact support)"

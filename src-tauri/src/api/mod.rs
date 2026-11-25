@@ -6,7 +6,8 @@ pub mod types;
 
 use crate::api::types::{
     ContractActionRequest, ContractStateResponse, MarketStateResponse, ServerHandshake,
-    ServerSecret, TransactionRequest, WhitelistSyncRequest,
+    ServerSecret, TransactionRequest, VehicleActionRequest, VehicleStateResponse,
+    WhitelistSyncRequest,
 };
 use thiserror::Error;
 
@@ -56,5 +57,17 @@ pub trait BackendService: Send + Sync {
         action: ContractActionRequest,
         server_secret: Option<&ServerSecret>,
     ) -> Result<ContractStateResponse, ApiError>;
+    /// `GET /api/v1/vehicles/state` (Spec Section 3.6). Without `server_id` only the board.
+    fn fetch_vehicles_state(
+        &self,
+        server_id: Option<&str>,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError>;
+    /// `POST /api/v1/vehicles/actions` (Spec Section 3.6).
+    fn submit_vehicle_action(
+        &self,
+        action: VehicleActionRequest,
+        server_secret: Option<&ServerSecret>,
+    ) -> Result<VehicleStateResponse, ApiError>;
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError>;
 }

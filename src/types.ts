@@ -90,6 +90,8 @@ export interface BridgeSnapshot {
   contractsSupported: boolean;
   openContractsCount: number;
   openOffersCount: number;
+  vehiclesSupported: boolean;
+  openVehicleListingsCount: number;
   approvedCount: number;
   pendingCount: number;
   rejectedCount: number;
