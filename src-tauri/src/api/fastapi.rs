@@ -53,6 +53,8 @@ pub struct FastApiBackend {
     base_url: RwLock<String>,
     market_token: RwLock<Option<String>>,
     client_id: RwLock<Option<String>>,
+    /// Developer token (`X-Dev-Token`), sent only to development servers (see [`dev_token_allowed`]).
+    dev_token: RwLock<Option<String>>,
     etag_cache: Mutex<Option<CachedMarketState>>,
     contract_etag_cache: Mutex<Option<CachedContractState>>,
     vehicle_etag_cache: Mutex<Option<CachedVehicleState>>,
@@ -85,6 +87,7 @@ impl FastApiBackend {
             base_url: RwLock::new(normalize_base_url(&base_url)),
             market_token: RwLock::new(clean_token(market_token)),
             client_id: RwLock::new(clean_client_id(&client_id)),
+            dev_token: RwLock::new(None),
             etag_cache: Mutex::new(None),
             contract_etag_cache: Mutex::new(None),
             vehicle_etag_cache: Mutex::new(None),
@@ -127,6 +130,18 @@ impl FastApiBackend {
 
         if changed {
             self.clear_etag_cache();
+        }
+    }
+
+    /// Sets or clears the developer token for `X-Dev-Token`.
+    pub fn set_dev_token(&self, dev_token: Option<String>) {
+        let cleaned = clean_token(dev_token);
+        if let Ok(mut guard) = self.dev_token.write() {
+            if *guard != cleaned {
+                *guard = cleaned;
+                drop(guard);
+                self.clear_etag_cache();
+            }
         }
     }
 
@@ -214,11 +229,26 @@ impl FastApiBackend {
         if let Some(cid) = self.client_id.read().ok().and_then(|g| g.clone()) {
             req = req.header("X-Client-Id", cid);
         }
+        if let Some(value) = self.dev_token_header() {
+            req = req.header("X-Dev-Token", value);
+        }
         let token = self.market_token.read().ok().and_then(|g| g.clone());
         match token {
             Some(t) => req.header("X-Market-Token", t),
             None => req,
         }
+    }
+
+    /// `X-Dev-Token` (marked sensitive) when a token is set and the base URL is a development server.
+    fn dev_token_header(&self) -> Option<reqwest::header::HeaderValue> {
+        let base_url = self.base_url.read().ok()?.clone();
+        if !dev_token_allowed(&base_url) {
+            return None;
+        }
+        let token = self.dev_token.read().ok()?.clone()?;
+        let mut value = reqwest::header::HeaderValue::from_str(&token).ok()?;
+        value.set_sensitive(true);
+        Some(value)
     }
 }
 
@@ -1889,6 +1919,7 @@ pub fn parse_maintenance_error(
 /// - `CLIENT_IP_LOCKED` (`retry_after` or `Retry-After` header) -> [`ApiError::ClientIpLocked`]
 /// - `CLIENT_ID_REQUIRED` -> [`ApiError::ClientIdRequired`]
 /// - `SERVER_SECRET_INVALID` -> [`ApiError::ServerSecretInvalid`] (object form)
+/// - `DEV_TOKEN_REQUIRED` / `DEV_TOKEN_INVALID` -> [`ApiError::DevTokenRejected`] (object form, development servers)
 fn parse_classified_auth_error(
     root: &serde_json::Value,
     retry_after_hdr: Option<u64>,
@@ -1928,6 +1959,12 @@ fn parse_classified_auth_error(
                 }
                 if code.eq_ignore_ascii_case("SERVER_SECRET_INVALID") {
                     return Some(ApiError::ServerSecretInvalid);
+                }
+                if code.eq_ignore_ascii_case("DEV_TOKEN_REQUIRED") {
+                    return Some(ApiError::DevTokenRejected { missing: true });
+                }
+                if code.eq_ignore_ascii_case("DEV_TOKEN_INVALID") {
+                    return Some(ApiError::DevTokenRejected { missing: false });
                 }
             }
             serde_json::Value::String(s) => {
@@ -2034,6 +2071,23 @@ fn is_trusted_logo_origin(url: &str, base_url: &str) -> bool {
         }
     } else {
         false
+    }
+}
+
+/// The developer token goes only to the official development server (HTTPS) and to a local
+/// loopback backend, never to production or to any other custom URL.
+pub fn dev_token_allowed(base_url: &str) -> bool {
+    let Some((scheme, authority)) = extract_scheme_and_authority(base_url) else {
+        return false;
+    };
+    let dev_authority = extract_scheme_and_authority(crate::config::OFFICIAL_DEV_BACKEND_URL)
+        .map(|(_, a)| a)
+        .unwrap_or_default();
+    let host = strip_port(&authority);
+    match scheme.as_str() {
+        "https" => authority == dev_authority || matches!(host, "127.0.0.1" | "localhost"),
+        "http" => matches!(host, "127.0.0.1" | "localhost"),
+        _ => false,
     }
 }
 

@@ -1,7 +1,8 @@
 //! Comprehensive integration & unit test suite for the FS25 GlobalMarket Rust Core (Phases 2–4 & 3.5).
 
 use globalmarket_client_lib::api::fastapi::{
-    derive_handshake_branding, parse_maintenance_error, resolve_safe_logo_url, FastApiBackend,
+    derive_handshake_branding, dev_token_allowed, parse_maintenance_error, resolve_safe_logo_url,
+    FastApiBackend,
 };
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
@@ -612,6 +613,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         }),
         offline_reason: Some("maintenance".to_string()),
         server_identity: "unknown".to_string(),
+        has_dev_token: true,
     };
 
     let cfg = AppConfig {
@@ -5264,4 +5266,133 @@ fn stage3_rejected_identity_on_vehicle_actions_is_passed_to_the_mod_and_recovers
     stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
     let _ = fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn dev_token_goes_only_to_development_servers() {
+    assert!(dev_token_allowed("https://dev.gm.bydora.de"));
+    assert!(dev_token_allowed("https://DEV.gm.bydora.de/"));
+    assert!(dev_token_allowed("http://127.0.0.1:8000"));
+    assert!(dev_token_allowed("http://localhost:8000"));
+    assert!(!dev_token_allowed("https://gm.bydora.de"));
+    assert!(!dev_token_allowed("http://dev.gm.bydora.de"));
+    assert!(!dev_token_allowed("https://dev.gm.bydora.de.evil.example"));
+    assert!(!dev_token_allowed("https://evil.example"));
+    assert!(!dev_token_allowed("https://user@dev.gm.bydora.de"));
+    assert!(!dev_token_allowed(""));
+}
+
+/// `X-Dev-Token` of each request, in order (`None` = header missing).
+type SeenDevTokens = Arc<Mutex<Vec<Option<String>>>>;
+
+/// Serves `/api/v1/meta/status` like a 2.10 development server and records each `X-Dev-Token`.
+fn spawn_dev_token_server(
+    requests: usize,
+) -> (std::net::SocketAddr, SeenDevTokens, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_srv = Arc::clone(&seen);
+    let handle = thread::spawn(move || {
+        for _ in 0..requests {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut reader = BufReader::new(&mut stream);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut dev_token = None;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':') {
+                    if k.trim().eq_ignore_ascii_case("x-dev-token") {
+                        dev_token = Some(v.trim().to_string());
+                    }
+                }
+            }
+            drop(reader);
+            let (status, body) = match dev_token.as_deref() {
+                Some("dev_valid_test_token") => (
+                    "200 OK",
+                    "{\"online\":true,\"min_exe_version\":\"0.9.9\",\"api_version\":\"2.10.0\",\"market_name\":\"Global Market Official\",\"server_env\":\"development\"}",
+                ),
+                Some(_) => ("403 Forbidden", "{\"detail\":{\"code\":\"DEV_TOKEN_INVALID\"}}"),
+                None => ("403 Forbidden", "{\"detail\":{\"code\":\"DEV_TOKEN_REQUIRED\"}}"),
+            };
+            seen_srv.lock().unwrap().push(dev_token);
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    (addr, seen, handle)
+}
+
+#[test]
+fn dev_token_header_and_rejections_from_a_development_server() {
+    let (addr, seen, handle) = spawn_dev_token_server(3);
+    let client = FastApiBackend::new(
+        format!("http://{addr}"),
+        None,
+        "c84f92a17b0e3d41".to_string(),
+    )
+    .unwrap();
+
+    let missing = client.check_status().unwrap_err();
+    assert!(matches!(missing, ApiError::DevTokenRejected { missing: true }));
+
+    client.set_dev_token(Some("dev_revoked_token".to_string()));
+    let invalid = client.check_status().unwrap_err();
+    assert!(matches!(invalid, ApiError::DevTokenRejected { missing: false }));
+
+    client.set_dev_token(Some("  dev_valid_test_token  ".to_string()));
+    let handshake = client.check_status().unwrap();
+    assert_eq!(handshake.api_version, "2.10.0");
+
+    handle.join().unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            None,
+            Some("dev_revoked_token".to_string()),
+            Some("dev_valid_test_token".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn dev_token_survives_a_vault_reload_and_can_be_removed() {
+    let dir = env::temp_dir().join(format!("fs25_gm_vault_devtoken_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let vault_file = TokenVault::vault_path_for_config(&dir.join("settings.json"));
+
+    let mut vault = TokenVault::load_or_empty(vault_file.clone());
+    assert!(!vault.has_dev_token());
+    assert!(vault.set_dev_token(Some("dev with space")).is_err());
+    assert!(vault.set_dev_token(Some("   ")).is_err());
+    assert!(vault.set_dev_token(Some(&"x".repeat(129))).is_err());
+    vault.set_dev_token(Some(" dev_abcDEF-123_xyz ")).unwrap();
+    vault.save().unwrap();
+    assert!(vault_file.exists());
+
+    // Windows seals the vault with DPAPI; macOS and Linux rely on 0600 permissions.
+    #[cfg(windows)]
+    {
+        let raw = fs::read(&vault_file).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("dev_abcDEF-123_xyz"));
+    }
+
+    let mut reloaded = TokenVault::load_or_empty(vault_file.clone());
+    assert!(reloaded.has_dev_token());
+    reloaded.set_dev_token(None).unwrap();
+    reloaded.save().unwrap();
+    assert!(!vault_file.exists(), "an empty vault removes its file");
+    assert!(!TokenVault::load_or_empty(vault_file).has_dev_token());
+
+    let _ = fs::remove_dir_all(&dir);
 }

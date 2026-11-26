@@ -142,6 +142,7 @@ const state: UiState = {
     serverNotice: null,
     offlineReason: null,
     serverIdentity: "unknown",
+    hasDevToken: false,
   },
   logs: [],
   activeModal: "none",
@@ -1940,6 +1941,40 @@ function renderSettingsModalHtml(): string {
           </button>
         </div>
       </div>
+
+      <div>
+        <label for="cfg-dev-token" class="block font-semibold text-purple-300 mb-1">
+          ${escapeHtml(t("settingsDevTokenLabel"))}
+        </label>
+        <div class="flex items-center gap-2">
+          <input
+            id="cfg-dev-token"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="128"
+            placeholder="dev_…"
+            class="min-w-0 flex-1 rounded-md border border-purple-500/40 bg-[#18181b] px-3 py-1.5 font-mono text-zinc-100 focus:border-[#ff9600] focus:outline-none"
+          />
+          ${
+            state.snapshot.hasDevToken
+              ? `<button
+                  id="btn-remove-dev-token"
+                  type="button"
+                  class="shrink-0 rounded border border-red-500/35 bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-300 hover:bg-red-500/25 transition cursor-pointer"
+                >
+                  ${escapeHtml(t("settingsDevTokenRemove"))}
+                </button>`
+              : ""
+          }
+        </div>
+        <p id="dev-token-status" class="mt-1 text-[11px] ${state.snapshot.hasDevToken ? "text-emerald-400" : "text-zinc-500"}">
+          ${escapeHtml(t(state.snapshot.hasDevToken ? "settingsDevTokenStored" : "settingsDevTokenNone"))}
+        </p>
+        <p class="mt-0.5 text-[11px] text-zinc-500">
+          ${escapeHtml(t("settingsDevTokenHint"))}
+        </p>
+      </div>
     `
     : "";
 
@@ -3173,6 +3208,44 @@ function bindModalEvents(): void {
     return true;
   };
 
+  const submitPendingDevToken = async (): Promise<void> => {
+    const devTokenInput =
+      document.querySelector<HTMLInputElement>("#cfg-dev-token");
+    const rawDevToken = devTokenInput?.value.trim() ?? "";
+    if (rawDevToken.length === 0) {
+      return;
+    }
+    const snap = await invoke<BridgeSnapshot>("set_dev_token", {
+      token: rawDevToken,
+    });
+    if (devTokenInput) {
+      devTokenInput.value = "";
+    }
+    applySnapshot(snap);
+  };
+
+  document
+    .querySelector<HTMLButtonElement>("#btn-remove-dev-token")
+    ?.addEventListener("click", async () => {
+      try {
+        const snap = await invoke<BridgeSnapshot>("set_dev_token", {
+          token: null,
+        });
+        applySnapshot(snap);
+        // Update in place so unsaved edits in the open settings form survive.
+        document.querySelector("#btn-remove-dev-token")?.remove();
+        const status = document.querySelector<HTMLParagraphElement>("#dev-token-status");
+        if (status) {
+          status.textContent = t("settingsDevTokenNone");
+          status.classList.replace("text-emerald-400", "text-zinc-500");
+        }
+        renderDashboardOnly();
+        showToast(t("toastDevTokenRemoved"));
+      } catch (err) {
+        showToast(String(err));
+      }
+    });
+
   const handleAddTokenClick = async (): Promise<void> => {
     const tokenInput = document.querySelector<HTMLInputElement>("#cfg-new-token");
     if (!tokenInput || tokenInput.value.trim().length === 0) {
@@ -3248,6 +3321,9 @@ function bindModalEvents(): void {
 
       try {
         await submitPendingTokenInputs();
+        if (isDev) {
+          await submitPendingDevToken();
+        }
 
         const nextConfig: AppConfig = {
           ...state.config,

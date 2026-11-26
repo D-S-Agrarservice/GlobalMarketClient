@@ -309,6 +309,10 @@ pub fn build_diagnostic_report_with_secrets(
             snapshot.server_identity.as_str()
         }
     ));
+    report.push_str(&format!(
+        "dev_token: \"{}\"\n",
+        if snapshot.has_dev_token { "set" } else { "none" }
+    ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
     let notice_str = snapshot

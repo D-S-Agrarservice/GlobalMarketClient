@@ -164,6 +164,8 @@ pub struct BridgeSnapshot {
     pub offline_reason: Option<String>,
     /// Identity of the current savegame on the shared pool: `unknown`, `known` or `rejected`.
     pub server_identity: String,
+    /// A developer token for the development server (`X-Dev-Token`) is stored in the vault.
+    pub has_dev_token: bool,
 }
 
 enum WorkerSignal {
@@ -259,6 +261,7 @@ impl BridgeManager {
             )
             .expect("HTTP client initialization failed"),
         );
+        live_backend.set_dev_token(token_vault.dev_token());
         let mock_backend = Arc::new(LocalMockBackend::new());
 
         let notice_file = StoredServerNotice::path_for_config(&config_file);
@@ -313,6 +316,7 @@ impl BridgeManager {
             server_notice: server_notice.notice.clone(),
             offline_reason: None,
             server_identity: ServerIdentityState::Unknown.as_str().to_string(),
+            has_dev_token: token_vault.has_dev_token(),
         };
 
         let mgr = Self {
@@ -602,6 +606,50 @@ impl BridgeManager {
             [("hint", masked_hint.clone())],
             format!("Saved and activated market token ({masked_hint})."),
         );
+
+        if should_restart {
+            self.restart_worker();
+        } else {
+            self.emit_current_snapshot();
+        }
+        Ok(self.get_snapshot())
+    }
+
+    /// Stores (`Some`) or removes (`None`) the developer token for the development server
+    /// (`X-Dev-Token`) in the `TokenVault` and reconnects when the active backend uses it.
+    pub fn set_dev_token(&self, raw_token: Option<&str>) -> Result<BridgeSnapshot, String> {
+        let raw_token = raw_token.map(str::trim).filter(|t| !t.is_empty());
+        let should_restart = {
+            let mut guard = self
+                .shared
+                .lock()
+                .map_err(|_| "Internal state lock poisoned".to_string())?;
+            if guard.config.access_tier != AccessTier::Developer {
+                return Err("The developer token requires Developer mode.".to_string());
+            }
+            guard.token_vault.set_dev_token(raw_token)?;
+            guard.token_vault.save()?;
+            self.live_backend.set_dev_token(guard.token_vault.dev_token());
+            guard.snapshot.has_dev_token = guard.token_vault.has_dev_token();
+            guard.config.backend_mode == BackendMode::Live
+                && crate::api::fastapi::dev_token_allowed(&guard.config.backend_url)
+        };
+
+        if raw_token.is_some() {
+            self.push_i18n_log(
+                LogLevel::Success,
+                "logDevTokenSaved",
+                [],
+                "Developer token for the development server saved.".to_string(),
+            );
+        } else {
+            self.push_i18n_log(
+                LogLevel::Info,
+                "logDevTokenRemoved",
+                [],
+                "Developer token removed.".to_string(),
+            );
+        }
 
         if should_restart {
             self.restart_worker();
@@ -3219,6 +3267,20 @@ fn emit_classified_backend_error(
                 "Connection rejected: Missing or invalid client identifier (X-Client-Id)."
                     .to_string(),
             );
+        }
+        ApiError::DevTokenRejected { missing } => {
+            let (key, text) = if *missing {
+                (
+                    "logDevTokenRequired",
+                    "Development server requires a developer token – add it in Settings (Developer mode).",
+                )
+            } else {
+                (
+                    "logDevTokenInvalid",
+                    "Development server rejected the developer token (invalid or revoked) – please check Settings.",
+                )
+            };
+            push_i18n_log_shared(shared, app_handle, LogLevel::Error, key, [], text.to_string());
         }
         ApiError::Unauthorized => {
             push_i18n_log_shared(

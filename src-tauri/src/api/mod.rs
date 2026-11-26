@@ -31,6 +31,10 @@ pub enum ApiError {
     /// `X-Server-Secret` is missing or wrong.
     #[error("Savegame identity rejected (X-Server-Secret)")]
     ServerSecretInvalid,
+    /// `HTTP 403` with code `DEV_TOKEN_REQUIRED` (`missing`) or `DEV_TOKEN_INVALID` from a
+    /// development server: every request there needs an active `X-Dev-Token`.
+    #[error("Development server rejected the developer token (X-Dev-Token)")]
+    DevTokenRejected { missing: bool },
     /// `HTTP 503` with code `MAINTENANCE` (Spec Section 3.1.3).
     #[error("Server maintenance in progress")]
     Maintenance {

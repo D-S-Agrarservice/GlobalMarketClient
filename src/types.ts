@@ -111,6 +111,8 @@ export interface BridgeSnapshot {
   offlineReason: OfflineReason | null;
   /** Identity of the current savegame on the shared online pool. */
   serverIdentity: "unknown" | "known" | "rejected";
+  /** A developer token for the development server (`X-Dev-Token`) is stored; the token itself never reaches the WebView. */
+  hasDevToken: boolean;
 }
 
 export type ServerNoticeType = "maintenance" | "restart" | "info";

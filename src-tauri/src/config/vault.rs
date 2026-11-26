@@ -10,6 +10,8 @@
 //!   optional label, server-detected market name, branding tier, and masked suffix `••••xxxx`).
 //! - **Cross-platform fallback**: On macOS and Linux, `tokens.vault` is stored outside `settings.json`
 //!   with strict owner-only `0600` (`rw-------`) POSIX file permissions and SHA-256 integrity verification.
+//! - The same vault keeps the savegame secrets (Spec Section 3.5) and the optional developer token
+//!   for the development server (`X-Dev-Token`), with the same write-only IPC rule.
 
 use crate::api::types::ServerSecret;
 use crate::bridge::identity::ServerIdentity;
@@ -34,6 +36,9 @@ pub const MAX_CUSTOM_LABEL_CHARS: usize = 36;
 pub const MAX_RAW_TOKEN_BYTES: usize = 512;
 
 const VAULT_SCHEMA_VERSION: u8 = 1;
+
+/// Maximum length of a developer token (`dev_` plus 32 URL-safe characters on the backend).
+pub const MAX_DEV_TOKEN_CHARS: usize = 128;
 
 /// Public, non-sensitive metadata for a saved market/logo token exposed to the TypeScript UI.
 /// Never contains the raw token secret.
@@ -87,12 +92,25 @@ impl Drop for VaultServerIdentity {
     }
 }
 
+/// Developer token for the development server (`X-Dev-Token`), zeroized on drop.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct VaultDevToken(String);
+
+impl Drop for VaultDevToken {
+    fn drop(&mut self) {
+        zeroize_string(&mut self.0);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct VaultPayload {
     version: u8,
     entries: Vec<VaultEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     server_identities: Vec<VaultServerIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dev_token: Option<VaultDevToken>,
 }
 
 impl Default for VaultPayload {
@@ -101,6 +119,7 @@ impl Default for VaultPayload {
             version: VAULT_SCHEMA_VERSION,
             entries: Vec::new(),
             server_identities: Vec::new(),
+            dev_token: None,
         }
     }
 }
@@ -110,6 +129,7 @@ pub struct TokenVault {
     vault_file: PathBuf,
     entries: Vec<VaultEntry>,
     server_identities: Vec<VaultServerIdentity>,
+    dev_token: Option<VaultDevToken>,
 }
 
 impl TokenVault {
@@ -135,12 +155,14 @@ impl TokenVault {
             vault_file,
             entries: payload.entries,
             server_identities: payload.server_identities,
+            dev_token: payload.dev_token,
         }
     }
 
     /// Encrypts and atomically persists the current vault to `tokens.vault` (or removes the file when empty).
     pub fn save(&self) -> Result<(), String> {
-        if self.entries.is_empty() && self.server_identities.is_empty() {
+        if self.entries.is_empty() && self.server_identities.is_empty() && self.dev_token.is_none()
+        {
             if self.vault_file.exists() {
                 let _ = fs::remove_file(&self.vault_file);
             }
@@ -156,6 +178,7 @@ impl TokenVault {
             version: VAULT_SCHEMA_VERSION,
             entries: self.entries.clone(),
             server_identities: self.server_identities.clone(),
+            dev_token: self.dev_token.clone(),
         };
         let mut plain = serde_json::to_vec(&payload)
             .map_err(|e| format!("Failed to serialize token vault: {e}"))?;
@@ -201,7 +224,26 @@ impl TokenVault {
     /// Collects all stored raw tokens exclusively so diagnostic report generation can scrub
     /// accidental echoes from error strings or logs.
     pub(crate) fn all_raw_tokens(&self) -> Vec<String> {
-        self.entries.iter().map(|e| e.raw_token.clone()).collect()
+        self.entries
+            .iter()
+            .map(|e| e.raw_token.clone())
+            .chain(self.dev_token.iter().map(|t| t.0.clone()))
+            .collect()
+    }
+
+    /// The developer token for `X-Dev-Token`. Never expose it to IPC or disk logs!
+    pub(crate) fn dev_token(&self) -> Option<String> {
+        self.dev_token.as_ref().map(|t| t.0.clone())
+    }
+
+    pub fn has_dev_token(&self) -> bool {
+        self.dev_token.is_some()
+    }
+
+    /// Stores (`Some`) or removes (`None`) the developer token (call `save()` afterwards).
+    pub fn set_dev_token(&mut self, raw: Option<&str>) -> Result<(), String> {
+        self.dev_token = raw.map(validate_dev_token).transpose()?.map(VaultDevToken);
+        Ok(())
     }
 
     /// Persisted savegame identities. Never expose the secrets to IPC or disk logs!
@@ -412,6 +454,21 @@ fn validate_raw_token(raw: &str) -> Result<String, String> {
     }
     if trimmed.chars().any(|c| c.is_control()) {
         return Err("Token contains invalid control characters.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// A developer token must be a valid HTTP header value: visible ASCII only, no spaces.
+fn validate_dev_token(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Developer token must not be empty.".to_string());
+    }
+    if trimmed.len() > MAX_DEV_TOKEN_CHARS {
+        return Err("Developer token exceeds maximum allowed length.".to_string());
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_graphic()) {
+        return Err("Developer token contains invalid characters.".to_string());
     }
     Ok(trimmed.to_string())
 }

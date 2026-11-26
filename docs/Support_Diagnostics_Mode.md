@@ -17,6 +17,8 @@ The tier is a **local UI gate only**. The backend never trusts it: nothing on th
 * **Support key (Extended):** short and easy to type, because support hands it out to players. It is guessable from the public digest; that is acceptable, since Extended only shows diagnostics, ends after 30 minutes and always uses the official backend.
 * **Developer key:** only for the maintainers. Use a random key with at least 24 characters, so it can't be guessed.
 
+**Developer token (development server):** since API 2.10 the development server (`SERVER_ENV=development`) needs an active `X-Dev-Token` on every request and answers `403 DEV_TOKEN_REQUIRED` / `DEV_TOKEN_INVALID` otherwise. The tokens are created in the backend admin (page *Protection*). In Developer mode, enter the token under **Settings → Developer token** and save. It is stored in the OS-protected key vault next to the market keys, never returned to the WebView and redacted from diagnostic reports, which show only `dev_token: "set"` or `"none"`. The client sends it only to `https://dev.gm.bydora.de` and to local loopback backends (`127.0.0.1`, `localhost`), never to production or another custom URL. Unlike the developer key, this token is what actually protects the dev server.
+
 ## 2. Unlocking and leaving Extended mode
 
 1. Click the version number below the app title (or the market logo in the header) **5 times within 4 seconds**. The "Support & Diagnostic Mode" dialog opens.
@@ -47,7 +49,7 @@ The **Copy Diagnostics** button copies a Markdown/YAML block for Discord or GitH
 * `recent_errors`: the last **10 warnings/errors** from the whole log buffer (250 entries),
 * `recent_logs` with the **last 50** instead of 15 lines.
 
-**Redaction (all tiers):** local user names in paths become `<USER>` / `%USERPROFILE%`, the full client ID becomes `<CLIENT>`, and every market key from the OS-protected key vault becomes `<REDACTED>`, in the last error, the error list and all log lines.
+**Redaction (all tiers):** local user names in paths become `<USER>` / `%USERPROFILE%`, the full client ID becomes `<CLIENT>`, and every market key and the developer token from the OS-protected key vault become `<REDACTED>`, in the last error, the error list and all log lines.
 
 ## 5. Support workflow
 

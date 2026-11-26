@@ -87,6 +87,7 @@ pub fn run() {
             commands::update_app_config,
             commands::preview_window_theme,
             commands::add_market_token,
+            commands::set_dev_token,
             commands::select_active_market_token,
             commands::update_market_token_label,
             commands::remove_market_token,

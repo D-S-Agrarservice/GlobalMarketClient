@@ -101,6 +101,15 @@ pub fn add_market_token(
     bridge.add_market_token(&token, custom_label.as_deref())
 }
 
+/// Write-only: the token never comes back over IPC, the snapshot only says whether one is stored.
+#[tauri::command]
+pub fn set_dev_token(
+    token: Option<String>,
+    bridge: State<'_, BridgeManager>,
+) -> Result<BridgeSnapshot, String> {
+    bridge.set_dev_token(token.as_deref())
+}
+
 #[tauri::command]
 pub fn select_active_market_token(
     token_id: Option<String>,
