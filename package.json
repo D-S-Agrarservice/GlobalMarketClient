@@ -1,7 +1,7 @@
 {
   "name": "globalmarket-client",
   "private": true,
-  "version": "0.9.16",
+  "version": "0.9.17",
   "description": "Cross-Platform Companion Client for Farming Simulator GlobalMarket (D-S-Agrarservice)",
   "type": "module",
   "scripts": {
