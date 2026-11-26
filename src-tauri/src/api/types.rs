@@ -136,6 +136,18 @@ pub struct ServerHandshake {
     /// Optional maintenance / restart / info notice (Spec Section 3.1.3).
     #[serde(default)]
     pub notice: Option<ServerNotice>,
+    /// `production` or `development` (`server_env`, API 2.10); `None` for older backends.
+    #[serde(default)]
+    pub server_env: Option<String>,
+}
+
+/// Normalizes `server_env` from `/meta/status`: only the two documented values are kept.
+pub fn normalize_server_env(raw: Option<&str>) -> Option<String> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "development" | "dev" => Some("development".to_string()),
+        "production" | "prod" => Some("production".to_string()),
+        _ => None,
+    }
 }
 
 /// Assumed duration of a `restart` notice without `ends_at`.

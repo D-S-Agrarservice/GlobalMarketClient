@@ -310,6 +310,10 @@ pub fn build_diagnostic_report_with_secrets(
         }
     ));
     report.push_str(&format!(
+        "server_env: \"{}\"\n",
+        snapshot.server_env.as_deref().unwrap_or("unknown")
+    ));
+    report.push_str(&format!(
         "dev_token: \"{}\"\n",
         if snapshot.has_dev_token { "set" } else { "none" }
     ));

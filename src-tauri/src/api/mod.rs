@@ -35,6 +35,9 @@ pub enum ApiError {
     /// development server: every request there needs an active `X-Dev-Token`.
     #[error("Development server rejected the developer token (X-Dev-Token)")]
     DevTokenRejected { missing: bool },
+    /// `HTTP 403` with code `CLIENT_BLOCKED`: the operators blocked this IP, client id or savegame.
+    #[error("Blocked by the server operators")]
+    ClientBlocked,
     /// `HTTP 503` with code `MAINTENANCE` (Spec Section 3.1.3).
     #[error("Server maintenance in progress")]
     Maintenance {

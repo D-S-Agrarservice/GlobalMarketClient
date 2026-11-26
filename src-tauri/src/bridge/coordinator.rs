@@ -166,6 +166,9 @@ pub struct BridgeSnapshot {
     pub server_identity: String,
     /// A developer token for the development server (`X-Dev-Token`) is stored in the vault.
     pub has_dev_token: bool,
+    /// `server_env` of the last successful handshake (`production` / `development`), `None` while
+    /// offline or for backends before API 2.10.
+    pub server_env: Option<String>,
 }
 
 enum WorkerSignal {
@@ -317,6 +320,7 @@ impl BridgeManager {
             offline_reason: None,
             server_identity: ServerIdentityState::Unknown.as_str().to_string(),
             has_dev_token: token_vault.has_dev_token(),
+            server_env: None,
         };
 
         let mgr = Self {
@@ -2059,6 +2063,7 @@ fn run_bridge_worker(
                         snap.market_logo_url = ui_logo_url;
                         snap.market_logo_file = next_branding.logo_file.clone();
                         snap.api_version = Some(hs.api_version);
+                        snap.server_env = hs.server_env;
                         snap.min_exe_version = min_version.clone();
                         snap.latest_exe_version = latest_version.clone();
                         snap.contracts_supported = contracts_supported;
@@ -2094,11 +2099,8 @@ fn run_bridge_worker(
                     }
                 }
                 Err(err) => {
-                    if let ApiError::ClientIpLocked { retry_after_sec } = &err {
-                        retry_hold_until = Some(
-                            Instant::now()
-                                + Duration::from_secs((*retry_after_sec).clamp(1, 86_400)),
-                        );
+                    if let Some(hold) = backend_retry_hold(&err) {
+                        retry_hold_until = Some(Instant::now() + hold);
                     }
                     let was_online = is_connected;
                     is_connected = false;
@@ -2167,6 +2169,7 @@ fn run_bridge_worker(
                         snap.write_queue_count = w_cnt;
                         snap.last_error = Some(err_msg);
                         snap.offline_reason = offline_reason.map(|r| r.as_str().to_string());
+                        snap.server_env = None;
                     });
 
                     if was_online || changed_notice || changed_reason {
@@ -3282,6 +3285,17 @@ fn emit_classified_backend_error(
             };
             push_i18n_log_shared(shared, app_handle, LogLevel::Error, key, [], text.to_string());
         }
+        ApiError::ClientBlocked => {
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logClientBlocked",
+                [],
+                "Connection blocked by the Global Market team. Please contact support on Discord."
+                    .to_string(),
+            );
+        }
         ApiError::Unauthorized => {
             push_i18n_log_shared(
                 shared,
@@ -3307,6 +3321,21 @@ fn emit_classified_backend_error(
     }
 }
 
+/// How long a rejected client waits before the next handshake: the `CLIENT_IP_LOCKED` window, or
+/// [`CLIENT_BLOCKED_RETRY`] for a block (it is lifted only by the operators).
+fn backend_retry_hold(err: &ApiError) -> Option<Duration> {
+    match err {
+        ApiError::ClientIpLocked { retry_after_sec } => {
+            Some(Duration::from_secs((*retry_after_sec).clamp(1, 86_400)))
+        }
+        ApiError::ClientBlocked => Some(CLIENT_BLOCKED_RETRY),
+        _ => None,
+    }
+}
+
+/// Handshake retry interval while the operators block this client (`403 CLIENT_BLOCKED`).
+const CLIENT_BLOCKED_RETRY: Duration = Duration::from_secs(300);
+
 fn handle_backend_io_error(
     err: &ApiError,
     is_connected: &mut bool,
@@ -3315,9 +3344,8 @@ fn handle_backend_io_error(
     app_handle: &Option<AppHandle>,
 ) {
     *is_connected = false;
-    if let ApiError::ClientIpLocked { retry_after_sec } = err {
-        *retry_hold_until =
-            Some(Instant::now() + Duration::from_secs((*retry_after_sec).clamp(1, 86_400)));
+    if let Some(hold) = backend_retry_hold(err) {
+        *retry_hold_until = Some(Instant::now() + hold);
     }
     let msg = err.to_string();
     emit_classified_backend_error(err, LogLevel::Error, shared, app_handle);
@@ -3326,6 +3354,10 @@ fn handle_backend_io_error(
         snap.last_error = Some(msg);
     });
 }
+
+/// Unacknowledged contract settlements are written again at most this often. The mod acknowledges
+/// them only after the game was saved (Spec Section 3.5), like the vehicle board.
+const CONTRACT_SETTLEMENT_REWRITE_SECS: i64 = 120;
 
 /// Minimum interval between two accepted in-game market switch requests (Spec Section 3.1.2).
 const INGAME_MARKET_SWITCH_MIN_INTERVAL: Duration = Duration::from_secs(30);
@@ -3711,7 +3743,7 @@ fn apply_and_write_contract_state(
 ) {
     let elapsed_secs = last_contract_write_at.elapsed().as_secs() as i64;
     let unacked_settlement_retry_due = !state.settlements.is_empty()
-        && elapsed_secs >= 30
+        && elapsed_secs >= CONTRACT_SETTLEMENT_REWRITE_SECS
         && !has_unread_contract_sync_xml(&paths.read_dir);
 
     let should_write = force_write_xml

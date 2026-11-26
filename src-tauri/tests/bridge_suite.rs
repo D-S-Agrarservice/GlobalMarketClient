@@ -6,7 +6,7 @@ use globalmarket_client_lib::api::fastapi::{
 };
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
-    ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
+    normalize_server_env, ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     ContractSubAction, FillTypeStatus, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
     ServerNotice, ServerSecret, TransactionRequest, TransactionType, WhitelistItemDto,
     WhitelistSyncRequest,
@@ -614,6 +614,7 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         offline_reason: Some("maintenance".to_string()),
         server_identity: "unknown".to_string(),
         has_dev_token: true,
+        server_env: Some("development".to_string()),
     };
 
     let cfg = AppConfig {
@@ -5352,6 +5353,7 @@ fn dev_token_header_and_rejections_from_a_development_server() {
     client.set_dev_token(Some("  dev_valid_test_token  ".to_string()));
     let handshake = client.check_status().unwrap();
     assert_eq!(handshake.api_version, "2.10.0");
+    assert_eq!(handshake.server_env.as_deref(), Some("development"));
 
     handle.join().unwrap();
     assert_eq!(
@@ -5395,4 +5397,46 @@ fn dev_token_survives_a_vault_reload_and_can_be_removed() {
     assert!(!TokenVault::load_or_empty(vault_file).has_dev_token());
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn server_env_is_normalized() {
+    assert_eq!(normalize_server_env(Some("development")).as_deref(), Some("development"));
+    assert_eq!(normalize_server_env(Some(" DEV ")).as_deref(), Some("development"));
+    assert_eq!(normalize_server_env(Some("production")).as_deref(), Some("production"));
+    assert_eq!(normalize_server_env(Some("staging")), None);
+    assert_eq!(normalize_server_env(None), None);
+}
+
+#[test]
+fn client_blocked_is_classified() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut reader = BufReader::new(&mut stream);
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                break;
+            }
+        }
+        drop(reader);
+        let body = "{\"detail\":{\"code\":\"CLIENT_BLOCKED\"}}";
+        let resp = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+    });
+    let client = FastApiBackend::new(
+        format!("http://{addr}"),
+        None,
+        "c84f92a17b0e3d41".to_string(),
+    )
+    .unwrap();
+    let err = client.check_status().unwrap_err();
+    assert!(matches!(err, ApiError::ClientBlocked), "{err:?}");
+    handle.join().unwrap();
 }

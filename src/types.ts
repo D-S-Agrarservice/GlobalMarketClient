@@ -113,6 +113,8 @@ export interface BridgeSnapshot {
   serverIdentity: "unknown" | "known" | "rejected";
   /** A developer token for the development server (`X-Dev-Token`) is stored; the token itself never reaches the WebView. */
   hasDevToken: boolean;
+  /** `server_env` of the last successful handshake (API 2.10+), `null` while offline or for older backends. */
+  serverEnv: "production" | "development" | null;
 }
 
 export type ServerNoticeType = "maintenance" | "restart" | "info";

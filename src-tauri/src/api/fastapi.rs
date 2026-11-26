@@ -15,7 +15,8 @@
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
     FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
-    OnlineVehicleListingDto, ServerHandshake, ServerNotice, ServerSecret, TransactionRequest,
+    normalize_server_env, OnlineVehicleListingDto, ServerHandshake, ServerNotice, ServerSecret,
+    TransactionRequest,
     VehicleActionRequest, VehicleActionResultDto, VehicleConfigDto, VehicleDto,
     VehicleSettlementDto, VehicleStateResponse, WhitelistSyncRequest,
 };
@@ -300,6 +301,8 @@ struct WireMetaStatus {
     /// Parsed leniently via [`ServerNotice::from_wire`], so a malformed notice never fails the handshake.
     #[serde(default)]
     notice: Option<serde_json::Value>,
+    #[serde(default)]
+    server_env: Option<serde_json::Value>,
 }
 
 fn default_true() -> bool {
@@ -1201,6 +1204,9 @@ impl BackendService for FastApiBackend {
                 contracts_supported: parsed.contracts_supported,
                 vehicles_supported: parsed.vehicles_supported,
                 notice: parsed.notice.as_ref().and_then(ServerNotice::from_wire),
+                server_env: normalize_server_env(
+                    parsed.server_env.as_ref().and_then(|v| v.as_str()),
+                ),
             })
         })
     }
@@ -1920,6 +1926,7 @@ pub fn parse_maintenance_error(
 /// - `CLIENT_ID_REQUIRED` -> [`ApiError::ClientIdRequired`]
 /// - `SERVER_SECRET_INVALID` -> [`ApiError::ServerSecretInvalid`] (object form)
 /// - `DEV_TOKEN_REQUIRED` / `DEV_TOKEN_INVALID` -> [`ApiError::DevTokenRejected`] (object form, development servers)
+/// - `CLIENT_BLOCKED` -> [`ApiError::ClientBlocked`] (object form)
 fn parse_classified_auth_error(
     root: &serde_json::Value,
     retry_after_hdr: Option<u64>,
@@ -1965,6 +1972,9 @@ fn parse_classified_auth_error(
                 }
                 if code.eq_ignore_ascii_case("DEV_TOKEN_INVALID") {
                     return Some(ApiError::DevTokenRejected { missing: false });
+                }
+                if code.eq_ignore_ascii_case("CLIENT_BLOCKED") {
+                    return Some(ApiError::ClientBlocked);
                 }
             }
             serde_json::Value::String(s) => {

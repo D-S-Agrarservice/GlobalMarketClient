@@ -143,6 +143,7 @@ const state: UiState = {
     offlineReason: null,
     serverIdentity: "unknown",
     hasDevToken: false,
+    serverEnv: null,
   },
   logs: [],
   activeModal: "none",
@@ -1129,6 +1130,11 @@ function renderDashboardHtml(): string {
       ${
         state.snapshot.apiVersion
           ? `<span class="rounded bg-zinc-800 border border-zinc-700 px-1.5 py-0.2 font-mono text-[10px] text-zinc-400">API v${escapeHtml(state.snapshot.apiVersion)}</span>`
+          : ""
+      }
+      ${
+        !isMock && state.snapshot.serverEnv === "development"
+          ? `<span class="rounded bg-purple-500/15 border border-purple-500/40 px-1.5 py-0.2 font-mono text-[10px] font-semibold uppercase text-purple-300" title="${escapeHtml(t("badgeDevServerHint"))}">${escapeHtml(t("badgeDevServer"))}</span>`
           : ""
       }
     `

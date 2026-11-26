@@ -812,6 +812,7 @@ impl BackendService for LocalMockBackend {
             contracts_supported: guard.simulated_contracts_supported,
             vehicles_supported: guard.vehicles.supported,
             notice: guard.simulated_notice.clone(),
+            server_env: None,
         })
     }
 
