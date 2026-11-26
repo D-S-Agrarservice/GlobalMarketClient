@@ -12,6 +12,11 @@ How support cases are handled in `GlobalMarketClient`: the access tiers, the tem
 
 The tier is a **local UI gate only**. The backend never trusts it: nothing on the server may depend on a client claiming to be in Extended or Developer mode (see D-S-Agrarservice/GlobalMarketClient#6).
 
+**Keys:** the source contains neither the keys nor their digests. A build gets the digests from the environment variables `GM_EXTENDED_KEY_DIGEST` and `GM_DEVELOPER_KEY_DIGEST` (format `<hex16>:<hex16>`). The release workflow takes them from the repository secrets of the same name and stops if one is missing. A local build without them unlocks no tier. To change a key, run `cargo run --example access_key_digest` in `src-tauri`, type the key and store the printed digest as the secret. Older builds keep accepting the keys they were built with.
+
+* **Support key (Extended):** short and easy to type, because support hands it out to players. It is guessable from the public digest; that is acceptable, since Extended only shows diagnostics, ends after 30 minutes and always uses the official backend.
+* **Developer key:** only for the maintainers. Use a random key with at least 24 characters, so it can't be guessed.
+
 ## 2. Unlocking and leaving Extended mode
 
 1. Click the version number below the app title (or the market logo in the header) **5 times within 4 seconds**. The "Support & Diagnostic Mode" dialog opens.

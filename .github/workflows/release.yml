@@ -81,6 +81,23 @@ jobs:
 
           echo "should_build=true" >> "$GITHUB_OUTPUT"
 
+      # The source holds no access key digests (public repository). Without these secrets a release
+      # build would unlock neither Extended nor Developer mode, so stop before building.
+      - name: Require access key digests
+        if: steps.check.outputs.should_build == 'true'
+        shell: bash
+        env:
+          GM_EXTENDED_KEY_DIGEST: ${{ secrets.GM_EXTENDED_KEY_DIGEST }}
+          GM_DEVELOPER_KEY_DIGEST: ${{ secrets.GM_DEVELOPER_KEY_DIGEST }}
+        run: |
+          pattern='^(0x)?[0-9A-Fa-f]{16}:(0x)?[0-9A-Fa-f]{16}$'
+          for name in GM_EXTENDED_KEY_DIGEST GM_DEVELOPER_KEY_DIGEST; do
+            if ! [[ "${!name}" =~ $pattern ]]; then
+              echo "::error::Secret $name is missing or not '<hex16>:<hex16>' (cargo run --example access_key_digest)."
+              exit 1
+            fi
+          done
+
   publish-tauri:
     name: Release (${{ matrix.label }})
     needs: prepare

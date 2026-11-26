@@ -23,9 +23,6 @@ pub const OFFICIAL_DEV_BACKEND_URL: &str = "https://dev.gm.bydora.de";
 /// Official dedicated CDN / image origin for Community & Logo keys (`market_logo_url`).
 pub const OFFICIAL_LOGO_CDN_URL: &str = "https://img.gm.bydora.de";
 
-const EXTENDED_TIER_DIGEST: (u64, u64) = (0xF2A3_2644_4335_EC05, 0xAAD2_5898_16B4_2471);
-const DEVELOPER_TIER_DIGEST: (u64, u64) = (0x9DD1_6667_20FD_AED2, 0x1AA6_AF13_D46A_DEB2);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendMode {
@@ -243,40 +240,52 @@ pub fn languages_equivalent(a: &str, b: &str) -> bool {
 
 /// Verifies an access key against salted 10,000-round 128-bit digests so plaintext keys
 /// never appear in source code, unit tests, compiled binary `.rdata` string tables, or frontend bundles.
-/// Supports optional compile-time CI secret overrides (`GM_EXTENDED_KEY_DIGEST` / `GM_DEVELOPER_KEY_DIGEST`
-/// formatted as `"<hex16>:<hex16>"`).
+///
+/// The digests come only from the build environment (`GM_EXTENDED_KEY_DIGEST` /
+/// `GM_DEVELOPER_KEY_DIGEST`, formatted as `"<hex16>:<hex16>"`, set from CI secrets). The source
+/// contains none, because the repository is public. A build without them unlocks no tier.
+/// `cargo run --example access_key_digest` computes the digest of a new key.
 pub fn verify_access_key(raw_key: &str) -> Option<AccessTier> {
-    let extended_digest = option_env!("GM_EXTENDED_KEY_DIGEST")
-        .and_then(parse_digest_pair_hex)
-        .unwrap_or(EXTENDED_TIER_DIGEST);
-    let developer_digest = option_env!("GM_DEVELOPER_KEY_DIGEST")
-        .and_then(parse_digest_pair_hex)
-        .unwrap_or(DEVELOPER_TIER_DIGEST);
-    verify_access_key_with_digests(raw_key, extended_digest, developer_digest)
+    let extended_digest = option_env!("GM_EXTENDED_KEY_DIGEST").and_then(parse_digest_pair_hex);
+    let developer_digest = option_env!("GM_DEVELOPER_KEY_DIGEST").and_then(parse_digest_pair_hex);
+    verify_access_key_against(raw_key, extended_digest, developer_digest)
 }
 
-/// Verifies `raw_key` against explicit `(u64, u64)` target digests (used by `verify_access_key`
-/// and by unit tests with ephemeral dummy digests so real keys never appear in test code).
+/// Verifies `raw_key` against explicit `(u64, u64)` target digests (used by unit tests with
+/// ephemeral dummy digests so real keys never appear in test code).
 pub fn verify_access_key_with_digests(
     raw_key: &str,
     extended_digest: (u64, u64),
     developer_digest: (u64, u64),
 ) -> Option<AccessTier> {
+    verify_access_key_against(raw_key, Some(extended_digest), Some(developer_digest))
+}
+
+/// A missing digest never matches.
+fn verify_access_key_against(
+    raw_key: &str,
+    extended_digest: Option<(u64, u64)>,
+    developer_digest: Option<(u64, u64)>,
+) -> Option<AccessTier> {
+    if extended_digest.is_none() && developer_digest.is_none() {
+        return None;
+    }
     let candidate = raw_key.trim();
     if candidate.is_empty() || candidate.len() > 128 {
         return None;
     }
     let digest = digest_access_key(candidate);
-    if constant_time_eq_128(digest, developer_digest) {
+    if developer_digest.is_some_and(|d| constant_time_eq_128(digest, d)) {
         Some(AccessTier::Developer)
-    } else if constant_time_eq_128(digest, extended_digest) {
+    } else if extended_digest.is_some_and(|d| constant_time_eq_128(digest, d)) {
         Some(AccessTier::Extended)
     } else {
         None
     }
 }
 
-fn parse_digest_pair_hex(raw: &str) -> Option<(u64, u64)> {
+/// Parses `"<hex16>:<hex16>"` (optionally with `0x` prefixes) into a digest pair.
+pub fn parse_digest_pair_hex(raw: &str) -> Option<(u64, u64)> {
     let (hi, lo) = raw.trim().split_once(':')?;
     let a = u64::from_str_radix(hi.trim().trim_start_matches("0x"), 16).ok()?;
     let b = u64::from_str_radix(lo.trim().trim_start_matches("0x"), 16).ok()?;
