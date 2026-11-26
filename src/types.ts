@@ -155,8 +155,8 @@ export const OFFICIAL_LOGO_CDN_URL = "https://img.gm.bydora.de";
 /** Local loopback FastAPI server URL preset (Developer tier). */
 export const LOCAL_DEV_BACKEND_URL = "http://127.0.0.1:8000";
 
-/** Official D-S-Agrarservice Discord invite URL placeholder (to be replaced once dedicated channel/role is ready). */
-export const DSA_DISCORD_URL = "https://discord.gg/ds-agrarservice";
+/** Permanent invite to the D-S-Agrarservice Discord server, landing in the `gm-info` channel. */
+export const DSA_DISCORD_URL = "https://discord.gg/K382CfppjF";
 
 /** Hosting partner website shown as "powered by bydora.de" in the header. */
 export const BYDORA_URL = "https://bydora.de";
