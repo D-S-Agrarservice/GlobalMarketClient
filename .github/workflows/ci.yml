@@ -1,7 +1,11 @@
 name: CI
 
 # Pushes to main are not built: main is fast-forwarded to an already built commit.
-# macOS is only built for releases, hosted macOS minutes count tenfold.
+# Own pushes and PRs run on the self-hosted runners. Pull requests from forks never
+# do: they run on GitHub-hosted runners (verify-fork), which are free for public
+# repositories. A fork PR can still edit this file, so the repository also requires
+# approval of workflow runs for outside contributors; check `.github/` changes in
+# the PR before approving.
 on:
   push:
     branches:
@@ -17,6 +21,7 @@ concurrency:
 
 jobs:
   image:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/ci-image.yml
     permissions:
       contents: read
@@ -24,6 +29,7 @@ jobs:
 
   verify-windows:
     name: Verify (windows self-hosted)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, floowy-win]
     steps: &verify-steps
       - name: Prepare self-hosted Windows runner
@@ -83,3 +89,61 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps: *verify-steps
+
+  # Pull requests from forks: GitHub-hosted runners only, no secrets, read-only token.
+  verify-fork:
+    name: Verify fork PR (${{ matrix.os }})
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-22.04
+          - macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libssl-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build TypeScript & Vite frontend
+        run: npm run build
+
+      - name: Check Rust workspace & targets
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Run Rust integration & security test suite
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test bridge_suite
