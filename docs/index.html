@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FS25 GlobalMarket — Downloads (D-S-Agrarservice)</title>
+    <link rel="icon" type="image/png" href="./assets/dsa-logo.png" />
+    <style>
+      :root {
+        --bg: #141517;
+        --surface: #1e2024;
+        --surface-2: #26292f;
+        --border: #32363f;
+        --text: #f3f4f6;
+        --muted: #a1a7b3;
+        --green: #4fa83d;
+        --green-hover: #5cb949;
+        --amber: #f59e0b;
+        --blue: #5865f2;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+        background: radial-gradient(circle at top, #1f2620 0%, var(--bg) 52%);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 32px 16px 48px;
+      }
+
+      .wrap {
+        width: 100%;
+        max-width: 820px;
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .logo {
+        width: 64px;
+        height: 64px;
+        object-fit: contain;
+        border-radius: 12px;
+        background: var(--surface);
+        padding: 6px;
+        border: 1px solid var(--border);
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 1.55rem;
+        line-height: 1.2;
+      }
+
+      .subtitle {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 24px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        padding: 4px 10px;
+        border-radius: 999px;
+        margin-bottom: 12px;
+      }
+
+      .badge-beta {
+        background: rgba(245, 158, 11, 0.16);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.4);
+      }
+
+      .badge-release {
+        background: rgba(79, 168, 61, 0.16);
+        color: #7ee068;
+        border: 1px solid rgba(79, 168, 61, 0.4);
+      }
+
+      .file-box {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin: 14px 0 20px;
+        word-break: break-all;
+      }
+
+      .file-name {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #ffffff;
+      }
+
+      .file-meta {
+        margin-top: 6px;
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 8px;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px 20px;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 0.96rem;
+        text-decoration: none;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: background 0.15s ease, transform 0.08s ease;
+      }
+
+      .btn:active {
+        transform: translateY(1px);
+      }
+
+      .btn-primary {
+        background: var(--green);
+        color: #0b1609;
+      }
+
+      .btn-primary:hover {
+        background: var(--green-hover);
+      }
+
+      .btn-secondary {
+        background: var(--surface-2);
+        color: var(--text);
+        border-color: var(--border);
+      }
+
+      .btn-secondary:hover {
+        background: #30343c;
+      }
+
+      .btn-discord {
+        background: var(--blue);
+        color: #ffffff;
+      }
+
+      .btn-discord:hover {
+        background: #6773f5;
+      }
+
+      .status {
+        margin-top: 14px;
+        font-size: 0.9rem;
+        color: #9be88a;
+        min-height: 1.3em;
+      }
+
+      .notes {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
+        font-size: 0.88rem;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+
+      .notes strong {
+        color: var(--text);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+        gap: 18px;
+      }
+
+      .platform-group {
+        margin-top: 14px;
+      }
+
+      .platform-title {
+        font-size: 0.84rem;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin: 0 0 8px;
+      }
+
+      .dl-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .dl-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: 9px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text);
+        text-decoration: none;
+        font-size: 0.88rem;
+        transition: border-color 0.15s ease, background 0.15s ease;
+      }
+
+      .dl-item:hover {
+        border-color: var(--green);
+        background: #2c3138;
+      }
+
+      .dl-item code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.83rem;
+        word-break: break-all;
+      }
+
+      .dl-size {
+        color: var(--muted);
+        font-size: 0.8rem;
+        white-space: nowrap;
+      }
+
+      .footer {
+        margin-top: 26px;
+        text-align: center;
+        font-size: 0.82rem;
+        color: var(--muted);
+      }
+
+      .footer a {
+        color: var(--muted);
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="header">
+        <img class="logo" src="./assets/dsa-logo.png" alt="D-S-Agrarservice Logo" />
+        <div>
+          <h1>FS25 GlobalMarket — Downloads</h1>
+          <p class="subtitle">D-S-Agrarservice · Official Mod &amp; Cross-Platform Companion Client</p>
+        </div>
+      </header>
+
+      <!-- Direct Download Mode (triggered via ?repo=...&tag=...&file=...) -->
+      <main id="direct-view" class="card hidden">
+        <div id="direct-badge" class="badge badge-beta">🧪 BETA</div>
+        <h2 id="direct-heading" style="margin: 0 0 6px; font-size: 1.25rem;">Download wird vorbereitet…</h2>
+        <div class="file-box">
+          <div id="direct-filename" class="file-name"></div>
+          <div id="direct-meta" class="file-meta"></div>
+        </div>
+        <div class="btn-row">
+          <a id="direct-btn" class="btn btn-primary" href="#" rel="noopener">
+            📥 Download jetzt starten / Start Download
+          </a>
+          <a id="direct-release-link" class="btn btn-secondary" href="#" target="_blank" rel="noopener">
+            GitHub Release
+          </a>
+          <a class="btn btn-secondary" href="./">
+            Alle Downloads / All Downloads
+          </a>
+        </div>
+        <div id="direct-status" class="status"></div>
+        <div id="direct-notes" class="notes"></div>
+      </main>
+
+      <!-- Overview Mode (no query params) -->
+      <main id="overview-view" class="hidden">
+        <div class="grid">
+          <section class="card" id="card-mod">
+            <div class="badge badge-beta" id="mod-badge">🚜 FS25 MOD</div>
+            <h2 style="margin: 0 0 6px; font-size: 1.2rem;">FS25_GlobalMarket</h2>
+            <p class="subtitle" id="mod-sub">Lade aktuelle Version / Loading latest release…</p>
+            <div id="mod-links" class="platform-group"></div>
+          </section>
+
+          <section class="card" id="card-client">
+            <div class="badge badge-beta" id="client-badge">💻 DESKTOP CLIENT</div>
+            <h2 style="margin: 0 0 6px; font-size: 1.2rem;">GlobalMarketClient</h2>
+            <p class="subtitle" id="client-sub">Lade aktuelle Version / Loading latest release…</p>
+            <div id="client-links" class="platform-group"></div>
+          </section>
+        </div>
+
+        <div class="card" style="margin-top: 18px;">
+          <div class="btn-row" style="margin-top: 0;">
+            <a class="btn btn-discord" href="https://discord.gg/K382CfppjF" target="_blank" rel="noopener">
+              💬 D-S-Agrarservice Discord
+            </a>
+            <a class="btn btn-secondary" href="https://github.com/D-S-Agrarservice/FS25_GlobalMarket/releases" target="_blank" rel="noopener">
+              FS25_GlobalMarket Releases
+            </a>
+            <a class="btn btn-secondary" href="https://github.com/D-S-Agrarservice/GlobalMarketClient/releases" target="_blank" rel="noopener">
+              GlobalMarketClient Releases
+            </a>
+          </div>
+        </div>
+      </main>
+
+      <footer class="footer">
+        D-S-Agrarservice · FS25 GlobalMarket · powered by
+        <a href="https://bydora.de" target="_blank" rel="noopener">bydora.de</a>
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        const OWNER = "D-S-Agrarservice";
+        const ALLOWED_REPOS = new Set(["GlobalMarketClient", "FS25_GlobalMarket"]);
+        const SAFE_TOKEN = /^[A-Za-z0-9._-]+$/;
+        const IGNORED_RE = /(?:^latest\.json$|\.sig$|\.app\.tar\.gz$|\.nsis\.zip$|\.blockmap$|^SHA256SUMS)/i;
+
+        function isBetaTag(tag) {
+          const m = String(tag || "").match(/^v?(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?$/);
+          if (!m) return true;
+          return Number(m[1]) < 1 || Boolean(m[5]);
+        }
+
+        function formatBytes(bytes) {
+          if (!bytes || bytes <= 0) return "";
+          if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+          return Math.max(1, Math.round(bytes / 1024)) + " KB";
+        }
+
+        function triggerBrowserDownload(url, filename) {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename || "";
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+
+        function buildNotesHtml(repo, file) {
+          const lower = file.toLowerCase();
+          if (repo === "FS25_GlobalMarket" || lower.endsWith(".zip")) {
+            return (
+              "<strong>🇩🇪 Installation:</strong> Die <code>.zip</code>-Datei unverändert in deinen FS25-<code>mods</code>-Ordner legen (<em>nicht entpacken</em>). Für Live-Online-Handel zusätzlich den <strong>GlobalMarketClient</strong> starten.<br /><br />" +
+              "<strong>🇬🇧 Installation:</strong> Drop the <code>.zip</code> file directly into your FS25 <code>mods</code> folder (<em>do not extract</em>). Run <strong>GlobalMarketClient</strong> alongside the game for live online trading."
+            );
+          }
+          if (lower.endsWith(".dmg")) {
+            return (
+              "<strong>🇩🇪 macOS Gatekeeper:</strong> App in <code>Programme</code> ziehen, beim ersten Start ggf. über <em>Systemeinstellungen → Datenschutz &amp; Sicherheit → Dennoch öffnen</em> freigeben.<br /><br />" +
+              "<strong>🇬🇧 macOS Gatekeeper:</strong> Drag to <code>Applications</code>; on first launch allow via <em>System Settings → Privacy &amp; Security → Open Anyway</em>."
+            );
+          }
+          if (lower.endsWith(".appimage") || lower.endsWith(".deb") || lower.endsWith(".rpm")) {
+            return (
+              "<strong>🇩🇪 Linux / Steam Deck:</strong> <code>.AppImage</code> ausführbar machen (<code>chmod +x</code>) oder <code>.deb</code> / <code>.rpm</code> über den Paketmanager installieren.<br /><br />" +
+              "<strong>🇬🇧 Linux / Steam Deck:</strong> Mark <code>.AppImage</code> executable (<code>chmod +x</code>) or install the <code>.deb</code> / <code>.rpm</code> package."
+            );
+          }
+          return (
+            "<strong>🇩🇪 Windows SmartScreen:</strong> Bei Erstinstallation ggf. auf <em>„Weitere Infos → Trotzdem ausführen“</em> klicken. Bestehende Installationen aktualisieren sich direkt in der App.<br /><br />" +
+            "<strong>🇬🇧 Windows SmartScreen:</strong> On first install, click <em>More info → Run anyway</em> if prompted. Existing installs update automatically in-app."
+          );
+        }
+
+        const params = new URLSearchParams(window.location.search);
+        const repo = (params.get("repo") || "").trim();
+        const tag = (params.get("tag") || "").trim();
+        const file = (params.get("file") || "").trim();
+
+        const validDirect =
+          ALLOWED_REPOS.has(repo) &&
+          SAFE_TOKEN.test(tag) &&
+          SAFE_TOKEN.test(file) &&
+          !tag.includes("..") &&
+          !file.includes("..");
+
+        if (validDirect) {
+          const directUrl =
+            "https://github.com/" +
+            OWNER +
+            "/" +
+            encodeURIComponent(repo) +
+            "/releases/download/" +
+            encodeURIComponent(tag) +
+            "/" +
+            encodeURIComponent(file);
+          const releaseUrl =
+            "https://github.com/" +
+            OWNER +
+            "/" +
+            encodeURIComponent(repo) +
+            "/releases/tag/" +
+            encodeURIComponent(tag);
+
+          const beta = isBetaTag(tag);
+          const badgeEl = document.getElementById("direct-badge");
+          badgeEl.textContent = beta ? "🧪 BETA" : "🚀 RELEASE";
+          badgeEl.className = "badge " + (beta ? "badge-beta" : "badge-release");
+
+          document.getElementById("direct-heading").textContent =
+            repo === "FS25_GlobalMarket"
+              ? "FS25_GlobalMarket Mod — " + tag
+              : "GlobalMarketClient — " + tag;
+          document.getElementById("direct-filename").textContent = file;
+          document.getElementById("direct-meta").textContent =
+            "Quelle / Source: github.com/" + OWNER + "/" + repo + " (" + tag + ")";
+
+          const btn = document.getElementById("direct-btn");
+          btn.href = directUrl;
+          btn.addEventListener("click", function () {
+            document.getElementById("direct-status").textContent =
+              "✅ Download gestartet / Download started!";
+          });
+
+          document.getElementById("direct-release-link").href = releaseUrl;
+          document.getElementById("direct-notes").innerHTML = buildNotesHtml(repo, file);
+          document.getElementById("direct-view").classList.remove("hidden");
+
+          // Trigger automatic download from inside the open HTML page (works in Opera GX, Chrome, Edge, Firefox).
+          setTimeout(function () {
+            triggerBrowserDownload(directUrl, file);
+            document.getElementById("direct-status").textContent =
+              "✅ Download automatisch gestartet – falls nichts passiert, einfach oben auf den grünen Button klicken. / Download started automatically – click the green button above if needed.";
+          }, 650);
+          return;
+        }
+
+        // Overview mode: load latest published releases (including pre-releases) for Mod & Client.
+        document.getElementById("overview-view").classList.remove("hidden");
+
+        async function fetchNewestRelease(repoName) {
+          const res = await fetch(
+            "https://api.github.com/repos/" + OWNER + "/" + repoName + "/releases?per_page=10",
+            { headers: { Accept: "application/vnd.github+json" } },
+          );
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const list = await res.json();
+          return Array.isArray(list) ? list.find((r) => !r.draft) : null;
+        }
+
+        function createLinkRow(repoName, tagName, asset) {
+          const a = document.createElement("a");
+          a.className = "dl-item";
+          a.href = asset.browser_download_url;
+          a.rel = "noopener";
+          const code = document.createElement("code");
+          code.textContent = asset.name;
+          const size = document.createElement("span");
+          size.className = "dl-size";
+          size.textContent = formatBytes(asset.size) || "Download";
+          a.appendChild(code);
+          a.appendChild(size);
+          return a;
+        }
+
+        async function loadModCard() {
+          const sub = document.getElementById("mod-sub");
+          const container = document.getElementById("mod-links");
+          const badge = document.getElementById("mod-badge");
+          try {
+            const rel = await fetchNewestRelease("FS25_GlobalMarket");
+            if (!rel) throw new Error("No release");
+            const beta = rel.prerelease || isBetaTag(rel.tag_name);
+            badge.textContent = beta ? "🧪 BETA · FS25 MOD" : "🚀 RELEASE · FS25 MOD";
+            badge.className = "badge " + (beta ? "badge-beta" : "badge-release");
+            sub.textContent = "Version " + rel.tag_name;
+
+            const zips = (rel.assets || []).filter(
+              (a) => a.name.toLowerCase().endsWith(".zip") && !IGNORED_RE.test(a.name),
+            );
+            const list = document.createElement("div");
+            list.className = "dl-list";
+            for (const z of zips) {
+              list.appendChild(createLinkRow("FS25_GlobalMarket", rel.tag_name, z));
+            }
+            container.appendChild(list);
+          } catch {
+            sub.textContent = "Direkt über GitHub Releases laden:";
+            const a = document.createElement("a");
+            a.className = "btn btn-primary";
+            a.href = "https://github.com/D-S-Agrarservice/FS25_GlobalMarket/releases";
+            a.textContent = "FS25_GlobalMarket Releases öffnen";
+            container.appendChild(a);
+          }
+        }
+
+        async function loadClientCard() {
+          const sub = document.getElementById("client-sub");
+          const container = document.getElementById("client-links");
+          const badge = document.getElementById("client-badge");
+          try {
+            const rel = await fetchNewestRelease("GlobalMarketClient");
+            if (!rel) throw new Error("No release");
+            const beta = rel.prerelease || isBetaTag(rel.tag_name);
+            badge.textContent = beta ? "🧪 BETA · CLIENT" : "🚀 RELEASE · CLIENT";
+            badge.className = "badge " + (beta ? "badge-beta" : "badge-release");
+            sub.textContent = "Version " + rel.tag_name;
+
+            const visible = (rel.assets || []).filter((a) => !IGNORED_RE.test(a.name));
+            const groups = [
+              { title: "🪟 Windows", items: visible.filter((a) => /\.(exe|msi)$/i.test(a.name)) },
+              { title: "🍎 macOS", items: visible.filter((a) => /\.dmg$/i.test(a.name)) },
+              { title: "🐧 Linux / Steam Deck", items: visible.filter((a) => /\.(appimage|deb|rpm)$/i.test(a.name)) },
+            ];
+
+            for (const g of groups) {
+              if (!g.items.length) continue;
+              const h = document.createElement("div");
+              h.className = "platform-title";
+              h.style.marginTop = "12px";
+              h.textContent = g.title;
+              container.appendChild(h);
+              const list = document.createElement("div");
+              list.className = "dl-list";
+              for (const item of g.items) {
+                list.appendChild(createLinkRow("GlobalMarketClient", rel.tag_name, item));
+              }
+              container.appendChild(list);
+            }
+          } catch {
+            sub.textContent = "Direkt über GitHub Releases laden:";
+            const a = document.createElement("a");
+            a.className = "btn btn-primary";
+            a.href = "https://github.com/D-S-Agrarservice/GlobalMarketClient/releases";
+            a.textContent = "GlobalMarketClient Releases öffnen";
+            container.appendChild(a);
+          }
+        }
+
+        loadModCard();
+        loadClientCard();
+      })();
+    </script>
+  </body>
+</html>
