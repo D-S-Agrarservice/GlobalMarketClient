@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Se verifică…",
   "toastUpToDate": "Rulezi cea mai recentă versiune (v{version}).",
   "toastUpdateFound": "Actualizarea v{version} a fost găsită – pregătită pentru instalare cu 1 clic!",
+  "toastUpdateCheckFailed": "Verificarea actualizărilor a eșuat. Verifică conexiunea sau încearcă din nou mai târziu.",
   "toastUpdateFailed": "Actualizarea automată a eșuat ({error}). Se deschide GitHub Releases…",
   "mockTier0": "Nivel 0: Standard",
   "mockTier1": "Nivel 1: Logo (Oficial)",

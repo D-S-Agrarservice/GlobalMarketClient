@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Prüfe…",
   "toastUpToDate": "App ist auf dem neuesten Stand (v{version}).",
   "toastUpdateFound": "Update v{version} gefunden – bereit zur 1-Klick-Installation!",
+  "toastUpdateCheckFailed": "Update-Prüfung fehlgeschlagen. Prüfe deine Verbindung oder versuche es später erneut.",
   "toastUpdateFailed": "Auto-Update fehlgeschlagen ({error}). Öffne GitHub Releases…",
   "mockTier0": "Stufe 0: Standard",
   "mockTier1": "Stufe 1: Logo (Global)",

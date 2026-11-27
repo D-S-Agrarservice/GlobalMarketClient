@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Söker…",
   "toastUpToDate": "Du kör den senaste versionen (v{version}).",
   "toastUpdateFound": "Uppdatering v{version} hittades – redo för 1-klicksinstallation!",
+  "toastUpdateCheckFailed": "Uppdateringskontrollen misslyckades. Kontrollera anslutningen eller försök igen senare.",
   "toastUpdateFailed": "Automatisk uppdatering misslyckades ({error}). Öppnar GitHub Releases…",
   "mockTier0": "Nivå 0: Standard",
   "mockTier1": "Nivå 1: Logotyp (Officiell)",

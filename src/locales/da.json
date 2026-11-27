@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Søger…",
   "toastUpToDate": "Du kører den nyeste version (v{version}).",
   "toastUpdateFound": "Opdatering v{version} fundet – klar til 1-klik-installation!",
+  "toastUpdateCheckFailed": "Opdateringstjekket mislykkedes. Tjek din forbindelse eller prøv igen senere.",
   "toastUpdateFailed": "Automatisk opdatering mislykkedes ({error}). Åbner GitHub Releases…",
   "mockTier0": "Trin 0: Standard",
   "mockTier1": "Trin 1: Logo (Officiel)",

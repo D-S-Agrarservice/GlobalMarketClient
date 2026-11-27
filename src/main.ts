@@ -301,9 +301,9 @@ async function checkForAppUpdates(manual: boolean): Promise<void> {
       renderModalOnly();
     }
     if (manual) {
-      // Before the first public release is published (or when offline), latest.json returns 404;
-      // surface a calm up-to-date notice rather than a raw HTTP error.
-      showToast(t("toastUpToDate", { version: state.info.appVersion }));
+      // Offline, no published release with a signed latest.json, or a bad signature:
+      // never claim the app is up to date when the check did not succeed.
+      showToast(t("toastUpdateCheckFailed"));
     }
   }
 }

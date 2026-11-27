@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Перевірка…",
   "toastUpToDate": "У вас встановлена актуальна версія (v{version}).",
   "toastUpdateFound": "Знайдено оновлення v{version} – готове до встановлення в 1 клік!",
+  "toastUpdateCheckFailed": "Не вдалося перевірити оновлення. Перевір підключення або спробуй пізніше.",
   "toastUpdateFailed": "Помилка автооновлення ({error}). Відкриття GitHub Releases…",
   "mockTier0": "Рівень 0: Стандарт",
   "mockTier1": "Рівень 1: Логотип (Офіц.)",

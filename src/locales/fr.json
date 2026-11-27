@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Vérification…",
   "toastUpToDate": "L’application est à jour (v{version}).",
   "toastUpdateFound": "Mise à jour v{version} trouvée – prête à être installée !",
+  "toastUpdateCheckFailed": "La vérification des mises à jour a échoué. Vérifie ta connexion ou réessaie plus tard.",
   "toastUpdateFailed": "Échec de la mise à jour auto ({error}). Ouverture de GitHub Releases…",
   "mockTier0": "Niveau 0 : Standard",
   "mockTier1": "Niveau 1 : Logo (Global)",

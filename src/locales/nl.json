@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Controleren…",
   "toastUpToDate": "Je gebruikt de nieuwste versie (v{version}).",
   "toastUpdateFound": "Update v{version} gevonden – klaar voor 1-klik-installatie!",
+  "toastUpdateCheckFailed": "Controleren op updates mislukt. Controleer je verbinding of probeer het later opnieuw.",
   "toastUpdateFailed": "Automatische update mislukt ({error}). GitHub Releases wordt geopend…",
   "mockTier0": "Niveau 0: Standaard",
   "mockTier1": "Niveau 1: Logo (Officieel)",

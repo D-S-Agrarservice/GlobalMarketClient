@@ -12,7 +12,7 @@ on:
         required: true
         default: "v0.9.18-beta"
       prerelease:
-        description: "Mark release as Pre-release (Beta / RC)"
+        description: "Mark release as Pre-release (hidden from the in-app updater)"
         required: false
         type: boolean
         default: false
@@ -51,8 +51,11 @@ jobs:
             TAG="$REF_NAME"
           fi
 
+          # The in-app updater reads `/releases/latest/download/latest.json`, and GitHub's
+          # "latest" never points to a pre-release. Beta tags such as `v0.9.19-beta` are
+          # therefore normal releases unless the dispatch explicitly asks for a pre-release.
           IS_PRERELEASE="false"
-          if [ "$INPUT_PRERELEASE" = "true" ] || [[ "$TAG" == *-* ]]; then
+          if [ "$INPUT_PRERELEASE" = "true" ]; then
             IS_PRERELEASE="true"
           fi
 

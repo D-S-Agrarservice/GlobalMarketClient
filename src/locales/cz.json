@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Kontrola…",
   "toastUpToDate": "Používáte nejnovější verzi (v{version}).",
   "toastUpdateFound": "Nalezena aktualizace v{version} – připravena k instalaci jedním kliknutím!",
+  "toastUpdateCheckFailed": "Kontrola aktualizací selhala. Zkontroluj připojení nebo zkus to později.",
   "toastUpdateFailed": "Automatická aktualizace selhala ({error}). Otevírání GitHub Releases…",
   "mockTier0": "Úroveň 0: Standard",
   "mockTier1": "Úroveň 1: Logo (Oficiální)",

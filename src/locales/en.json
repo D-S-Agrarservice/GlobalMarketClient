@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Checking…",
   "toastUpToDate": "You are running the latest version (v{version}).",
   "toastUpdateFound": "Update v{version} found – ready for 1-click install!",
+  "toastUpdateCheckFailed": "Update check failed. Check your connection or try again later.",
   "toastUpdateFailed": "Auto-update failed ({error}). Opening GitHub Releases…",
   "mockTier0": "Tier 0: Standard",
   "mockTier1": "Tier 1: Logo (Official)",

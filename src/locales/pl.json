@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Sprawdzanie…",
   "toastUpToDate": "Masz najnowszą wersję aplikacji (v{version}).",
   "toastUpdateFound": "Znaleziono aktualizację v{version} – gotowa do instalacji!",
+  "toastUpdateCheckFailed": "Sprawdzanie aktualizacji nie powiodło się. Sprawdź połączenie lub spróbuj ponownie później.",
   "toastUpdateFailed": "Błąd automatycznej aktualizacji ({error}). Otwieranie GitHub Releases…",
   "mockTier0": "Poziom 0: Standardowy",
   "mockTier1": "Poziom 1: Logo (Globalny)",

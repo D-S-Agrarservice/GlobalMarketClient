@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Verificando…",
   "toastUpToDate": "Você já está na versão mais recente (v{version}).",
   "toastUpdateFound": "Atualização v{version} encontrada – pronta para instalar em 1 clique!",
+  "toastUpdateCheckFailed": "A verificação de atualizações falhou. Verifica a tua ligação ou tenta novamente mais tarde.",
   "toastUpdateFailed": "Falha na atualização automática ({error}). Abrindo GitHub Releases…",
   "mockTier0": "Nível 0: Padrão",
   "mockTier1": "Nível 1: Logo (Oficial)",

@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Ellenőrzés…",
   "toastUpToDate": "A legújabb verziót használod (v{version}).",
   "toastUpdateFound": "v{version} frissítés található – készen áll az 1 kattintásos telepítésre!",
+  "toastUpdateCheckFailed": "A frissítések ellenőrzése sikertelen. Ellenőrizd a kapcsolatot, vagy próbáld újra később.",
   "toastUpdateFailed": "Az automatikus frissítés sikertelen ({error}). GitHub Releases megnyitása…",
   "mockTier0": "0. szint: Alap",
   "mockTier1": "1. szint: Logó (Hivatalos)",

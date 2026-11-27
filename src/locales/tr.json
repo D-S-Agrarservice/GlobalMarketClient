@@ -173,6 +173,7 @@
   "settingsCheckingUpdates": "Denetleniyor…",
   "toastUpToDate": "En güncel sürümü kullanıyorsunuz (v{version}).",
   "toastUpdateFound": "v{version} güncellemesi bulundu – tek tıkla kuruluma hazır!",
+  "toastUpdateCheckFailed": "Güncelleme denetimi başarısız oldu. Bağlantını kontrol et veya daha sonra tekrar dene.",
   "toastUpdateFailed": "Otomatik güncelleme başarısız ({error}). GitHub Releases açılıyor…",
   "mockTier0": "Seviye 0: Standart",
   "mockTier1": "Seviye 1: Logo (Resmi)",
