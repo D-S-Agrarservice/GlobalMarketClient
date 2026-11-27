@@ -136,8 +136,7 @@ export async function sendWebhookMessage(
 
 /**
  * Edits an existing message created by the same webhook in-place.
- * When `files` are supplied, `attachments: []` is included so previous file
- * attachments are cleanly replaced by the new release files.
+ * The message's file attachments are always replaced by `files` (none if empty).
  */
 export async function editWebhookMessage(
   webhookUrl,
@@ -157,10 +156,12 @@ export async function editWebhookMessage(
     applied_tags: _at,
     ...patchBody
   } = payload;
-  if (Array.isArray(files) && files.length > 0) {
-    patchBody.attachments = [];
-  }
-  return requestWithRetry(url, buildRequestInit("PATCH", patchBody, files));
+  // `attachments` lists every file the message keeps after the edit. Naming only the new
+  // uploads (by their `files[n]` index) drops the previous release's files, and an empty
+  // list clears them when no new file could be prepared, so a stale installer never stays.
+  const newFiles = Array.isArray(files) ? files : [];
+  patchBody.attachments = newFiles.map((file, idx) => ({ id: idx, filename: file.filename }));
+  return requestWithRetry(url, buildRequestInit("PATCH", patchBody, newFiles));
 }
 
 /**
