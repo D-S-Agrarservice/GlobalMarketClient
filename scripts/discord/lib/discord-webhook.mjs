@@ -98,25 +98,52 @@ async function requestWithRetry(url, init, maxRetries = 3) {
 }
 
 /**
- * Sends a new message via webhook and returns the created Discord Message object.
+ * Builds either a JSON or `multipart/form-data` request body depending on whether
+ * binary file attachments are provided.
  */
-export async function sendWebhookMessage(webhookUrl, payload, { threadId } = {}) {
-  const url = buildEndpointUrl(webhookUrl, { threadId, wait: true });
-  return requestWithRetry(url, {
-    method: "POST",
+function buildRequestInit(method, bodyObj, files = []) {
+  if (Array.isArray(files) && files.length > 0) {
+    const form = new FormData();
+    form.append("payload_json", JSON.stringify(bodyObj));
+    files.forEach((file, idx) => {
+      const blob = new Blob([file.data], {
+        type: file.contentType || "application/octet-stream",
+      });
+      form.append(`files[${idx}]`, blob, file.filename);
+    });
+    return { method, body: form };
+  }
+
+  return {
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+    body: JSON.stringify(bodyObj),
+  };
+}
+
+/**
+ * Sends a new message via webhook (with optional file attachments)
+ * and returns the created Discord Message object.
+ */
+export async function sendWebhookMessage(
+  webhookUrl,
+  payload,
+  { threadId, files = [] } = {},
+) {
+  const url = buildEndpointUrl(webhookUrl, { threadId, wait: true });
+  return requestWithRetry(url, buildRequestInit("POST", payload, files));
 }
 
 /**
  * Edits an existing message created by the same webhook in-place.
+ * When `files` are supplied, `attachments: []` is included so previous file
+ * attachments are cleanly replaced by the new release files.
  */
 export async function editWebhookMessage(
   webhookUrl,
   messageId,
   payload,
-  { threadId } = {},
+  { threadId, files = [] } = {},
 ) {
   if (!messageId || !String(messageId).trim()) {
     throw new Error("editWebhookMessage requires a non-empty messageId.");
@@ -130,11 +157,10 @@ export async function editWebhookMessage(
     applied_tags: _at,
     ...patchBody
   } = payload;
-  return requestWithRetry(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patchBody),
-  });
+  if (Array.isArray(files) && files.length > 0) {
+    patchBody.attachments = [];
+  }
+  return requestWithRetry(url, buildRequestInit("PATCH", patchBody, files));
 }
 
 /**

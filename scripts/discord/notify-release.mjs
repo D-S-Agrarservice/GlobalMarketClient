@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 /**
  * GitHub Release -> Discord Notifier & In-Place Download Card Updater.
- * Vendored from D-S-Agrarservice/Discord_Integrations so workflows run with zero extra tokens.
+ *
+ * Modes:
+ * 1. GitHub Actions (`release: [published]`): reads release payload from `GITHUB_EVENT_PATH`.
+ * 2. Local file test: `--release-file tests/fixtures/sample-release-beta.json`
+ * 3. Live GitHub fetch: `--repo D-S-Agrarservice/GlobalMarketClient [--tag v0.9.16-beta]`
+ *
+ * Flags:
+ *   --dry-run                Print payloads and routing plan without calling Discord.
+ *   --init-card              Post a new download card instead of editing an existing message ID
+ *                            (prints the created `message_id` for saving in `.env` / GitHub Variables).
+ *   --skip-announce          Only update the download card; skip the thread announcement post.
+ *   --release-file <path>    Load GitHub release JSON from a local file.
+ *   --repo <owner/repo>      Fetch release JSON from GitHub REST API.
+ *   --tag <tag>              Tag to fetch when using `--repo` (defaults to latest release).
  */
 
 import { readFileSync } from "node:fs";
@@ -16,6 +29,7 @@ import {
   buildAnnouncementPayload,
   buildDownloadCardPayload,
   classifyReleaseChannel,
+  selectDiscordAttachmentAssets,
 } from "./lib/release-formatter.mjs";
 
 loadDotEnv();
@@ -25,6 +39,8 @@ function parseArgs(argv) {
     dryRun: false,
     initCard: false,
     skipAnnounce: false,
+    noAttach: false,
+    announceMessageId: null,
     releaseFile: null,
     repo: null,
     tag: null,
@@ -35,18 +51,20 @@ function parseArgs(argv) {
     if (token === "--dry-run") args.dryRun = true;
     else if (token === "--init-card") args.initCard = true;
     else if (token === "--skip-announce") args.skipAnnounce = true;
+    else if (token === "--no-attach") args.noAttach = true;
+    else if (token === "--announce-message-id") args.announceMessageId = argv[++i];
     else if (token === "--release-file") args.releaseFile = argv[++i];
     else if (token === "--repo") args.repo = argv[++i];
     else if (token === "--tag") args.tag = argv[++i];
     else if (token === "--help" || token === "-h") {
       console.log(
         [
-          "Usage: node scripts/discord/notify-release.mjs [options]",
+          "Usage: node scripts/notify-release.mjs [options]",
           "",
           "Options:",
           "  --dry-run                Preview payloads without sending to Discord",
           "  --init-card              Create a new persistent download card and print its message ID",
-          "  --skip-announce          Skip posting the changelog announcement",
+          "  --skip-announce          Skip posting the changelog announcement into the thread",
           "  --release-file <path>    Load release JSON from disk",
           "  --repo <owner/repo>      Fetch release JSON from GitHub API",
           "  --tag <tag>              Specific release tag when using --repo (optional)",
@@ -130,6 +148,44 @@ async function loadReleaseData(args) {
   );
 }
 
+async function downloadReleaseAttachments(selectedAssets) {
+  const files = [];
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+
+  for (const asset of selectedAssets) {
+    try {
+      const targetUrl = token && asset.apiUrl ? asset.apiUrl : asset.url;
+      const headers = {
+        "User-Agent": "DSA-Discord-Integrations",
+        Accept: "application/octet-stream",
+      };
+      if (token && asset.apiUrl) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch(targetUrl, { headers });
+      if (!res.ok) {
+        console.warn(
+          `Warning: could not fetch attachment '${asset.name}' (HTTP ${res.status}) — posting embed links only.`,
+        );
+        continue;
+      }
+      const data = new Uint8Array(await res.arrayBuffer());
+      files.push({
+        filename: asset.name,
+        data,
+        contentType: "application/octet-stream",
+      });
+      console.log(`Prepared Discord attachment: ${asset.name} (${asset.sizeLabel})`);
+    } catch (err) {
+      console.warn(
+        `Warning: failed to prepare attachment '${asset.name}' (${err.message}) — continuing with links only.`,
+      );
+    }
+  }
+
+  return files;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const release = await loadReleaseData(args);
@@ -181,6 +237,10 @@ async function main() {
     roleId: targetRoleId,
   });
 
+  const attachmentCandidates = args.noAttach
+    ? []
+    : selectDiscordAttachmentAssets(release);
+
   console.log(`Release tag:       ${release.tag_name}`);
   console.log(`Detected channel:  ${channel.toUpperCase()}`);
   console.log(
@@ -188,6 +248,13 @@ async function main() {
       !args.initCard && targetMessageId
         ? `PATCH existing card (message_id=${targetMessageId})`
         : "POST new download card"
+    }`,
+  );
+  console.log(
+    `Attachments:       ${
+      attachmentCandidates.length > 0
+        ? attachmentCandidates.map((a) => `${a.name} (${a.sizeLabel})`).join(", ")
+        : "none"
     }`,
   );
   console.log(
@@ -216,6 +283,8 @@ async function main() {
     );
   }
 
+  const files = await downloadReleaseAttachments(attachmentCandidates);
+
   // 1. Update (or create) the persistent download card in `#gm-downloads`.
   let cardMessage;
   if (!args.initCard && targetMessageId) {
@@ -223,25 +292,40 @@ async function main() {
       downloadWebhookUrl,
       targetMessageId,
       downloadCardPayload,
+      { files },
     );
     console.log(`Updated download card in-place (message_id=${cardMessage.id}).`);
   } else {
-    cardMessage = await sendWebhookMessage(downloadWebhookUrl, downloadCardPayload);
+    cardMessage = await sendWebhookMessage(downloadWebhookUrl, downloadCardPayload, {
+      files,
+    });
     const varName = isBeta ? "DISCORD_BETA_MESSAGE_ID" : "DISCORD_RELEASE_MESSAGE_ID";
     console.log(`Created new download card (message_id=${cardMessage.id}).`);
     console.log(`Save this ID as ${varName}=${cardMessage.id} so future updates replace this card in-place.`);
   }
 
-  // 2. Optionally post a fresh changelog announcement into the configured channel/thread.
+  // 2. Optionally post (or edit in-place) a changelog announcement.
   if (!args.skipAnnounce && announceWebhookUrl) {
-    const announceMsg = await sendWebhookMessage(
-      announceWebhookUrl,
-      announcementPayload,
-      { threadId: targetThreadId || undefined },
-    );
-    console.log(
-      `Posted release announcement (message_id=${announceMsg.id}${targetThreadId ? `, thread_id=${targetThreadId}` : ""}).`,
-    );
+    if (args.announceMessageId) {
+      const updatedMsg = await editWebhookMessage(
+        announceWebhookUrl,
+        args.announceMessageId,
+        announcementPayload,
+        { threadId: targetThreadId || undefined },
+      );
+      console.log(
+        `Updated release announcement in-place (message_id=${updatedMsg.id}).`,
+      );
+    } else {
+      const announceMsg = await sendWebhookMessage(
+        announceWebhookUrl,
+        announcementPayload,
+        { threadId: targetThreadId || undefined },
+      );
+      console.log(
+        `Posted release announcement (message_id=${announceMsg.id}${targetThreadId ? `, thread_id=${targetThreadId}` : ""}).`,
+      );
+    }
   }
 }
 
