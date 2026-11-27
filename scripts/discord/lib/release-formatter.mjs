@@ -170,14 +170,13 @@ export function buildPortalDownloadUrl(assetUrl, portalBaseUrl = DEFAULT_DOWNLOA
 }
 
 /**
- * Formats a list of platform assets as clickable Markdown links.
+ * Formats a list of platform assets as clickable direct GitHub download links.
  */
-function formatAssetLinks(items, portalBaseUrl) {
+function formatAssetLinks(items) {
   return items
     .map((item) => {
       const sizeSuffix = item.sizeLabel ? ` (${item.sizeLabel})` : "";
-      const href = buildPortalDownloadUrl(item.url, portalBaseUrl);
-      return `• [\`${item.name}\`](${href})${sizeSuffix}`;
+      return `• [\`${item.name}\`](${item.url})${sizeSuffix}`;
     })
     .join("\n");
 }
@@ -319,17 +318,12 @@ export function buildDownloadCardPayload(release, options = {}) {
         `📌 **Version:** \`${tag}\` · **Status:** ${badge} · **Update:** <t:${publishedUnix}:R>`,
       ];
 
-  const portalBaseUrl =
-    options.downloadPortalUrl !== undefined
-      ? options.downloadPortalUrl
-      : DEFAULT_DOWNLOAD_PORTAL_URL;
-
   const fields = [];
 
   if (assets.windows.length > 0) {
     fields.push({
       name: "🪟 Windows (10 / 11 x64)",
-      value: truncateText(formatAssetLinks(assets.windows, portalBaseUrl), 1024),
+      value: truncateText(formatAssetLinks(assets.windows), 1024),
       inline: false,
     });
   }
@@ -337,7 +331,7 @@ export function buildDownloadCardPayload(release, options = {}) {
   if (assets.macos.length > 0) {
     fields.push({
       name: "🍎 macOS (Universal — Apple Silicon & Intel)",
-      value: truncateText(formatAssetLinks(assets.macos, portalBaseUrl), 1024),
+      value: truncateText(formatAssetLinks(assets.macos), 1024),
       inline: false,
     });
   }
@@ -345,7 +339,7 @@ export function buildDownloadCardPayload(release, options = {}) {
   if (assets.linux.length > 0) {
     fields.push({
       name: "🐧 Linux / Steam Deck (x64)",
-      value: truncateText(formatAssetLinks(assets.linux, portalBaseUrl), 1024),
+      value: truncateText(formatAssetLinks(assets.linux), 1024),
       inline: false,
     });
   }
@@ -353,7 +347,7 @@ export function buildDownloadCardPayload(release, options = {}) {
   if (assets.mod.length > 0) {
     fields.push({
       name: "🚜 Farming Simulator Mod (.zip)",
-      value: truncateText(formatAssetLinks(assets.mod, portalBaseUrl), 1024),
+      value: truncateText(formatAssetLinks(assets.mod), 1024),
       inline: false,
     });
   }
@@ -366,16 +360,25 @@ export function buildDownloadCardPayload(release, options = {}) {
     });
   }
 
+  const portalUrl =
+    options.downloadPortalUrl !== undefined
+      ? options.downloadPortalUrl
+      : DEFAULT_DOWNLOAD_PORTAL_URL;
+
+  const fallbackLine = portalUrl
+    ? `🌐 **Download startet nicht (z. B. Opera GX)? / Not starting?** → **[DSA Download-Seite / Download Page](${portalUrl})** · [GitHub Release](${releaseUrl})`
+    : `🔗 **[Alle Dateien & Changelog auf GitHub / Full Release on GitHub](${releaseUrl})**`;
+
   const notesLines = modRelease
     ? [
-        `🇩🇪 **Direkt-Download:** Datei einfach direkt unten am Anhang laden und unverändert in deinen FS25-\`mods\`-Ordner legen *(nicht entpacken)*. Für Live-Online-Handel zusätzlich den **GlobalMarketClient** starten. Hilfe & Support: ${supportChannelMention}`,
-        `🇬🇧 **Direct Download:** Download the attached \`.zip\` right below and drop it directly into your FS25 \`mods\` folder *(do not extract)*. Run **GlobalMarketClient** alongside the game for live online trading. Support: ${supportChannelMention}`,
-        `🔗 **[Alle Dateien & Changelog auf GitHub / Full Release on GitHub](${releaseUrl})**`,
+        `🇩🇪 **Installation:** Datei direkt laden (Link oben oder Anhang unten) und unverändert in deinen FS25-\`mods\`-Ordner legen *(nicht entpacken)*. Hilfe & Support: ${supportChannelMention}`,
+        `🇬🇧 **Installation:** Download via the link above or attachment below and drop the \`.zip\` directly into your FS25 \`mods\` folder *(do not extract)*. Support: ${supportChannelMention}`,
+        fallbackLine,
       ]
     : [
-        `🇩🇪 **Direkt-Download (Windows):** Die \`.exe\` hängt direkt unten als Discord-Datei an *(Auto-Update läuft nach Erstinstallation direkt in der App; SmartScreen: „Weitere Infos → Trotzdem ausführen“)*. macOS/Linux über die Links oben oder GitHub. Hilfe & Diagnose: ${supportChannelMention}`,
-        `🇬🇧 **Direct Download (Windows):** The \`.exe\` installer is attached directly below *(existing installs auto-update in-app; SmartScreen: *More info → Run anyway*)*. macOS/Linux via links above or GitHub. Support & Diagnostics: ${supportChannelMention}`,
-        `🔗 **[Alle Dateien & Changelog auf GitHub / Full Release on GitHub](${releaseUrl})**`,
+        `🇩🇪 **Auto-Update / Windows:** Windows-\`.exe\` auch direkt als Anhang unten *(SmartScreen: „Weitere Infos → Trotzdem ausführen“)*. Bestehende Installationen aktualisieren sich in der App. Hilfe & Diagnose: ${supportChannelMention}`,
+        `🇬🇧 **Auto-Update / Windows:** Windows \`.exe\` also attached below *(SmartScreen: More info → Run anyway)*. Existing installs update in-app. Support & Diagnostics: ${supportChannelMention}`,
+        fallbackLine,
       ];
 
   fields.push({
