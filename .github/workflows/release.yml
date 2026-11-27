@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag name (e.g. v0.9.18-beta or v1.0.0)"
+        description: "Release tag name (e.g. v0.9.19-beta or v1.0.0)"
         required: true
-        default: "v0.9.18-beta"
+        default: "v0.9.19-beta"
       prerelease:
         description: "Mark release as Pre-release (hidden from the in-app updater)"
         required: false
