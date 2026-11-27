@@ -107,7 +107,7 @@ export interface BridgeSnapshot {
   extendedExpiresUnix: number | null;
   /** Current server notice (maintenance, restart or info; Spec Section 3.1.3). */
   serverNotice: ServerNotice | null;
-  /** `maintenance` or `unreachable` while the backend is offline. */
+  /** `maintenance`, `unreachable` or `unsupportedContent` while the backend is offline. */
   offlineReason: OfflineReason | null;
   /** Identity of the current savegame on the shared online pool. */
   serverIdentity: "unknown" | "known" | "rejected";
@@ -115,10 +115,14 @@ export interface BridgeSnapshot {
   hasDevToken: boolean;
   /** `server_env` of the last successful handshake (API 2.10+), `null` while offline or for older backends. */
   serverEnv: "production" | "development" | null;
+  /** Loaded map from `modInfo.xml` (map id, map mod, short hash), `null` before mod v0.11.0.43. */
+  loadedMap: string | null;
+  /** Name of the refused content from a `CONTENT_NOT_SUPPORTED` answer, if the backend sent one. */
+  unsupportedContentLabel: string | null;
 }
 
 export type ServerNoticeType = "maintenance" | "restart" | "info";
-export type OfflineReason = "maintenance" | "unreachable";
+export type OfflineReason = "maintenance" | "unreachable" | "unsupportedContent";
 
 /** Server notice from `/api/v1/meta/status` (Spec Section 3.1.3). Times are UTC unix seconds. */
 export interface ServerNotice {

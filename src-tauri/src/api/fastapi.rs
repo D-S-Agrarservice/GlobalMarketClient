@@ -14,7 +14,7 @@
 
 use crate::api::types::{
     ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
-    FillTypeStatus, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
+    FillTypeStatus, LoadedMap, MarketItemDto, MarketStateResponse, OnlineContractDto, OnlineDirectOfferDto,
     normalize_server_env, OnlineVehicleListingDto, ServerHandshake, ServerNotice, ServerSecret,
     TransactionRequest,
     VehicleActionRequest, VehicleActionResultDto, VehicleConfigDto, VehicleDto,
@@ -56,6 +56,11 @@ pub struct FastApiBackend {
     client_id: RwLock<Option<String>>,
     /// Developer token (`X-Dev-Token`), sent only to development servers (see [`dev_token_allowed`]).
     dev_token: RwLock<Option<String>>,
+    /// Loaded map from `modInfo.xml`, sent as `X-Map-Id` / `X-Map-Mod` / `X-Map-Hash`.
+    loaded_map: RwLock<Option<LoadedMap>>,
+    /// Last savegame identity that worked on a board request, sent as `X-Server-Id` +
+    /// `X-Server-Secret` on every request, so a savegame on unsupported content can still settle.
+    savegame_identity: RwLock<Option<(String, ServerSecret)>>,
     etag_cache: Mutex<Option<CachedMarketState>>,
     contract_etag_cache: Mutex<Option<CachedContractState>>,
     vehicle_etag_cache: Mutex<Option<CachedVehicleState>>,
@@ -89,6 +94,8 @@ impl FastApiBackend {
             market_token: RwLock::new(clean_token(market_token)),
             client_id: RwLock::new(clean_client_id(&client_id)),
             dev_token: RwLock::new(None),
+            loaded_map: RwLock::new(None),
+            savegame_identity: RwLock::new(None),
             etag_cache: Mutex::new(None),
             contract_etag_cache: Mutex::new(None),
             vehicle_etag_cache: Mutex::new(None),
@@ -131,6 +138,25 @@ impl FastApiBackend {
 
         if changed {
             self.clear_etag_cache();
+            self.clear_savegame_identity();
+        }
+    }
+
+    fn clear_savegame_identity(&self) {
+        if let Ok(mut guard) = self.savegame_identity.write() {
+            *guard = None;
+        }
+    }
+
+    /// Remembers the identity of a successful board request (an issued secret wins over the sent one).
+    fn remember_savegame_identity(&self, server_id: &str, secret: Option<&ServerSecret>) {
+        let sid = server_id.trim();
+        let Some(secret) = secret else { return };
+        if sid.is_empty() || reqwest::header::HeaderValue::from_str(sid).is_err() {
+            return;
+        }
+        if let Ok(mut guard) = self.savegame_identity.write() {
+            *guard = Some((sid.to_string(), secret.clone()));
         }
     }
 
@@ -226,12 +252,46 @@ impl FastApiBackend {
         format!("{base}{suffix}")
     }
 
-    fn apply_auth_header(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    /// Common headers plus the remembered savegame identity (`X-Server-Id` + `X-Server-Secret`).
+    fn apply_auth_header(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let req = self.apply_common_headers(req);
+        match self.savegame_identity.read().ok().and_then(|g| g.clone()) {
+            Some((sid, secret)) => apply_server_secret(req.header("X-Server-Id", sid), Some(&secret)),
+            None => req,
+        }
+    }
+
+    /// Headers of a board request for savegame `server_id`: its own identity instead of the remembered one.
+    fn apply_board_headers(
+        &self,
+        req: reqwest::RequestBuilder,
+        server_id: &str,
+        server_secret: Option<&ServerSecret>,
+    ) -> reqwest::RequestBuilder {
+        let mut req = self.apply_common_headers(req);
+        if server_secret.is_some() {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(server_id.trim()) {
+                req = req.header("X-Server-Id", value);
+            }
+        }
+        apply_server_secret(req, server_secret)
+    }
+
+    fn apply_common_headers(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(cid) = self.client_id.read().ok().and_then(|g| g.clone()) {
             req = req.header("X-Client-Id", cid);
         }
         if let Some(value) = self.dev_token_header() {
             req = req.header("X-Dev-Token", value);
+        }
+        if let Some(map) = self.loaded_map.read().ok().and_then(|g| g.clone()) {
+            req = req.header("X-Map-Id", map.map_id);
+            if let Some(name) = map.map_mod_name {
+                req = req.header("X-Map-Mod", name);
+            }
+            if let Some(hash) = map.map_hash {
+                req = req.header("X-Map-Hash", hash);
+            }
         }
         let token = self.market_token.read().ok().and_then(|g| g.clone());
         match token {
@@ -1168,7 +1228,7 @@ impl BackendService for FastApiBackend {
             .is_some();
         let url = format!("{base_url}/api/v1/meta/status");
         let req = self.apply_auth_header(self.client.get(url));
-        self.runtime.block_on(async move {
+        let result = self.runtime.block_on(async move {
             let resp = req
                 .send()
                 .await
@@ -1208,7 +1268,12 @@ impl BackendService for FastApiBackend {
                     parsed.server_env.as_ref().and_then(|v| v.as_str()),
                 ),
             })
-        })
+        });
+        // A remembered identity the backend no longer accepts must not keep every request failing.
+        if matches!(result, Err(ApiError::ServerSecretInvalid)) {
+            self.clear_savegame_identity();
+        }
+        result
     }
 
     fn sync_whitelist(
@@ -1353,11 +1418,12 @@ impl BackendService for FastApiBackend {
             .and_then(|g| g.clone())
             .filter(|c| c.server_id == clean_sid);
 
-        let mut req = self.apply_auth_header(self.client.get(url));
-        if let Some(ref sid) = clean_sid {
-            req = req.query(&[("server_id", sid.as_str())]);
-            req = apply_server_secret(req, server_secret);
-        }
+        let mut req = match clean_sid {
+            Some(ref sid) => self
+                .apply_board_headers(self.client.get(url), sid, server_secret)
+                .query(&[("server_id", sid.as_str())]),
+            None => self.apply_auth_header(self.client.get(url)),
+        };
         if let Some(ref cached) = cached_snapshot {
             req = req.header(IF_NONE_MATCH, &cached.etag);
         }
@@ -1396,6 +1462,9 @@ impl BackendService for FastApiBackend {
         })?;
 
         let (etag_opt, state, was_not_modified) = outcome;
+        if let Some(ref sid) = clean_sid {
+            self.remember_savegame_identity(sid, state.server_secret.as_ref().or(server_secret));
+        }
         if !was_not_modified {
             self.store_or_clear_contract_etag(clean_sid, etag_opt, &state);
         }
@@ -1456,10 +1525,8 @@ impl BackendService for FastApiBackend {
         };
 
         let url = self.endpoint("/api/v1/contracts/actions");
-        let req = apply_server_secret(
-            self.apply_auth_header(self.client.post(url).json(&payload)),
-            server_secret,
-        );
+        let req =
+            self.apply_board_headers(self.client.post(url).json(&payload), server_id, server_secret);
         let (etag_opt, raw_json) = self.runtime.block_on(async move {
             let resp = req
                 .send()
@@ -1516,6 +1583,7 @@ impl BackendService for FastApiBackend {
 
             // Cached without the secret: a later 304 must not look like a newly issued one.
             self.store_or_clear_contract_etag(Some(server_id.to_string()), etag_opt, &parsed_state);
+            self.remember_savegame_identity(server_id, issued_secret.as_ref().or(server_secret));
             parsed_state.server_secret = issued_secret;
             return Ok(parsed_state);
         }
@@ -1551,6 +1619,10 @@ impl BackendService for FastApiBackend {
             }
         }
         board_state.server_secret = issued_secret_from_json(&raw_json);
+        self.remember_savegame_identity(
+            server_id,
+            board_state.server_secret.as_ref().or(server_secret),
+        );
         Ok(board_state)
     }
 
@@ -1571,11 +1643,12 @@ impl BackendService for FastApiBackend {
             .and_then(|g| g.clone())
             .filter(|c| c.server_id == clean_sid);
 
-        let mut req = self.apply_auth_header(self.client.get(url));
-        if let Some(ref sid) = clean_sid {
-            req = req.query(&[("server_id", sid.as_str())]);
-            req = apply_server_secret(req, server_secret);
-        }
+        let mut req = match clean_sid {
+            Some(ref sid) => self
+                .apply_board_headers(self.client.get(url), sid, server_secret)
+                .query(&[("server_id", sid.as_str())]),
+            None => self.apply_auth_header(self.client.get(url)),
+        };
         if let Some(ref cached) = cached_snapshot {
             req = req.header(IF_NONE_MATCH, &cached.etag);
         }
@@ -1609,6 +1682,9 @@ impl BackendService for FastApiBackend {
             Ok((etag, VehicleStateResponse::from(wire), false))
         })?;
 
+        if let Some(ref sid) = clean_sid {
+            self.remember_savegame_identity(sid, state.server_secret.as_ref().or(server_secret));
+        }
         if !was_not_modified {
             self.store_or_clear_vehicle_etag(clean_sid, etag_opt, &state);
         }
@@ -1659,10 +1735,8 @@ impl BackendService for FastApiBackend {
         };
 
         let url = self.endpoint("/api/v1/vehicles/actions");
-        let req = apply_server_secret(
-            self.apply_auth_header(self.client.post(url).json(&payload)),
-            server_secret,
-        );
+        let req =
+            self.apply_board_headers(self.client.post(url).json(&payload), server_id, server_secret);
         let (etag_opt, state) = self.runtime.block_on(async move {
             let resp = req
                 .send()
@@ -1686,7 +1760,18 @@ impl BackendService for FastApiBackend {
 
         // Cached without the secret: a later 304 must not look like a newly issued one.
         self.store_or_clear_vehicle_etag(Some(server_id.to_string()), etag_opt, &state);
+        self.remember_savegame_identity(server_id, state.server_secret.as_ref().or(server_secret));
         Ok(state)
+    }
+
+    fn set_loaded_map(&self, map: Option<LoadedMap>) {
+        if let Ok(mut guard) = self.loaded_map.write() {
+            *guard = map;
+        }
+    }
+
+    fn forget_savegame_identity(&self) {
+        self.clear_savegame_identity();
     }
 
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError> {
@@ -1927,6 +2012,7 @@ pub fn parse_maintenance_error(
 /// - `SERVER_SECRET_INVALID` -> [`ApiError::ServerSecretInvalid`] (object form)
 /// - `DEV_TOKEN_REQUIRED` / `DEV_TOKEN_INVALID` -> [`ApiError::DevTokenRejected`] (object form, development servers)
 /// - `CLIENT_BLOCKED` -> [`ApiError::ClientBlocked`] (object form)
+/// - `CONTENT_NOT_SUPPORTED` (`label`) -> [`ApiError::ContentNotSupported`] (object form)
 fn parse_classified_auth_error(
     root: &serde_json::Value,
     retry_after_hdr: Option<u64>,
@@ -1976,6 +2062,13 @@ fn parse_classified_auth_error(
                 if code.eq_ignore_ascii_case("CLIENT_BLOCKED") {
                     return Some(ApiError::ClientBlocked);
                 }
+                if code.eq_ignore_ascii_case("CONTENT_NOT_SUPPORTED") {
+                    let label = obj
+                        .get("label")
+                        .and_then(|v| v.as_str())
+                        .and_then(clean_content_label);
+                    return Some(ApiError::ContentNotSupported { label });
+                }
             }
             serde_json::Value::String(s) => {
                 let trimmed = s.trim();
@@ -2014,6 +2107,21 @@ fn parse_classified_auth_error(
         }
     }
     None
+}
+
+/// Longest `label` of a `CONTENT_NOT_SUPPORTED` answer that is shown.
+const MAX_CONTENT_LABEL_CHARS: usize = 64;
+
+/// Name of the refused content for display: trimmed, without control characters, at most
+/// [`MAX_CONTENT_LABEL_CHARS`] characters.
+fn clean_content_label(raw: &str) -> Option<String> {
+    let clean: String = raw
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_CONTENT_LABEL_CHARS)
+        .collect();
+    let clean = clean.trim();
+    (!clean.is_empty()).then(|| clean.to_string())
 }
 
 /// Validates and resolves an optional Community Market logo URL.

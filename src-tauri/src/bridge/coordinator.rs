@@ -26,9 +26,10 @@ use crate::bridge::notice::{
 use crate::bridge::paths::{discover_fs25_profile_path, resolve_bridge_paths, BridgePaths};
 use crate::bridge::xml::{
     cleanup_bridge_runtime_files, cleanup_bridge_transfer_files, has_unread_contract_sync_xml,
-    is_version_sufficient, parse_incoming_write_xml, prune_contract_sync_xmls,
+    is_version_sufficient, parse_incoming_write_xml, parse_mod_info_map, prune_contract_sync_xmls,
     prune_market_data_xmls, write_contract_data_xml, write_contract_data_xml_with_identity,
-    prune_vehicle_sync_xmls, write_contract_results_xml, write_heartbeat_xml_with_extras,
+    prune_vehicle_sync_xmls, read_mod_info_raw, write_contract_results_xml,
+    write_heartbeat_xml_with_extras,
     write_market_data_xml_with_branding, HeartbeatBranding, HeartbeatExtras,
     HeartbeatMarketProfile, HeartbeatMarketProfiles, HeartbeatNotice, IncomingPacket,
 };
@@ -169,6 +170,10 @@ pub struct BridgeSnapshot {
     /// `server_env` of the last successful handshake (`production` / `development`), `None` while
     /// offline or for backends before API 2.10.
     pub server_env: Option<String>,
+    /// Loaded map from `modInfo.xml` for the diagnostics (`mapId`, map mod and short hash).
+    pub loaded_map: Option<String>,
+    /// `label` of the last `CONTENT_NOT_SUPPORTED` answer while the backend refuses the loaded map.
+    pub unsupported_content_label: Option<String>,
 }
 
 enum WorkerSignal {
@@ -321,6 +326,8 @@ impl BridgeManager {
             server_identity: ServerIdentityState::Unknown.as_str().to_string(),
             has_dev_token: token_vault.has_dev_token(),
             server_env: None,
+            loaded_map: None,
+            unsupported_content_label: None,
         };
 
         let mgr = Self {
@@ -1746,6 +1753,9 @@ fn run_bridge_worker(
     let mut last_vehicle_poll = Instant::now() - Duration::from_secs(60);
     let mut last_status_check = Instant::now() - Duration::from_secs(60);
     let mut retry_hold_until: Option<Instant> = None;
+    let mut last_mod_info_check = Instant::now() - MOD_INFO_CHECK_INTERVAL;
+    let mut last_mod_info_raw: Option<String> = None;
+    let mut mod_info_checked = false;
 
     let mut last_synced_items: Vec<MarketItemDto> = Vec::new();
     let mut known_titles: HashMap<String, String> = HashMap::new();
@@ -1819,6 +1829,28 @@ fn run_bridge_worker(
 
         if force_sync {
             retry_hold_until = None;
+        }
+
+        // 0. Loaded map (`modInfo.xml`, Spec Section 3.1.1): the mod rewrites it on every map load.
+        if last_mod_info_check.elapsed() >= MOD_INFO_CHECK_INTERVAL {
+            last_mod_info_check = Instant::now();
+            let raw = read_mod_info_raw(&paths.mod_info_file);
+            if !mod_info_checked || raw != last_mod_info_raw {
+                let map = raw.as_deref().and_then(parse_mod_info_map);
+                backend.set_loaded_map(map.clone());
+                if mod_info_checked {
+                    // A new map load: the old savegame identity no longer applies.
+                    backend.forget_savegame_identity();
+                    if offline_reason == Some(OfflineReason::UnsupportedContent) {
+                        retry_hold_until = None;
+                        last_status_check = Instant::now() - Duration::from_secs(60);
+                    }
+                }
+                mod_info_checked = true;
+                last_mod_info_raw = raw;
+                let described = map.as_ref().map(describe_loaded_map);
+                emit_snapshot_update(&shared, &app_handle, |snap| snap.loaded_map = described);
+            }
         }
 
         // 1. Handshake / Backend reachability & minVersion check (every 10s when online, 5s when offline, or paused during CLIENT_IP_LOCKED)
@@ -2064,6 +2096,7 @@ fn run_bridge_worker(
                         snap.market_logo_file = next_branding.logo_file.clone();
                         snap.api_version = Some(hs.api_version);
                         snap.server_env = hs.server_env;
+                        snap.unsupported_content_label = None;
                         snap.min_exe_version = min_version.clone();
                         snap.latest_exe_version = latest_version.clone();
                         snap.contracts_supported = contracts_supported;
@@ -2170,6 +2203,7 @@ fn run_bridge_worker(
                         snap.last_error = Some(err_msg);
                         snap.offline_reason = offline_reason.map(|r| r.as_str().to_string());
                         snap.server_env = None;
+                        snap.unsupported_content_label = content_label(&err);
                     });
 
                     if was_online || changed_notice || changed_reason {
@@ -2311,6 +2345,7 @@ fn run_bridge_worker(
                                 &err,
                                 &mut is_connected,
                                 &mut retry_hold_until,
+                                &mut offline_reason,
                                 &shared,
                                 &app_handle,
                             );
@@ -2364,6 +2399,7 @@ fn run_bridge_worker(
                                     &err,
                                     &mut is_connected,
                                     &mut retry_hold_until,
+                                    &mut offline_reason,
                                     &shared,
                                     &app_handle,
                                 );
@@ -2587,6 +2623,7 @@ fn run_bridge_worker(
                                     &err,
                                     &mut is_connected,
                                     &mut retry_hold_until,
+                                    &mut offline_reason,
                                     &shared,
                                     &app_handle,
                                 );
@@ -2737,6 +2774,7 @@ fn run_bridge_worker(
                                     &err,
                                     &mut is_connected,
                                     &mut retry_hold_until,
+                                    &mut offline_reason,
                                     &shared,
                                     &app_handle,
                                 );
@@ -2822,6 +2860,7 @@ fn run_bridge_worker(
                         &err,
                         &mut is_connected,
                         &mut retry_hold_until,
+                        &mut offline_reason,
                         &shared,
                         &app_handle,
                     );
@@ -2904,6 +2943,7 @@ fn run_bridge_worker(
                         &err,
                         &mut is_connected,
                         &mut retry_hold_until,
+                        &mut offline_reason,
                         &shared,
                         &app_handle,
                     );
@@ -2979,6 +3019,7 @@ fn run_bridge_worker(
                         &err,
                         &mut is_connected,
                         &mut retry_hold_until,
+                        &mut offline_reason,
                         &shared,
                         &app_handle,
                     );
@@ -3296,6 +3337,19 @@ fn emit_classified_backend_error(
                     .to_string(),
             );
         }
+        ApiError::ContentNotSupported { label } => {
+            let label_note = label.as_deref().map(|l| format!(" ({l})")).unwrap_or_default();
+            push_i18n_log_shared(
+                shared,
+                app_handle,
+                LogLevel::Error,
+                "logContentNotSupported",
+                [("label", label_note.clone())],
+                format!(
+                    "This map isn't supported by Global Market{label_note}. The client stays offline until another map is loaded or the client is restarted."
+                ),
+            );
+        }
         ApiError::Unauthorized => {
             push_i18n_log_shared(
                 shared,
@@ -3321,17 +3375,23 @@ fn emit_classified_backend_error(
     }
 }
 
-/// How long a rejected client waits before the next handshake: the `CLIENT_IP_LOCKED` window, or
-/// [`CLIENT_BLOCKED_RETRY`] for a block (it is lifted only by the operators).
+/// How long a rejected client waits before the next handshake: the `CLIENT_IP_LOCKED` window,
+/// [`CLIENT_BLOCKED_RETRY`] for a block (it is lifted only by the operators), or
+/// [`CONTENT_NOT_SUPPORTED_HOLD`] while the loaded map is refused.
 fn backend_retry_hold(err: &ApiError) -> Option<Duration> {
     match err {
         ApiError::ClientIpLocked { retry_after_sec } => {
             Some(Duration::from_secs((*retry_after_sec).clamp(1, 86_400)))
         }
         ApiError::ClientBlocked => Some(CLIENT_BLOCKED_RETRY),
+        // No retries until another map is loaded (the `modInfo.xml` check lifts the hold) or a restart.
+        ApiError::ContentNotSupported { .. } => Some(CONTENT_NOT_SUPPORTED_HOLD),
         _ => None,
     }
 }
+
+/// Hold after `403 CONTENT_NOT_SUPPORTED`; a new map load or a client restart ends it earlier.
+const CONTENT_NOT_SUPPORTED_HOLD: Duration = Duration::from_secs(30 * 86_400);
 
 /// Handshake retry interval while the operators block this client (`403 CLIENT_BLOCKED`).
 const CLIENT_BLOCKED_RETRY: Duration = Duration::from_secs(300);
@@ -3340,6 +3400,7 @@ fn handle_backend_io_error(
     err: &ApiError,
     is_connected: &mut bool,
     retry_hold_until: &mut Option<Instant>,
+    offline_reason: &mut Option<OfflineReason>,
     shared: &Arc<Mutex<SharedState>>,
     app_handle: &Option<AppHandle>,
 ) {
@@ -3347,12 +3408,45 @@ fn handle_backend_io_error(
     if let Some(hold) = backend_retry_hold(err) {
         *retry_hold_until = Some(Instant::now() + hold);
     }
+    // The handshake is held back, so only this answer can tell the mod why the market is offline.
+    let refused_content = matches!(err, ApiError::ContentNotSupported { .. });
+    if refused_content {
+        *offline_reason = Some(OfflineReason::UnsupportedContent);
+    }
     let msg = err.to_string();
+    let label = content_label(err);
     emit_classified_backend_error(err, LogLevel::Error, shared, app_handle);
     emit_snapshot_update(shared, app_handle, |snap| {
         snap.state = BridgeConnectionState::BackendOffline;
         snap.last_error = Some(msg);
+        if refused_content {
+            snap.offline_reason = Some(OfflineReason::UnsupportedContent.as_str().to_string());
+            snap.unsupported_content_label = label;
+        }
     });
+}
+
+/// `label` of a `CONTENT_NOT_SUPPORTED` answer, `None` for every other error.
+fn content_label(err: &ApiError) -> Option<String> {
+    match err {
+        ApiError::ContentNotSupported { label } => label.clone(),
+        _ => None,
+    }
+}
+
+/// How often the worker looks for a new `modInfo.xml` (a new map load).
+const MOD_INFO_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// `mapId`, map mod and a short hash for the snapshot and the diagnostic report.
+fn describe_loaded_map(map: &crate::api::types::LoadedMap) -> String {
+    let source = map.map_mod_name.as_deref().unwrap_or("basegame/DLC");
+    match map.map_hash.as_deref() {
+        Some(hash) => {
+            let short: String = hash.chars().take(8).collect();
+            format!("{} ({source}, hash {short})", map.map_id)
+        }
+        None => format!("{} ({source})", map.map_id),
+    }
 }
 
 /// Unacknowledged contract settlements are written again at most this often. The mod acknowledges

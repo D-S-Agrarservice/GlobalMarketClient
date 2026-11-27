@@ -317,6 +317,10 @@ pub fn build_diagnostic_report_with_secrets(
         "dev_token: \"{}\"\n",
         if snapshot.has_dev_token { "set" } else { "none" }
     ));
+    report.push_str(&format!(
+        "loaded_map: \"{}\"\n",
+        snapshot.loaded_map.as_deref().unwrap_or("unknown")
+    ));
     report.push_str(&format!("active_great_demands: \"{gd_str}\"\n"));
     report.push_str(&format!("last_error: \"{last_err}\"\n"));
     let notice_str = snapshot

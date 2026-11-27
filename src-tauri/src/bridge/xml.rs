@@ -1735,6 +1735,47 @@ fn atomic_write_utf8_no_bom(
     ))
 }
 
+/// `modInfo.xml` is a single element; anything bigger is not from the mod.
+const MAX_MOD_INFO_BYTES: u64 = 16 * 1024;
+
+/// Raw content of `modInfo.xml`, or `None` if it is missing, unreadable or too big. The mod rewrites
+/// it on every map load, so a changed content means a new map load (Spec Section 3.1.1).
+pub fn read_mod_info_raw(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_MOD_INFO_BYTES {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+/// Loaded map from `modInfo.xml` content (`gmModInfo#mapId`, `#mapModName`, `#mapHash`, Spec
+/// Section 3.1.1). `None` when the root element or `mapId` is missing (mod before `v0.11.0.43`).
+pub fn parse_mod_info_map(content: &str) -> Option<crate::api::types::LoadedMap> {
+    let mut reader = Reader::from_str(content);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() != b"gmModInfo" {
+                    return None;
+                }
+                let (mut map_id, mut map_mod, mut map_hash) =
+                    (String::new(), String::new(), String::new());
+                for (key, val) in attribute_pairs(e) {
+                    match key.as_str() {
+                        "mapId" => map_id = val,
+                        "mapModName" => map_mod = val,
+                        "mapHash" => map_hash = val,
+                        _ => {}
+                    }
+                }
+                return crate::api::types::LoadedMap::from_attributes(&map_id, &map_mod, &map_hash);
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+    }
+}
+
 fn now_unix_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

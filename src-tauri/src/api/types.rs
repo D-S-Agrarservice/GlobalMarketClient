@@ -295,6 +295,42 @@ fn wire_unix_secs(value: &serde_json::Value) -> Option<u64> {
 /// Maximum accepted length of a savegame secret (same limit as the mod).
 pub const MAX_SERVER_SECRET_LEN: usize = 256;
 
+/// Loaded map reported by the mod in `modInfo.xml` (Spec Section 3.1.1), sent as the optional
+/// `X-Map-Id` / `X-Map-Mod` / `X-Map-Hash` headers so the backend can refuse unsupported content.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadedMap {
+    /// `gmModInfo#mapId`.
+    pub map_id: String,
+    /// `gmModInfo#mapModName`, `None` for basegame and DLC maps.
+    pub map_mod_name: Option<String>,
+    /// `gmModInfo#mapHash`, `None` for basegame and DLC maps (`dev` for an unpacked map folder).
+    pub map_hash: Option<String>,
+}
+
+/// Longest accepted `modInfo.xml` map value; longer ones are dropped instead of cut.
+pub const MAX_MAP_VALUE_LEN: usize = 128;
+
+impl LoadedMap {
+    /// Builds the map from the raw attributes. `None` without a usable `mapId` (older mod versions).
+    pub fn from_attributes(map_id: &str, map_mod_name: &str, map_hash: &str) -> Option<Self> {
+        Some(Self {
+            map_id: header_safe_map_value(map_id)?,
+            map_mod_name: header_safe_map_value(map_mod_name),
+            map_hash: header_safe_map_value(map_hash),
+        })
+    }
+}
+
+/// Trimmed value that fits into an HTTP header: printable ASCII and spaces, at most
+/// [`MAX_MAP_VALUE_LEN`] characters. Anything else counts as missing.
+fn header_safe_map_value(raw: &str) -> Option<String> {
+    let clean = raw.trim();
+    let valid = !clean.is_empty()
+        && clean.len() <= MAX_MAP_VALUE_LEN
+        && clean.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+    valid.then(|| clean.to_string())
+}
+
 /// Credential of a savegame on the shared online pool (`X-Server-Secret`, Spec Section 3.5).
 /// Never logged: `Debug` is redacted and the type is not serializable.
 #[derive(Clone, PartialEq, Eq)]

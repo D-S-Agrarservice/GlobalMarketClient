@@ -14,6 +14,8 @@ pub enum OfflineReason {
     Maintenance,
     /// Network error outside any announced window.
     Unreachable,
+    /// `403 CONTENT_NOT_SUPPORTED`: the backend refuses the loaded map.
+    UnsupportedContent,
 }
 
 impl OfflineReason {
@@ -21,6 +23,7 @@ impl OfflineReason {
         match self {
             Self::Maintenance => "maintenance",
             Self::Unreachable => "unreachable",
+            Self::UnsupportedContent => "unsupportedContent",
         }
     }
 }
@@ -69,6 +72,7 @@ pub fn classify_outage(
 ) -> Option<OfflineReason> {
     match err {
         ApiError::Maintenance { .. } => Some(OfflineReason::Maintenance),
+        ApiError::ContentNotSupported { .. } => Some(OfflineReason::UnsupportedContent),
         ApiError::Network(_) => {
             if notice.is_some_and(|n| n.covers_outage_at(now_unix)) {
                 Some(OfflineReason::Maintenance)

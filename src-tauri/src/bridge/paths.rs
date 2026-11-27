@@ -19,6 +19,8 @@ pub struct BridgePaths {
     pub bridge_root: PathBuf,
     /// `.../modSettings/FS<YY>_GlobalMarket/globalMarketOnline.xml`
     pub online_xml_file: PathBuf,
+    /// `.../modSettings/FS<YY>_GlobalMarket/modInfo.xml` (mod version and loaded map, Lua -> Client, read only)
+    pub mod_info_file: PathBuf,
     /// `.../modSettings/FS<YY>_GlobalMarket/server_whitelist.xml`
     pub server_whitelist_file: PathBuf,
     /// `.../modSettings/FS<YY>_GlobalMarket/read` (EXE -> Lua)
@@ -125,6 +127,7 @@ pub fn resolve_bridge_paths(raw_selected: &Path) -> Result<BridgePaths, String> 
     Ok(BridgePaths {
         game_edition,
         online_xml_file: bridge_root.join("globalMarketOnline.xml"),
+        mod_info_file: bridge_root.join("modInfo.xml"),
         server_whitelist_file: bridge_root.join("server_whitelist.xml"),
         read_dir: bridge_root.join("read"),
         write_dir: bridge_root.join("write"),

@@ -7,7 +7,7 @@ use globalmarket_client_lib::api::fastapi::{
 use globalmarket_client_lib::api::mock::LocalMockBackend;
 use globalmarket_client_lib::api::types::{
     normalize_server_env, ContractActionRequest, ContractActionResultDto, ContractSettlementDto, ContractStateResponse,
-    ContractSubAction, FillTypeStatus, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
+    ContractSubAction, FillTypeStatus, LoadedMap, MarketItemDto, OnlineContractDto, OnlineDirectOfferDto,
     ServerNotice, ServerSecret, TransactionRequest, TransactionType, WhitelistItemDto,
     WhitelistSyncRequest,
 };
@@ -28,7 +28,8 @@ use globalmarket_client_lib::bridge::dds::{
 use globalmarket_client_lib::bridge::l10n::localize_fill_type;
 use globalmarket_client_lib::bridge::paths::resolve_bridge_paths;
 use globalmarket_client_lib::bridge::xml::{
-    is_version_sufficient, parse_incoming_write_xml, remove_heartbeat_xml, sanitize_logo_rel_path,
+    is_version_sufficient, parse_incoming_write_xml, parse_mod_info_map, read_mod_info_raw,
+    remove_heartbeat_xml, sanitize_logo_rel_path,
     sanitize_market_name, write_contract_data_xml, write_contract_data_xml_with_identity,
     write_contract_results_xml, write_heartbeat_xml,
     write_heartbeat_xml_with_capabilities, write_heartbeat_xml_with_latest,
@@ -615,6 +616,8 @@ fn diagnostic_report_redacts_usernames_and_market_tokens() {
         server_identity: "unknown".to_string(),
         has_dev_token: true,
         server_env: Some("development".to_string()),
+        loaded_map: Some("FS25_ExampleMap.ExampleMap (FS25_ExampleMap, hash 8b1d07aa)".to_string()),
+        unsupported_content_label: None,
     };
 
     let cfg = AppConfig {
@@ -4203,15 +4206,16 @@ fn fastapi_sends_server_secret_and_maps_403_without_leaking_it() {
         assert!(!format!("{err} {err:?}").contains("wrong-secret"));
     }
 
-    // Without `server_id` no secret is sent.
-    api.fetch_contracts_state(None, Some(&issued)).unwrap();
+    // Without `server_id` the passed secret is not sent; the remembered savegame identity of the
+    // last successful board request goes along instead (#14).
+    api.fetch_contracts_state(None, Some(&wrong)).unwrap();
     let log = requests.lock().unwrap().clone();
     assert_eq!(log[0], "POST /api/v1/contracts/actions []");
     assert_eq!(
         log[1],
         format!("GET /api/v1/contracts/state?server_id={IDENTITY_SERVER_ID} [good-secret]")
     );
-    assert_eq!(log.last().unwrap(), "GET /api/v1/contracts/state []");
+    assert_eq!(log.last().unwrap(), "GET /api/v1/contracts/state [good-secret]");
     stop.store(true, Ordering::SeqCst);
     handle.join().unwrap();
 }
@@ -5044,7 +5048,10 @@ fn stage3_fastapi_maps_vehicle_json_both_ways() {
     assert!(seen[1].to_ascii_lowercase().contains("x-server-secret: issued-1"));
     assert!(seen[1].to_ascii_lowercase().contains("if-none-match: \"v1\""));
     assert!(seen[3].starts_with("GET /api/v1/vehicles/state "));
-    assert!(!seen[3].to_ascii_lowercase().contains("x-server-secret"));
+    // The board alone carries the remembered savegame identity of the last successful request (#14).
+    let board_only = seen[3].to_ascii_lowercase();
+    assert!(board_only.contains(&format!("x-server-id: {IDENTITY_SERVER_ID}")));
+    assert_eq!(board_only.matches("x-server-secret").count(), 1);
 }
 
 #[test]
@@ -5439,4 +5446,201 @@ fn client_blocked_is_classified() {
     let err = client.check_status().unwrap_err();
     assert!(matches!(err, ApiError::ClientBlocked), "{err:?}");
     handle.join().unwrap();
+}
+
+#[test]
+fn mod_info_map_is_read_and_cleaned() {
+    let mod_map = parse_mod_info_map(
+        "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"no\"?>\n<gmModInfo modName=\"FS25_GlobalMarket\" modVersion=\"0.11.0.43\" modHash=\"3f2a\" mapId=\"FS25_ExampleMap.ExampleMap\" mapModName=\"FS25_ExampleMap\" mapHash=\"8b1d07aa\" updatedAt=\"2026-11-27 14:05:12\" />",
+    )
+    .expect("mod map");
+    assert_eq!(mod_map.map_id, "FS25_ExampleMap.ExampleMap");
+    assert_eq!(mod_map.map_mod_name.as_deref(), Some("FS25_ExampleMap"));
+    assert_eq!(mod_map.map_hash.as_deref(), Some("8b1d07aa"));
+
+    let basegame = parse_mod_info_map(
+        "<gmModInfo modName=\"FS25_GlobalMarket\" mapId=\"MapUS\" mapModName=\"\" mapHash=\"\" />",
+    )
+    .expect("basegame map");
+    assert_eq!(basegame.map_id, "MapUS");
+    assert_eq!(basegame.map_mod_name, None);
+    assert_eq!(basegame.map_hash, None);
+
+    // A value that cannot go into a header is dropped, not sent cut or escaped.
+    let odd = parse_mod_info_map(
+        "<gmModInfo mapId=\" MapEU \" mapModName=\"FS25_Kärnten\" mapHash=\"dev\" />",
+    )
+    .unwrap();
+    assert_eq!(odd.map_id, "MapEU");
+    assert_eq!(odd.map_mod_name, None);
+    assert_eq!(odd.map_hash.as_deref(), Some("dev"));
+
+    // Mod before v0.11.0.43, a foreign root element, a too long id, broken XML.
+    assert_eq!(parse_mod_info_map("<gmModInfo modName=\"FS25_GlobalMarket\" modVersion=\"0.11.0.42\" />"), None);
+    assert_eq!(parse_mod_info_map("<other mapId=\"MapUS\" />"), None);
+    assert_eq!(parse_mod_info_map(&format!("<gmModInfo mapId=\"{}\" />", "x".repeat(129))), None);
+    assert_eq!(parse_mod_info_map("<gmModInfo mapId=\"MapUS\""), None);
+    assert_eq!(parse_mod_info_map(""), None);
+
+    let dir = env::temp_dir().join(format!("fs25_gm_modinfo_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("modInfo.xml");
+    assert_eq!(read_mod_info_raw(&file), None);
+    fs::write(&file, "<gmModInfo mapId=\"MapUS\" />").unwrap();
+    assert_eq!(read_mod_info_raw(&file).as_deref(), Some("<gmModInfo mapId=\"MapUS\" />"));
+    fs::write(&file, "x".repeat(20_000)).unwrap();
+    assert_eq!(read_mod_info_raw(&file), None, "an oversized file is ignored");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn content_not_supported_is_classified_with_its_label() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for body in [
+            "{\"detail\":{\"code\":\"CONTENT_NOT_SUPPORTED\",\"label\":\" Example\\u0007 Map \"}}",
+            "{\"detail\":{\"code\":\"CONTENT_NOT_SUPPORTED\"}}",
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut reader = BufReader::new(&mut stream);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                    break;
+                }
+            }
+            drop(reader);
+            let resp = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let client = FastApiBackend::new(
+        format!("http://{addr}"),
+        None,
+        "c84f92a17b0e3d41".to_string(),
+    )
+    .unwrap();
+
+    let named = client.check_status().unwrap_err();
+    match &named {
+        ApiError::ContentNotSupported { label } => assert_eq!(label.as_deref(), Some("Example Map")),
+        other => panic!("unexpected {other:?}"),
+    }
+    let unnamed = client.check_status().unwrap_err();
+    assert!(matches!(unnamed, ApiError::ContentNotSupported { label: None }), "{unnamed:?}");
+    handle.join().unwrap();
+
+    assert_eq!(classify_outage(&named, None, 0), Some(OfflineReason::UnsupportedContent));
+    assert_eq!(OfflineReason::UnsupportedContent.as_str(), "unsupportedContent");
+}
+
+/// Request line plus the `X-Map-*`, `X-Server-Id` and `X-Server-Secret` headers of one request.
+#[derive(Debug, Default, Clone, PartialEq)]
+struct SeenContentHeaders {
+    request_line: String,
+    map_id: Option<String>,
+    map_mod: Option<String>,
+    map_hash: Option<String>,
+    server_id: Option<String>,
+    server_secrets: Vec<String>,
+}
+
+#[test]
+fn map_and_savegame_identity_go_with_every_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen: Arc<Mutex<Vec<SeenContentHeaders>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_srv = Arc::clone(&seen);
+    let handle = thread::spawn(move || {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut reader = BufReader::new(&mut stream);
+            let mut entry = SeenContentHeaders::default();
+            reader.read_line(&mut entry.request_line).unwrap();
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':') {
+                    let v = v.trim().to_string();
+                    match k.trim().to_ascii_lowercase().as_str() {
+                        "x-map-id" => entry.map_id = Some(v),
+                        "x-map-mod" => entry.map_mod = Some(v),
+                        "x-map-hash" => entry.map_hash = Some(v),
+                        "x-server-id" => entry.server_id = Some(v),
+                        "x-server-secret" => entry.server_secrets.push(v),
+                        _ => {}
+                    }
+                }
+            }
+            drop(reader);
+            let body = if entry.request_line.contains("/vehicles/state") {
+                "{\"updated_at\":1,\"listings\":[]}"
+            } else {
+                "{\"online\":true,\"min_exe_version\":\"0.9.9\",\"api_version\":\"2.12.0\",\"market_name\":\"Global Market Official\"}"
+            };
+            seen_srv.lock().unwrap().push(entry);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        }
+    });
+    let client = FastApiBackend::new(
+        format!("http://{addr}"),
+        None,
+        "c84f92a17b0e3d41".to_string(),
+    )
+    .unwrap();
+
+    // 1. Mod map, no savegame identity yet.
+    client.set_loaded_map(LoadedMap::from_attributes("FS25_ExampleMap.ExampleMap", "FS25_ExampleMap", "8b1d07aa"));
+    client.check_status().unwrap();
+    // 2. Board request with the savegame's own identity.
+    client
+        .fetch_vehicles_state(Some(IDENTITY_SERVER_ID), Some(&secret("issued-1")))
+        .unwrap();
+    // 3. The handshake now carries the remembered identity.
+    client.check_status().unwrap();
+    // 4. Basegame map after a new map load: identity forgotten, no X-Map-Mod / X-Map-Hash.
+    client.forget_savegame_identity();
+    client.set_loaded_map(LoadedMap::from_attributes("MapUS", "", ""));
+    client.check_status().unwrap();
+    // 5. Mod before v0.11.0.43 and another market: no map headers, no identity.
+    client.set_loaded_map(None);
+    client.check_status().unwrap();
+    handle.join().unwrap();
+
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 5);
+    let mod_map = (
+        Some("FS25_ExampleMap.ExampleMap".to_string()),
+        Some("FS25_ExampleMap".to_string()),
+        Some("8b1d07aa".to_string()),
+    );
+    for entry in &seen[..3] {
+        assert_eq!((entry.map_id.clone(), entry.map_mod.clone(), entry.map_hash.clone()), mod_map, "{entry:?}");
+    }
+    assert_eq!(seen[0].server_id, None);
+    assert!(seen[0].server_secrets.is_empty());
+    assert!(seen[1].request_line.contains("/api/v1/vehicles/state"));
+    assert_eq!(seen[1].server_id.as_deref(), Some(IDENTITY_SERVER_ID));
+    assert_eq!(seen[1].server_secrets, vec!["issued-1".to_string()], "the board identity is sent once");
+    assert!(seen[2].request_line.contains("/api/v1/meta/status"));
+    assert_eq!(seen[2].server_id.as_deref(), Some(IDENTITY_SERVER_ID));
+    assert_eq!(seen[2].server_secrets, vec!["issued-1".to_string()]);
+    assert_eq!(seen[3].map_id.as_deref(), Some("MapUS"));
+    assert_eq!((seen[3].map_mod.clone(), seen[3].map_hash.clone()), (None, None));
+    assert_eq!(seen[3].server_id, None);
+    assert!(seen[3].server_secrets.is_empty());
+    assert_eq!(seen[4], SeenContentHeaders { request_line: seen[4].request_line.clone(), ..Default::default() });
 }

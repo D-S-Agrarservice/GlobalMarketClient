@@ -144,6 +144,8 @@ const state: UiState = {
     serverIdentity: "unknown",
     hasDevToken: false,
     serverEnv: null,
+    loadedMap: null,
+    unsupportedContentLabel: null,
   },
   logs: [],
   activeModal: "none",
@@ -638,6 +640,14 @@ function describeServerNotice(notice: ServerNotice): { title: string; desc: stri
   }
 }
 
+/** The backend refuses the loaded map (`403 CONTENT_NOT_SUPPORTED`). */
+function isContentUnsupported(): boolean {
+  return (
+    state.snapshot.state === "backendOffline" &&
+    state.snapshot.offlineReason === "unsupportedContent"
+  );
+}
+
 function isMaintenanceActive(): boolean {
   return (
     state.snapshot.state === "backendOffline" && state.snapshot.offlineReason === "maintenance"
@@ -650,6 +660,20 @@ function renderServerNoticeBannerHtml(): string {
   const messageHtml = message
     ? `<p class="text-zinc-300 mt-0.5">${escapeHtml(message)}</p>`
     : "";
+
+  if (isContentUnsupported()) {
+    const label = state.snapshot.unsupportedContentLabel;
+    const labelHtml = label
+      ? `<p class="text-zinc-300 mt-0.5">${escapeHtml(t("contentUnsupportedName", { label }))}</p>`
+      : "";
+    return `
+      <div class="rounded-lg border border-amber-500/45 bg-amber-500/10 px-3.5 py-2.5 text-xs">
+        <p class="font-semibold text-amber-300">⚠ ${escapeHtml(t("contentUnsupportedTitle"))}</p>
+        ${labelHtml}
+        <p class="text-zinc-300 mt-0.5">${escapeHtml(t("contentUnsupportedDesc"))}</p>
+      </div>
+    `;
+  }
 
   if (isMaintenanceActive()) {
     const end = notice ? noticeDisplayEnd(notice) : null;
@@ -764,6 +788,13 @@ function getConnectionVisuals(conn: BridgeConnectionState): {
       };
     case "backendOffline":
     default:
+      if (isContentUnsupported()) {
+        return {
+          label: t("stateUnsupportedContent"),
+          dotClass: "bg-amber-500",
+          pillClass: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+        };
+      }
       if (isMaintenanceActive()) {
         return {
           label: t("stateMaintenance"),

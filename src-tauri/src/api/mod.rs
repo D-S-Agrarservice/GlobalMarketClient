@@ -5,7 +5,7 @@ pub mod mock;
 pub mod types;
 
 use crate::api::types::{
-    ContractActionRequest, ContractStateResponse, MarketStateResponse, ServerHandshake,
+    ContractActionRequest, ContractStateResponse, LoadedMap, MarketStateResponse, ServerHandshake,
     ServerSecret, TransactionRequest, VehicleActionRequest, VehicleStateResponse,
     WhitelistSyncRequest,
 };
@@ -38,6 +38,10 @@ pub enum ApiError {
     /// `HTTP 403` with code `CLIENT_BLOCKED`: the operators blocked this IP, client id or savegame.
     #[error("Blocked by the server operators")]
     ClientBlocked,
+    /// `HTTP 403` with code `CONTENT_NOT_SUPPORTED`: the backend refuses the loaded map. `label` may
+    /// name the content and is shown as is; the reason itself stays on the server.
+    #[error("Map not supported by Global Market")]
+    ContentNotSupported { label: Option<String> },
     /// `HTTP 503` with code `MAINTENANCE` (Spec Section 3.1.3).
     #[error("Server maintenance in progress")]
     Maintenance {
@@ -77,4 +81,9 @@ pub trait BackendService: Send + Sync {
         server_secret: Option<&ServerSecret>,
     ) -> Result<VehicleStateResponse, ApiError>;
     fn fetch_logo_bytes(&self, logo_url: &str) -> Result<Vec<u8>, ApiError>;
+    /// Loaded map for the optional `X-Map-*` headers (Spec Section 3.1.1); `None` sends none.
+    fn set_loaded_map(&self, _map: Option<LoadedMap>) {}
+    /// Forgets the savegame identity that is sent as `X-Server-Id` + `X-Server-Secret` on every
+    /// request (new map load, other market).
+    fn forget_savegame_identity(&self) {}
 }
